@@ -209,6 +209,35 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaises(Conflict):
             self.ledger.begin_verification(self.tenant, rid)
 
+    def test_wallet_lock_privilege_does_not_allow_mutation(self):
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            with self.ledger.transaction(self.tenant) as conn:
+                conn.execute("UPDATE bonuspro.wallets SET created_at=now() WHERE tenant_id=%s AND id=%s",
+                             (self.tenant, self.wallet))
+
+    def test_reservation_identity_cannot_be_changed(self):
+        self.credit()
+        rid = self.reserve()
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            with psycopg.connect(self.admin_dsn) as conn:
+                conn.execute("UPDATE bonuspro.reservations SET points=1 WHERE tenant_id=%s AND id=%s",
+                             (self.tenant, rid))
+        self.assertEqual(self.ledger.snapshot(self.tenant, self.wallet)["reserved"], 700)
+
+    def test_one_sided_journal_is_rejected_at_commit(self):
+        tx = str(uuid4())
+        with self.assertRaises(psycopg.errors.CheckViolation):
+            with self.ledger.transaction(self.tenant) as conn:
+                conn.execute(
+                    "INSERT INTO bonuspro.ledger_transactions "
+                    "(tenant_id,id,wallet_id,operation_key,request_hash,kind,delta,actor_id,reason) "
+                    "VALUES (%s,%s,%s,'one-side',%s,'credit',100,%s,'test')",
+                    (self.tenant, tx, self.wallet, "a"*64, self.actor))
+                conn.execute(
+                    "INSERT INTO bonuspro.ledger_postings(tenant_id,transaction_id,wallet_id,account,amount) "
+                    "VALUES (%s,%s,%s,'customer',100)", (self.tenant, tx, self.wallet))
+        self.assertEqual(self.ledger.snapshot(self.tenant, self.wallet)["balance"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
