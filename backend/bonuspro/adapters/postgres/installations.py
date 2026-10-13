@@ -122,3 +122,12 @@ class Installations:
             if not row:
                 raise AuthenticationFailed("installation is missing")
             return {"state":row["state"],"updated_at":row["updated_at"].isoformat()}
+
+    def remap_token(self,tenant):
+        """Internal only. Never serialize this return value in an API response."""
+        with self.ledger.transaction(tenant) as conn:
+            row=conn.execute("SELECT token_ciphertext FROM bonuspro.installations WHERE tenant_id=%s "
+                             "AND state IN ('SettingsRequired','Activated')",(tenant,)).fetchone()
+            if not row or not row["token_ciphertext"]:
+                raise AuthenticationFailed("installation is inactive")
+            return self.config.decrypt(tenant,row["token_ciphertext"])

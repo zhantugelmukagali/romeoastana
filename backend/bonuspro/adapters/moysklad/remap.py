@@ -1,4 +1,4 @@
-"""Read-only REMAP boundary. Returned documents are evidence, not authorization to post.
+"""Restricted REMAP boundary (document reads; own marker metadata provisioning only). Returned documents are evidence, not authorization to post.
 
 All destinations are constructed locally; external meta.href/nextHref are never
 followed. Decimal JSON parsing preserves provider monetary values without binary
@@ -91,16 +91,18 @@ class RemapClient:
         self.tenant=uuid(tenant_id)
         self.transport=transport
 
-    def _get(self,path,params=None):
+    def _request(self,method,path,params=None,body=None):
         # Private method: callers below construct this path exclusively from enums/UUIDs.
         if not path.startswith("/entity/") or any(x in path for x in ("..","?","#","%","\\","@")):
             raise InvalidDocument("invalid resource path")
+        if method not in ("GET","POST") or (method=="POST" and path!="/entity/customerorder/metadata/attributes"):
+            raise InvalidDocument("unsupported write resource")
         headers={"Authorization":"Bearer "+self._token,"Accept":"application/json",
                  "Accept-Encoding":"gzip","X-Lognex-Accept-Region":"kz"}
         try:
             with httpx.Client(timeout=httpx.Timeout(10,connect=3),follow_redirects=False,
                               trust_env=False,transport=self.transport) as client:
-                with client.stream("GET",BASE+path,params=params,headers=headers) as response:
+                with client.stream(method,BASE+path,params=params,headers=headers,json=body) as response:
                     status=response.status_code
                     if status in (401,403):
                         raise AccessDenied("MoySklad access denied")
@@ -134,6 +136,33 @@ class RemapClient:
             raise RetryLater(5,"provider_timeout") from None
         except httpx.HTTPError:
             raise RetryLater() from None
+
+    def _get(self,path,params=None):
+        return self._request("GET",path,params)
+
+    def marker_attribute(self, *, create=False):
+        path="/entity/customerorder/metadata/attributes"
+        # Token scope must include useOwnAttributeMetadata. No generic caller-controlled writes.
+        page=self._get(path,{"limit":1000})
+        rows=page.get("rows")
+        size=page.get("meta",{}).get("size")
+        if not isinstance(rows,list) or type(size) is not int or size!=len(rows) or size>1000:
+            raise InvalidDocument("incomplete attribute metadata")
+        matches=[x for x in rows if x.get("name")=="БонусПро: операция списания"]
+        if len(matches)>1:
+            raise InvalidDocument("ambiguous redemption attribute")
+        if not matches:
+            if not create:
+                raise InvalidDocument("widget setup required")
+            row=self._request("POST",path,body={"name":"БонусПро: операция списания","type":"string",
+                                              "required":False})
+        else:
+            row=matches[0]
+        identity=uuid(row.get("id"))
+        meta=row.get("meta",{})
+        if row.get("type")!="string" or meta.get("type")!="attributemetadata" or meta.get("href")!=BASE+path+"/"+identity:
+            raise InvalidDocument("invalid redemption attribute")
+        return identity
 
     def entity(self,kind,identity):
         if kind not in ENTITIES:

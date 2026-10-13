@@ -47,6 +47,8 @@ with tempfile.TemporaryDirectory() as directory:
     schema = etree.XMLSchema(etree.parse(str(fetch(SCHEMA)), parser))
     descriptor = etree.parse(str(PACKAGE / "descriptor-draft.xml"), parser)
     schema.assertValid(descriptor)
+    widget_descriptor = etree.parse(str(PACKAGE / "descriptor-widget.xml"), parser)
+    schema.assertValid(widget_descriptor)
 
 app = "https://apps-api.moysklad.ru/xml/ns/appstore/app/v2"
 q = {"a": app}
@@ -56,7 +58,15 @@ frames = descriptor.findall("a:iframes/a:iframe", q)
 assert len(frames) == 1 and frames[0].get("sourceUrl") == "https://loyalty.addwise.kz/admin"
 assert frames[0].get("useContextKey") == "false"
 assert frames[0].find("a:uses/a:user-context", q) is not None
-assert descriptor.find("a:widgets", q) is None
+assert descriptor.find("a:widgets", q) is None  # previous registration kept available
+widgets = widget_descriptor.find("a:widgets", q)
+assert len(widgets) == 2
+assert widget_descriptor.find("a:access/a:permissions/a:useOwnAttributeMetadata", q) is not None
+for widget in widgets:
+    assert widget.get("useContextKey") == "false"
+    assert widget.findtext("a:sourceUrl", namespaces=q) == "https://loyalty.addwise.kz/widget"
+    for protocol in ("open-feedback","save-handler","change-handler","update-provider"):
+        assert widget.find("a:supports/a:"+protocol, q) is not None
 source = (ROOT / "backend/bonuspro/api/app.py").read_text()
 assert '@app.get("/admin")' in source
 assert "/api/moysklad/vendor/1.0/apps/{app_id}/{account_id}" in source

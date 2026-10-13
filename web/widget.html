@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>БонусПро — бонусы заказа</title><link rel="stylesheet" href="/assets/widget.css">
+<script type="module" src="/assets/widget.js"></script></head>
+<body><main aria-labelledby="title"><header><h1 id="title">БонусПро</h1><button id="refresh" type="button">Обновить</button></header>
+<p id="status" role="status" aria-live="polite">Откройте виджет в заказе МойСклад.</p>
+<section id="summary" hidden><dl><div><dt>Баланс</dt><dd id="balance">—</dd></div><div><dt>Можно списать</dt><dd id="maximum">—</dd></div></dl>
+<p id="basis" class="muted"></p><form id="spend-form"><label for="points">Списать бонусы</label>
+<div class="controls"><input id="points" name="points" type="number" min="1" step="1" inputmode="numeric" required>
+<button id="maximum-button" type="button">Максимум</button><button id="apply" type="submit">Применить к заказу</button></div>
+<p id="payable" class="muted"></p></form></section>
+<section id="pending" hidden><p id="pending-text"></p><button id="verify" type="button">Проверить сохранение</button></section>
+<p class="muted footnote">1 бонус = 1 ₸. Доставка не участвует. Списание подтверждается после сохранения заказа.</p>
+</main></body></html>

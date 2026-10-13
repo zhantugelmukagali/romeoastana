@@ -1,0 +1,104 @@
+"""Real Chromium, synthetic MoySklad host. Not a live provider acceptance test."""
+import json,unittest
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+ROOT=Path(__file__).resolve().parents[2]
+ORDER="11111111-1111-4111-8111-111111111111"
+NEXT="22222222-2222-4222-8222-222222222222"
+HOST="""<!doctype html><iframe title="БонусПро" src="https://widget.test/widget" style="width:100%;height:650px"
+onload="openOrder('11111111-1111-4111-8111-111111111111')"></iframe>
+<script>
+let seq=100;
+window.updates=[];
+window.send=m=>document.querySelector('iframe').contentWindow.postMessage(m,'https://widget.test');
+window.openOrder=id=>send({name:'Open',messageId:++seq,extensionPoint:'document.customerorder.edit',objectId:id});
+window.addEventListener('message',e=>{
+if(e.data.name==='UserContextRequest')send({name:'UserContextResponse',correlationId:e.data.messageId,token:'synthetic'});
+if(e.data.name==='UpdateRequest'){updates.push(e.data);send({name:'UpdateResponse',correlationId:e.data.messageId});}
+});
+</script>"""
+
+class WidgetBrowserTests(unittest.TestCase):
+    def setUp(self):
+        self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
+        self.context=self.browser.new_context(viewport={"width":1000,"height":800})
+        self.page=self.context.new_page();self.context.route("**/*",self.route)
+        self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False
+    def tearDown(self):
+        self.context.close();self.browser.close();self.runtime.stop()
+    def route(self,route):
+        url=route.request.url
+        if url.startswith("https://online.moysklad.ru/"):return route.fulfill(content_type="text/html",body=HOST)
+        if not url.startswith("https://widget.test/"):return route.abort()
+        path=url.split("https://widget.test",1)[1]
+        if path=="/api/session":return route.fulfill(json={"token":"synthetic-session"})
+        if path.endswith("/prepare"):
+            self.prepares.append(route.request.post_data_json);self.prepared=True
+            if self.lose:return route.abort()
+            if self.delay_change:
+                self.page.evaluate("send({name:'Change',messageId:120,objectState:{}})")
+            return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":1000,"state":"verifying",
+                "update_state":{"positions":[{"id":"line","discount":10}],"attributes":[{"id":"marker","value":"proof"}]},"replayed":False})
+        if path.endswith("/verify"):
+            self.verifies+=1
+            return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":1000,
+                "state":"committed" if self.saved else "verifying","verified":self.saved})
+        if path.startswith("/api/widget/orders/"):
+            if self.prepared and path.endswith(ORDER):
+                return route.fulfill(json={"redemption":{"id":"attempt","order_id":ORDER,"points":1000,"state":"verifying"}})
+            return route.fulfill(json={"name":"0001","saved_source_hash":"a"*64,"eligible_minor":1000000,"total_minor":1200000,
+                "can_prepare":True,"quote":{"balance":5000,"max_spend_points":3000,"blocked_reason":None}})
+        file=ROOT/"web"/("widget.html" if path=="/widget" else path.lstrip("/"))
+        if file.is_file():
+            return route.fulfill(content_type={".html":"text/html",".css":"text/css",".js":"text/javascript"}[file.suffix],body=file.read_text())
+        return route.fulfill(status=404)
+    def open(self):
+        self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
+        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+    def apply(self):
+        self.frame.get_by_label("Списать бонусы",exact=True).fill("1000")
+        self.frame.get_by_role("button",name="Применить к заказу",exact=True).click()
+    def test_host_ack_is_not_a_success_until_saved_verification(self):
+        self.open();self.apply()
+        self.frame.get_by_text("Зарезервировано 1000 бонусов. Итоговое списание ещё не подтверждено.",exact=True).wait_for()
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+        self.assertEqual(self.verifies,0)
+        self.saved=True
+        self.page.evaluate("send({name:'Save',messageId:130,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.get_by_text("Списано 1000 бонусов.",exact=True).wait_for()
+        self.assertEqual(len(self.prepares),1);self.assertEqual(self.verifies,1)
+    def test_unsaved_change_blocks_apply_even_after_refresh(self):
+        self.open()
+        self.page.evaluate("send({name:'Change',messageId:120,objectState:{}})")
+        self.frame.get_by_text("В заказе есть изменения. Сначала сохраните его в МойСклад.",exact=True).wait_for()
+        self.assertTrue(self.frame.get_by_role("button",name="Применить к заказу",exact=True).is_disabled())
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.get_by_text("В заказе есть изменения. Сначала сохраните его в МойСклад.",exact=True).wait_for()
+        self.assertTrue(self.frame.get_by_role("button",name="Применить к заказу",exact=True).is_disabled())
+        self.assertEqual(self.prepares,[])
+    def test_lost_response_keeps_unknown_state_without_second_mutation(self):
+        self.lose=True;self.open();self.apply()
+        self.frame.get_by_text("Статус резервирования неизвестен. Обновите данные заказа перед повторной попыткой.",exact=True).wait_for()
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.get_by_text("Для заказа уже есть операция. Проверьте её по сохранённым данным.",exact=True).wait_for()
+        self.assertEqual(len(self.prepares),1)
+    def test_host_reuse_resets_points_and_state_between_orders(self):
+        self.open();self.frame.get_by_label("Списать бонусы",exact=True).fill("1000")
+        self.page.evaluate("openOrder('"+NEXT+"')")
+        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.assertEqual(self.frame.get_by_label("Списать бонусы",exact=True).input_value(),"")
+        self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)
+    def test_wrong_origin_or_source_cannot_supply_open_message(self):
+        self.open()
+        self.page.frames[1].evaluate("window.postMessage({name:'Open',messageId:999,extensionPoint:'document.customerorder.create'},'*')")
+        self.assertTrue(self.frame.get_by_text("5000 бонусов",exact=True).is_visible())
+        self.assertEqual(self.prepares,[])
+    def test_compact_width_and_maximum_preview(self):
+        self.page.set_viewport_size({"width":390,"height":844});self.open()
+        self.frame.get_by_role("button",name="Максимум",exact=True).click()
+        self.assertEqual(self.frame.get_by_label("Списать бонусы",exact=True).input_value(),"3000")
+        self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+
+if __name__=="__main__":unittest.main()
