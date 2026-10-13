@@ -1,0 +1,1 @@
+"""MoySklad protocol adapters."""

@@ -1,0 +1,92 @@
+import time
+import unittest
+from uuid import uuid4
+import jwt
+import httpx
+from cryptography.exceptions import InvalidTag
+from bonuspro.security import Secrets, AuthenticationFailed
+from bonuspro.adapters.moysklad.vendor import VendorClient, ProviderUnavailable
+
+
+class SecurityTests(unittest.TestCase):
+    def setUp(self):
+        self.config = Secrets(str(uuid4()),"test.vendor","synthetic-vendor-secret-"+"x"*32,b"k"*32)
+
+    def claims(self, **overrides):
+        now=int(time.time())
+        return dict({"iat":now-1,"exp":now+119,"jti":str(uuid4())},**overrides)
+
+    def test_valid_inbound_and_fresh_outbound_tokens(self):
+        token=jwt.encode(self.claims(),self.config.vendor_secret,algorithm="HS256")
+        self.assertIn("jti",self.config.verify_vendor(token))
+        first=self.config.outbound_jwt()
+        second=self.config.outbound_jwt()
+        self.assertNotEqual(first,second)
+        self.assertEqual(jwt.decode(first,self.config.vendor_secret,algorithms=["HS256"])["sub"],self.config.app_uid)
+        with self.assertRaises(AuthenticationFailed):
+            self.config.verify_vendor(first)
+
+    def test_reject_wrong_signature_algorithm_and_type(self):
+        cases=[
+            jwt.encode(self.claims(),"wrong-key-"+"z"*32,algorithm="HS256"),
+            jwt.encode(self.claims(),self.config.vendor_secret,algorithm="HS384"),
+            jwt.encode(self.claims(),self.config.vendor_secret,algorithm="HS256",headers={"typ":"OTHER"}),
+            jwt.encode(self.claims(),key=None,algorithm="none"),
+        ]
+        for token in cases:
+            with self.assertRaises(AuthenticationFailed):
+                self.config.verify_vendor(token)
+
+    def test_time_bounds_and_required_jti(self):
+        now=int(time.time())
+        cases=[self.claims(exp=now-1),self.claims(iat=now+10),
+               self.claims(exp=now+1000),self.claims(jti=""),self.claims(iat=True)]
+        missing=self.claims()
+        del missing["jti"]
+        cases.append(missing)
+        for claims in cases:
+            with self.assertRaises(AuthenticationFailed):
+                self.config.verify_vendor(jwt.encode(claims,self.config.vendor_secret,algorithm="HS256"))
+
+    def test_credentials_are_encrypted_and_bound_to_tenant(self):
+        account=str(uuid4())
+        encrypted=self.config.encrypt(account,"synthetic-secret-token")
+        self.assertNotIn("synthetic-secret-token",encrypted)
+        self.assertEqual(self.config.decrypt(account,encrypted),"synthetic-secret-token")
+        self.assertNotEqual(encrypted,self.config.encrypt(account,"synthetic-secret-token"))
+        with self.assertRaises(InvalidTag):
+            self.config.decrypt(str(uuid4()),encrypted)
+        with self.assertRaises(ValueError):
+            self.config.decrypt(account,"v2.invalid")
+
+    def test_secret_representation_is_redacted(self):
+        self.assertNotIn(self.config.vendor_secret,repr(self.config))
+        self.assertNotIn("kkkk",repr(self.config))
+
+    def test_exchange_uses_fixed_url_gzip_and_validated_identity(self):
+        account,user=str(uuid4()),str(uuid4())
+        def handler(request):
+            self.assertEqual(str(request.url),VendorClient.URL)
+            self.assertEqual(request.headers["accept-encoding"],"gzip")
+            self.assertEqual(request.method,"POST")
+            self.assertNotIn("one-time-context",str(request.url))
+            return httpx.Response(200,json={"accountId":account,"userId":user,"role":"admin"})
+        identity=VendorClient(self.config,httpx.MockTransport(handler)).exchange("one-time-context")
+        self.assertEqual(identity.tenant_id,account)
+
+    def test_redirects_and_untrusted_roles_are_rejected(self):
+        for response in (httpx.Response(302,headers={"Location":"http://127.0.0.1"}),
+                         httpx.Response(200,json={"accountId":str(uuid4()),"userId":str(uuid4()),"role":"root"})):
+            transport=httpx.MockTransport(lambda request:response)
+            with self.assertRaises((AuthenticationFailed,ProviderUnavailable)):
+                VendorClient(self.config,transport).exchange("test")
+
+    def test_provider_failure_does_not_expose_token(self):
+        transport=httpx.MockTransport(lambda request:httpx.Response(500,text="synthetic-secret"))
+        with self.assertRaises(ProviderUnavailable) as raised:
+            VendorClient(self.config,transport).exchange("synthetic-secret")
+        self.assertNotIn("synthetic-secret",str(raised.exception))
+
+
+if __name__=="__main__":
+    unittest.main()

@@ -40,6 +40,7 @@ jobs:
       PYTHONPATH: backend
       TEST_ADMIN_DSN: postgresql://postgres:ci-only-admin@localhost:5432/bonuspro_ci
       TEST_APP_DSN: postgresql://bonuspro_ci_app:ci-only-ephemeral@localhost:5432/bonuspro_ci
+      TEST_LIFECYCLE_DSN: postgresql://bonuspro_ci_lifecycle:ci-only-lifecycle@localhost:5432/bonuspro_ci
       DATABASE_MIGRATION_URL: postgresql+psycopg://postgres:ci-only-admin@localhost:5432/bonuspro_ci
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -48,12 +49,15 @@ jobs:
       - name: Install database test dependencies
         run: |
           python3 -m venv .venv
-          .venv/bin/pip install -r requirements-db.txt
+          .venv/bin/pip install -r requirements-server.in
+          .venv/bin/pip freeze
       - name: Provision isolated CI roles
         run: .venv/bin/python tests/integration/provision_ci.py
       - name: Apply versioned migration twice
         run: |
           .venv/bin/alembic upgrade head
           .venv/bin/alembic upgrade head
+      - name: Test authentication and provider contracts
+        run: .venv/bin/python -m unittest discover -s tests/server -v
       - name: Test ledger isolation, atomicity and concurrency
         run: .venv/bin/python -m unittest discover -s tests/integration -p 'test_*.py' -v

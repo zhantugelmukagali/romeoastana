@@ -10,3 +10,7 @@ with psycopg.connect(os.environ["TEST_ADMIN_DSN"], autocommit=True) as conn:
     conn.execute("CREATE ROLE bonuspro_ci_app LOGIN PASSWORD 'ci-only-ephemeral' NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOBYPASSRLS")
     conn.execute("GRANT bonuspro_app TO bonuspro_ci_app")
     conn.execute("REVOKE CREATE ON SCHEMA public FROM PUBLIC")
+
+    conn.execute("CREATE ROLE bonuspro_lifecycle NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS")
+    conn.execute("CREATE ROLE bonuspro_ci_lifecycle LOGIN PASSWORD 'ci-only-lifecycle' NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOBYPASSRLS")
+    conn.execute("GRANT bonuspro_lifecycle TO bonuspro_ci_lifecycle")
