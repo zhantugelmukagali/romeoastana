@@ -170,3 +170,9 @@ GRANT SELECT, INSERT ON bonuspro.wallets, bonuspro.reservations,
   bonuspro.ledger_transactions, bonuspro.ledger_postings TO bonuspro_app;
 GRANT UPDATE (state, proof_revision) ON bonuspro.reservations TO bonuspro_app;
 -- No UPDATE/DELETE/TRUNCATE on ledger or tenant provisioning rights for the application.
+
+-- PostgreSQL requires UPDATE privilege on at least one column for FOR UPDATE.
+-- Grant only a lock-enabling column; the trigger still rejects every mutation.
+GRANT UPDATE (created_at) ON bonuspro.wallets TO bonuspro_app;
+CREATE TRIGGER immutable_wallet BEFORE UPDATE OR DELETE ON bonuspro.wallets
+FOR EACH ROW EXECUTE FUNCTION bonuspro.reject_mutation();
