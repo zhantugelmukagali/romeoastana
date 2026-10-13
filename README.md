@@ -19,6 +19,7 @@
 - [Установка и сессии МойСклад](docs/PROVIDER_CONTRACT.md)
 - [Возвраты без долга](docs/RETURN_POLICY.md)
 - [Очередь](docs/JOBS.md)
+- [Чтение документов REMAP](docs/REMAP.md)
 - [Контейнерное развёртывание](docs/DEPLOYMENT.md)
 
 ## Утверждённые правила
