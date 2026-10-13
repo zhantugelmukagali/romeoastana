@@ -19,3 +19,41 @@ jobs:
         env:
           PYTHONPATH: backend
         run: python3 -m unittest discover -s tests/unit -v
+  postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_DB: bonuspro_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-admin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bonuspro_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PYTHONPATH: backend
+      TEST_ADMIN_DSN: postgresql://postgres:ci-only-admin@localhost:5432/bonuspro_ci
+      TEST_APP_DSN: postgresql://bonuspro_ci_app:ci-only-ephemeral@localhost:5432/bonuspro_ci
+      DATABASE_MIGRATION_URL: postgresql+psycopg://postgres:ci-only-admin@localhost:5432/bonuspro_ci
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install database test dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements-db.txt
+      - name: Provision isolated CI roles
+        run: .venv/bin/python tests/integration/provision_ci.py
+      - name: Apply versioned migration twice
+        run: |
+          .venv/bin/alembic upgrade head
+          .venv/bin/alembic upgrade head
+      - name: Test ledger isolation, atomicity and concurrency
+        run: .venv/bin/python -m unittest discover -s tests/integration -p 'test_*.py' -v
