@@ -4,6 +4,7 @@ from urllib.request import urlopen, Request
 from urllib.parse import urljoin, urlsplit
 from hashlib import sha256
 import json
+import gzip
 import tempfile
 import zipfile
 from lxml import etree
@@ -27,9 +28,11 @@ with tempfile.TemporaryDirectory() as directory:
             return target / name
         assert len(fetched) < 20
         fetched.add(url)
-        with urlopen(Request(url, headers={"User-Agent": "BonusPro-schema-check"}), timeout=30) as response:
+        with urlopen(Request(url, headers={"User-Agent": "BonusPro-schema-check", "Accept-Encoding": "gzip", "Accept": "application/xml"}), timeout=30) as response:
             assert response.status == 200
             data = response.read(2_000_001)
+            if response.headers.get("Content-Encoding") == "gzip":
+                data = gzip.decompress(data)
         assert len(data) <= 2_000_000
         doc = etree.fromstring(data, parser)
         hashes[url] = sha256(data).hexdigest()
