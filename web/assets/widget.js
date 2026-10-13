@@ -148,7 +148,8 @@ window.addEventListener("message",event=>{
     for(const pending of waiting.values()){clearTimeout(pending.timer);pending.reject(new Error("document_changed"));}
     waiting.clear();$("summary").hidden=true;$("pending").hidden=true;$("points").value="";
     status("Загружаем бонусы заказа…");controls();
-    parent.postMessage({name:"OpenFeedback",correlationId:message.messageId},HOST);
+    if(message.extensionPoint==="document.customerorder.edit")
+      parent.postMessage({name:"OpenFeedback",correlationId:message.messageId},HOST);
     if(message.extensionPoint!=="document.customerorder.edit"||!uuid.test(message.objectId||"")){
       status("Сначала сохраните заказ с выбранным покупателем в МойСклад.");return;
     }

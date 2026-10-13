@@ -31,7 +31,7 @@
     <document.customerorder.create useContextKey="false">
       <sourceUrl>https://loyalty.addwise.kz/widget</sourceUrl>
       <height><fixed>440px</fixed></height>
-      <supports><open-feedback/><save-handler/><change-handler/><update-provider/></supports>
+      <supports><change-handler/></supports>
       <uses><user-context/></uses>
     </document.customerorder.create>
     <document.customerorder.edit useContextKey="false">

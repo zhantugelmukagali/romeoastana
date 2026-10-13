@@ -66,7 +66,7 @@ class OrderTests(unittest.TestCase):
     def test_all_services_has_no_bonus_discount(self):
         self.lines[0]["assortment"]=ref("service")
         self.assertEqual(self.read().snapshot.eligible_minor,0)
-        with self.assertRaises(ValueError):self.read().plan(1)
+        with self.assertRaises(InvalidDocument):self.read().plan(1)
 
     def test_wrong_currency_and_currency_rate(self):
         client=self.client();client.entity=lambda *args:{"isoCode":"RUB"}

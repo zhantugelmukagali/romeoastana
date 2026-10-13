@@ -65,7 +65,8 @@ assert widget_descriptor.find("a:access/a:permissions/a:useOwnAttributeMetadata"
 for widget in widgets:
     assert widget.get("useContextKey") == "false"
     assert widget.findtext("a:sourceUrl", namespaces=q) == "https://loyalty.addwise.kz/widget"
-    for protocol in ("open-feedback","save-handler","change-handler","update-provider"):
+    protocols = ("change-handler",) if widget.tag.endswith("create") else ("open-feedback","save-handler","change-handler","update-provider")
+    for protocol in protocols:
         assert widget.find("a:supports/a:"+protocol, q) is not None
 source = (ROOT / "backend/bonuspro/api/app.py").read_text()
 assert '@app.get("/admin")' in source
