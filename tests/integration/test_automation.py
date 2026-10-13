@@ -57,6 +57,7 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(first,second)
     def test_recover_saved_redemption_and_accrue_original_goods_base(self):
         prepared=self.fx.prepare();saved=self.fx.persisted(prepared)
+        saved=replace(saved,snapshot=replace(saved.snapshot,paid_minor=1100000,shipped_minor=1100000))
         self.run_proof(self.proof(saved=saved))
         self.assertEqual(self.balance(),dict(balance=4500,reserved=0,available=4500))
         self.run_proof(self.proof(saved=saved))
@@ -146,6 +147,51 @@ class AutomationTests(unittest.TestCase):
         with self.assertRaises(psycopg.Error):
             with self.fx.ledger.transaction(self.tenant) as conn:
                 conn.execute("DELETE FROM bonuspro.order_accruals")
+    def test_marker_removed_after_accrual_requires_review(self):
+        prepared=self.fx.prepare();saved=self.fx.persisted(prepared)
+        self.run_proof(self.proof(saved=saved))
+        self.run_proof(self.proof(saved=replace(saved,marker=None)))
+        self.assertEqual(self.outcome(),"document_review")
+        self.assertEqual(self.balance()["balance"],4500)
+
+    def test_worker_discovery_failure_keeps_cursor_for_restart(self):
+        before=self.a.state(self.tenant)["scan_until"]
+        class Client:
+            def order_ids_between(inner,start,end):raise RetryLater(300)
+        worker=Worker(self.fx.ledger,self.fx.install,self.tenant,client_factory=lambda *a,**kw:Client())
+        self.assertEqual(worker.cycle(now=before+timedelta(minutes=10)),"provider_unavailable")
+        self.assertEqual(self.a.state(self.tenant)["scan_until"],before)
+        self.assertEqual(self.balance()["balance"],5000)
+
+    def test_worker_document_graph_to_real_ledger_without_reader_stub(self):
+        from decimal import Decimal
+        from bonuspro.adapters.moysklad.remap import OrderEvidence,BASE
+        from bonuspro.adapters.moysklad.fulfillment import MSK
+        import copy
+        fx=self.fx
+        def ref(kind,identity):return {"meta":{"type":kind,"href":BASE+"/entity/"+kind+"/"+identity}}
+        currency=str(uuid4());demand=str(uuid4());payment=str(uuid4());s=fx.saved.snapshot
+        doc=dict(id=fx.order,accountId=fx.tenant,applicable=True,
+                 created=(datetime.now(timezone.utc)+timedelta(seconds=1)).astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                 updated="2026-10-14 10:00:00.000",sum=s.total_minor,payedSum=s.total_minor,shippedSum=s.total_minor,
+                 agent=ref("counterparty",fx.customer),organization=ref("organization",fx.saved.organization_id),
+                 rate={"currency":ref("currency",currency),"value":1},vatIncluded=True,vatEnabled=False,name="001")
+        lines=tuple(dict(id=x.id,assortment=ref(x.kind,x.assortment),price=x.price,quantity=x.quantity,
+                         discount=Decimal(x.discount_bps)/100,vat=x.vat,vatEnabled=x.vat_enabled)
+                    for x in fx.saved.lines)
+        ship={**doc,"id":demand,"customerOrder":ref("customerorder",fx.order)}
+        pay={**doc,"id":payment,"meta":{"type":"paymentin"},"operations":[{**ref("customerorder",fx.order),"linkedSum":s.total_minor}]}
+        class Client:
+            tenant=fx.tenant
+            def order_evidence(inner,id):return OrderEvidence(copy.deepcopy(doc),copy.deepcopy(lines),(copy.deepcopy(pay),),(copy.deepcopy(ship),))
+            def positions(inner,*args):return copy.deepcopy(lines)
+            def linked(inner,*args):return []
+            def entity(inner,*args):return {"isoCode":"KZT"}
+            def order_ids_between(inner,start,end):return []
+        worker=Worker(fx.ledger,fx.install,self.tenant,client_factory=lambda *a,**kw:Client())
+        self.assertEqual(worker.cycle(),"processed")
+        self.assertEqual(self.balance()["balance"],5500)
+
     def test_worker_recovers_queued_order(self):
         class Client:
             def order_ids_between(inner,start,end):return []

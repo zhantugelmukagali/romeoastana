@@ -91,7 +91,7 @@ class Automation:
         prior=conn.execute("SELECT * FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s",(tenant,s.order_id)).fetchone()
         financial_hash=fingerprint(saved.financial())
         if prior:
-            if prior["financial_hash"]!=financial_hash or proof.outcome!="eligible":
+            if prior["financial_hash"]!=financial_hash or prior["saved_marker"]!=saved.marker or proof.outcome!="eligible":
                 self.ledger._wallet_lock(conn,tenant,str(prior["wallet_id"]))
                 self.issue_in(conn,tenant,s.order_id,str(prior["wallet_id"]),"changed_credited_order",proof.evidence_hash)
                 self.outcome_in(conn,tenant,s.order_id,"document_review")
@@ -153,9 +153,9 @@ class Automation:
                 fingerprint(dict(order=s.order_id,base=base,points=points,rule=rule["version"])),
                 points,"credit",str(config["actor_id"]),"Full payment and shipment verified by reconciliation")
         conn.execute("INSERT INTO bonuspro.order_accruals "
-            "(tenant_id,order_id,wallet_id,credit_id,points,eligible_minor,financial_hash,evidence_hash,rule_version) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (tenant,s.order_id,wallet,tx,points,base,financial_hash,proof.evidence_hash,rule["version"]))
+            "(tenant_id,order_id,wallet_id,credit_id,points,eligible_minor,saved_marker,financial_hash,evidence_hash,rule_version) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (tenant,s.order_id,wallet,tx,points,base,saved.marker,financial_hash,proof.evidence_hash,rule["version"]))
         self.outcome_in(conn,tenant,s.order_id,"credited")
         if time.monotonic()>proof.deadline:
             raise Conflict("evidence expired during transaction")

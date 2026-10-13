@@ -132,6 +132,8 @@ class RemapClient:
                         raise InvalidDocument("unexpected provider response")
                     body=bytearray()
                     for chunk in response.iter_bytes():
+                        if self.deadline is not None and time.monotonic()>=self.deadline:
+                            raise RetryLater(5,"provider_timeout")
                         body.extend(chunk)
                         if len(body)>8*1024*1024:
                             raise InvalidDocument("provider response exceeds size limit")

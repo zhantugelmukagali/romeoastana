@@ -29,6 +29,7 @@ CREATE TABLE bonuspro.order_accruals (
  credit_id uuid,
  points bigint NOT NULL CHECK (points BETWEEN 0 AND 90000000000000),
  eligible_minor bigint NOT NULL CHECK (eligible_minor BETWEEN 0 AND 9000000000000000),
+ saved_marker text,
  financial_hash text NOT NULL CHECK (financial_hash ~ '^[0-9a-f]{64}$'),
  evidence_hash text NOT NULL CHECK (evidence_hash ~ '^[0-9a-f]{64}$'),
  rule_version integer NOT NULL,
