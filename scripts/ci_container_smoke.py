@@ -30,7 +30,8 @@ def main():
         path.chmod(0o400)
         run("sudo","chown","10001:10001",str(path))
     os.environ.update(BONUSPRO_IMAGE="bonuspro:ci",PUBLIC_ORIGIN="https://ci.bonuspro.test",
-                      MOYSKLAD_APP_ID="11111111-1111-4111-8111-111111111111",MOYSKLAD_APP_UID="ci.test")
+                      MOYSKLAD_APP_ID="11111111-1111-4111-8111-111111111111",MOYSKLAD_APP_UID="ci.test",
+                      BONUSPRO_TENANT_ID="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
     command=["docker","compose","-p","bonuspro-ci-container","-f","compose.release.yaml"]
     try:
         run(*command,"config","--quiet")
@@ -52,6 +53,7 @@ def main():
             assert error.code==401
         run(*command,"exec","-T","app","python","-c",
             "import os; assert os.getuid()==10001; assert not os.access('/app',os.W_OK)")
+        run(*command,"--profile","automation","run","--rm","worker","python","-m","bonuspro.worker","--once")
         # Restore a non-empty balanced journal into an independent database.
         tenant="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         wallet="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"

@@ -16,6 +16,7 @@ class SettingsBrowserTests(unittest.TestCase):
         self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1280,"height":1200})
         self.page=self.context.new_page()
+        self.automation_config=None
         self.current=None;self.saved=[];self.drop_first=False;self.conflict=False
         self.context.route("**/*",self.route)
 
@@ -29,6 +30,11 @@ class SettingsBrowserTests(unittest.TestCase):
         path=url.split("https://widget.test",1)[1]
         if path=="/api/session":return route.fulfill(json={"token":"synthetic-session"})
         if path=="/api/admin/widget/setup":return route.fulfill(json={"configured":True})
+        if path=="/api/admin/automation":
+            if route.request.method=="POST":
+                self.automation_config={"starts_at":"2026-10-14T00:00:00Z","heartbeat_at":None,"last_error":None}
+                return route.fulfill(json={"configured":True,"starts_at":self.automation_config["starts_at"]})
+            return route.fulfill(json={"configuration":self.automation_config,"orders":{},"issues":[]})
         if path=="/api/me":return route.fulfill(json={"role":"admin"})
         if path.startswith("/api/admin/rules/history"):return route.fulfill(json={"items":[self.current] if self.current else [],"next_cursor":None})
         if path=="/api/admin/rules":
@@ -53,6 +59,12 @@ class SettingsBrowserTests(unittest.TestCase):
         self.open()
         self.frame.get_by_role("button",name="Подготовить виджет",exact=True).click()
         self.frame.get_by_text("Виджет подготовлен. Это не включает рабочие списания.",exact=True).wait_for()
+
+    def test_automation_configuration_does_not_claim_worker_has_run(self):
+        self.open()
+        self.frame.get_by_role("button",name="Зафиксировать начало программы",exact=True).click()
+        self.frame.get_by_text("Обработчик ещё не запускался.",exact=False).wait_for()
+        self.assertFalse(self.frame.get_by_role("button",name="Зафиксировать начало программы",exact=True).is_visible())
 
     def test_initial_rules_and_goods_only_message(self):
         self.open()

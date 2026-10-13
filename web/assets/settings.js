@@ -20,6 +20,8 @@ function busy(value) {
   $("rules-form").querySelectorAll("input,textarea,button").forEach(x=>x.disabled=value);
   $("more").disabled=value;
   $("setup-widget").disabled=value;
+  $("configure-automation").disabled=value;
+  $("refresh-automation").disabled=value;
 }
 async function api(path,options={}) {
   let response;
@@ -99,5 +101,40 @@ $("setup-widget").onclick=async()=>{
     if(!response.ok)throw new Error(response.status===403?"Нужны права администратора и доступ решения к своим дополнительным полям.":"Не удалось подготовить виджет. Проверьте подключение и повторите.");
     $("setup-status").textContent="Виджет подготовлен. Это не включает рабочие списания.";
   }catch(error){$("setup-status").textContent=error.name==="TimeoutError"?"Ответ задерживается. Повторная проверка найдёт уже созданное поле.":error.message;}
+  finally{busy(false);}
+};
+
+const outcomes={queued:"Ожидают проверки",waiting_payment:"Ожидают полной оплаты",waiting_shipment:"Ожидают полной отгрузки",
+  credited:"Начисление выполнено",historical:"До начала программы",cancelled:"Отменены",return_review:"Возвраты на проверке",
+  document_review:"Требуют разбора",redemption_pending:"Проверяется списание",provider_error:"Не удалось проверить"};
+async function automationStatus(){
+  const data=await api("/api/admin/automation");
+  const config=data.configuration;
+  $("configure-automation").hidden=Boolean(config);
+  $("automation-status").textContent=!config?"Начало программы ещё не зафиксировано.":
+    "Начало программы: "+new Date(config.starts_at).toLocaleString("ru-RU")+". "+
+    (config.heartbeat_at?"Последняя обработка: "+new Date(config.heartbeat_at).toLocaleString("ru-RU")+".":"Обработчик ещё не запускался.")+
+    (config.last_error?" Есть ошибка синхронизации.":"");
+  $("automation-details").replaceChildren();
+  for(const [key,count] of Object.entries(data.orders||{}))
+    $("automation-details").append(node("p",(outcomes[key]||"На проверке")+": "+count));
+  if(data.issues?.length)$("automation-details").append(node("p","Есть расхождения в документах. Списание по затронутым клиентам приостановлено до разбора."));
+}
+$("refresh-automation").onclick=async()=>{
+  if(working)return;busy(true);
+  try{await automationStatus();}catch(e){$("automation-status").textContent=e.message;}
+  finally{busy(false);}
+};
+$("configure-automation").onclick=async()=>{
+  if(working)return;busy(true);
+  try{
+    const response=await fetch("/api/admin/automation",{method:"POST",credentials:"omit",cache:"no-store",
+      headers:{Authorization:"Bearer "+session},signal:AbortSignal.timeout(15000)});
+    if(!response.ok)throw new Error(response.status===409?
+      "Сначала завершите подключение магазина и сохраните правила. Программа не запущена.":
+      "Не удалось зафиксировать начало программы. Проверьте доступ и повторите.");
+    await automationStatus();
+  }catch(e){$("automation-status").textContent=e.name==="TimeoutError"?
+    "Ответ задерживается. Нажмите «Проверить обработку»: повтор не изменит сохранённую дату.":e.message;}
   finally{busy(false);}
 };

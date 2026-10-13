@@ -2,7 +2,7 @@
 
 Only a trusted application layer may call this adapter after authorization and
 document reconciliation. VerifiedDiscount is an internal contract, not a public
-API request model. Its producer (the MoySklad adapter) is not implemented yet.
+API request model. The saved-order adapter and fulfillment reconciler produce it after remote reads.
 """
 from contextlib import contextmanager, closing
 from dataclasses import dataclass
@@ -180,6 +180,9 @@ class Ledger:
             if conn.execute("SELECT 1 FROM bonuspro.return_cases WHERE tenant_id=%s AND wallet_id=%s "
                             "AND state='pending' LIMIT 1", (tenant, wallet)).fetchone():
                 raise Conflict("wallet requires administrative return review")
+            if conn.execute("SELECT 1 FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND wallet_id=%s LIMIT 1",
+                            (tenant,wallet)).fetchone():
+                raise Conflict("wallet requires reconciliation review")
             available = self._snapshot(conn, tenant, wallet)["available"]
             if points > spend_limit(eligible_minor, available, rules):
                 raise Conflict("insufficient balance or order limit exceeded")
@@ -231,28 +234,31 @@ class Ledger:
                          (tenant, rid))
 
     def confirm_discount(self, tenant_id, reservation_id, *, proof: VerifiedDiscount):
+        with self.transaction(tenant_id) as conn:
+            return self.confirm_discount_in(conn,tenant_id,reservation_id,proof=proof)
+
+    def confirm_discount_in(self, conn, tenant_id, reservation_id, *, proof: VerifiedDiscount):
         tenant, rid = uuid_value(tenant_id), uuid_value(reservation_id)
         order = uuid_value(proof.order_id)
         digest_value(proof.quote_hash)
         natural(proof.discount_minor, "discount_minor")
         text_value(proof.revision, "revision", 256)
-        with self.transaction(tenant) as conn:
-            row = self._locked_reservation(conn, tenant, rid)
-            if (order != str(row["order_id"]) or proof.quote_hash != row["quote_hash"]
-                    or proof.discount_minor != row["points"] * 100):
-                raise Conflict("saved document does not match reservation")
-            if row["state"] == "committed":
-                tx = conn.execute(
-                    "SELECT id FROM bonuspro.ledger_transactions WHERE tenant_id=%s AND reservation_id=%s",
-                    (tenant, rid),
-                ).fetchone()
-                return str(tx["id"])
-            if row["state"] != "verifying":
-                raise Conflict("reservation is not awaiting verification")
-            conn.execute(
-                "UPDATE bonuspro.reservations SET state='committed',proof_revision=%s WHERE tenant_id=%s AND id=%s",
-                (proof.revision, tenant, rid),
-            )
-            return self._post(conn, tenant, str(row["wallet_id"]), "redemption/" + rid,
-                              row["request_hash"], -row["points"], "redemption", str(row["actor_id"]),
-                              "Saved bonus discount verified by provider adapter", rid)
+        row = self._locked_reservation(conn, tenant, rid)
+        if (order != str(row["order_id"]) or proof.quote_hash != row["quote_hash"]
+                or proof.discount_minor != row["points"] * 100):
+            raise Conflict("saved document does not match reservation")
+        if row["state"] == "committed":
+            tx = conn.execute(
+                "SELECT id FROM bonuspro.ledger_transactions WHERE tenant_id=%s AND reservation_id=%s",
+                (tenant, rid),
+            ).fetchone()
+            return str(tx["id"])
+        if row["state"] != "verifying":
+            raise Conflict("reservation is not awaiting verification")
+        conn.execute(
+            "UPDATE bonuspro.reservations SET state='committed',proof_revision=%s WHERE tenant_id=%s AND id=%s",
+            (proof.revision, tenant, rid),
+        )
+        return self._post(conn, tenant, str(row["wallet_id"]), "redemption/" + rid,
+                          row["request_hash"], -row["points"], "redemption", str(row["actor_id"]),
+                          "Saved bonus discount verified by provider adapter", rid)

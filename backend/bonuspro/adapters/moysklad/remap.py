@@ -7,6 +7,7 @@ float. Transient failures go back to the durable scheduler, not an HTTP retry lo
 from dataclasses import dataclass
 from decimal import Decimal
 import json
+import time
 from uuid import UUID
 
 import httpx
@@ -84,12 +85,15 @@ def _invalid_number(value):
 
 
 class RemapClient:
-    def __init__(self, token, tenant_id, *, transport=None):
+    def __init__(self, token, tenant_id, *, transport=None, budget_seconds=None, minimum_interval=0):
         if not isinstance(token,str) or not token.strip() or len(token)>8192:
             raise ValueError("invalid REMAP credential")
         self._token=token
         self.tenant=uuid(tenant_id)
         self.transport=transport
+        self.deadline=time.monotonic()+budget_seconds if budget_seconds else None
+        self.minimum_interval=minimum_interval
+        self.last_request=0
 
     def _request(self,method,path,params=None,body=None):
         # Private method: callers below construct this path exclusively from enums/UUIDs.
@@ -97,6 +101,13 @@ class RemapClient:
             raise InvalidDocument("invalid resource path")
         if method not in ("GET","POST") or (method=="POST" and path!="/entity/customerorder/metadata/attributes"):
             raise InvalidDocument("unsupported write resource")
+        now=time.monotonic()
+        if self.deadline is not None and now+11>=self.deadline:
+            raise RetryLater(5,"provider_timeout")
+        wait=self.minimum_interval-(now-self.last_request)
+        if wait>0:
+            time.sleep(min(wait,1))
+        self.last_request=time.monotonic()
         headers={"Authorization":"Bearer "+self._token,"Accept":"application/json",
                  "Accept-Encoding":"gzip","X-Lognex-Accept-Region":"kz"}
         try:
@@ -163,6 +174,41 @@ class RemapClient:
         if row.get("type")!="string" or meta.get("type")!="attributemetadata" or meta.get("href")!=BASE+path+"/"+identity:
             raise InvalidDocument("invalid redemption attribute")
         return identity
+
+    def order_ids_between(self,start,end):
+        from bonuspro.adapters.moysklad.fulfillment import moment,MSK
+        def stamp(value):
+            return value.astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        if start.tzinfo is None or end.tzinfo is None or end<start:
+            raise ValueError("aware chronological window required")
+        result=[];seen=set();expected=None
+        for offset in range(0,10000,1000):
+            page=self._get("/entity/customerorder",{"limit":1000,"offset":offset,
+                "filter":"created>="+stamp(start)+";created<="+stamp(end),"order":"created,asc"})
+            size=page.get("meta",{}).get("size");rows=page.get("rows")
+            if type(size) is not int or not 0<=size<=10000 or not isinstance(rows,list):
+                raise InvalidDocument("discovery window exceeds supported size")
+            if expected is not None and expected!=size:
+                raise RetryLater(1,"conflict")
+            expected=size
+            if len(rows)>1000 or len(result)+len(rows)>size:
+                raise InvalidDocument("invalid discovery page")
+            for row in rows:
+                identity=uuid(row.get("id"))
+                if uuid(row.get("accountId"))!=self.tenant or row.get("meta",{}).get("type")!="customerorder":
+                    raise InvalidDocument("discovery account/type mismatch")
+                created=moment(row.get("created"))
+                # The API accepts millisecond precision; reject rows outside the requested window.
+                lower=start.replace(microsecond=(start.microsecond//1000)*1000)
+                if not lower<=created<=end or identity in seen:
+                    raise RetryLater(1,"conflict")
+                seen.add(identity)
+                result.append(identity)
+            if len(result)==size:
+                return result
+            if len(rows)!=1000:
+                raise RetryLater(1,"conflict")
+        raise InvalidDocument("discovery collection too large")
 
     def entity(self,kind,identity):
         if kind not in ENTITIES:

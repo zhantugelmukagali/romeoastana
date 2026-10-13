@@ -111,8 +111,12 @@ class SavedOrder:
                     update_state={"positions":updates})
 
 
-def read_order(client, order_id, *, marker_id=None):
-    evidence=client.order_evidence(order_id)
+def read_order(client, order_id, *, marker_id=None, allow_fulfilled=False):
+    return normalize_order(client,client.order_evidence(order_id),marker_id=marker_id,
+                           allow_fulfilled=allow_fulfilled)
+
+
+def normalize_order(client,evidence,*,marker_id=None,allow_fulfilled=False):
     doc=evidence.order
     # Conservative initial supported mode: VAT included in prices, or VAT disabled.
     vat_enabled=doc.get("vatEnabled")
@@ -164,7 +168,7 @@ def read_order(client, order_id, *, marker_id=None):
     paid=exact_minor(doc.get("payedSum"))
     shipped=exact_minor(doc.get("shippedSum"))
     # Any linked document blocks editing, even a draft: staff must settle that workflow first.
-    if evidence.payments or evidence.demands:
+    if not allow_fulfilled and (evidence.payments or evidence.demands):
         raise InvalidDocument("order already has linked payment or shipment documents")
     marker=None
     attrs=doc.get("attributes",[])

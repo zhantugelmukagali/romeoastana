@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field, SecretStr, ConfigDict, field_validator, StrictInt
 
@@ -20,6 +21,7 @@ from bonuspro.adapters.postgres.ledger import Ledger, Conflict, NotFound
 from bonuspro.adapters.postgres.returns import Returns
 from bonuspro.adapters.postgres.checkout import Checkout
 from bonuspro.adapters.postgres.redemptions import Redemptions
+from bonuspro.adapters.postgres.automation import Automation
 from bonuspro.adapters.moysklad.remap import RemapClient, RemapError, RetryLater, AccessDenied, EntityMissing
 from bonuspro.adapters.moysklad.order import read_order
 
@@ -118,6 +120,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     returns = Returns(Ledger(config.database_url))
     checkout = Checkout(Ledger(config.database_url))
     redemptions = Redemptions(Ledger(config.database_url))
+    automation = Automation(Ledger(config.database_url))
     remap_factory = remap_factory or RemapClient
     app = FastAPI(title="БонусПро",docs_url=None,redoc_url=None,openapi_url=None)
     app.add_middleware(BodyLimit)
@@ -195,9 +198,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         try:
             with psycopg.connect(config.database_url,connect_timeout=3) as conn:
                 conn.execute("SET LOCAL statement_timeout='3s'")
-                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings')").fetchone()
+                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues')").fetchone()
                 revision = conn.execute("SELECT version_num FROM public.alembic_version").fetchall()
-                if not all(exists) or revision != [("0007",)]:
+                if not all(exists) or revision != [("0008",)]:
                     raise RuntimeError("missing schema")
             return {"status":"ready"}
         except (psycopg.Error,RuntimeError):
@@ -300,6 +303,22 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     def document_client(identity):
         return remap_factory(repo.remap_token(identity.tenant_id),identity.tenant_id)
+
+    @app.get("/api/admin/automation")
+    def automation_status(request: Request):
+        identity=widget_identity(request)
+        return automation.dashboard(identity.tenant_id)
+
+    @app.post("/api/admin/automation")
+    async def automation_configure(request: Request):
+        same_origin(request)
+        identity=widget_identity(request)
+        # Server time only; a caller cannot backdate earning or nominate another tenant.
+        if await request.body():
+            raise HTTPException(422,"no configuration body accepted")
+        if not checkout.rules(identity.tenant_id):
+            raise Conflict("save rules before configuring automation")
+        return await run_in_threadpool(automation.configure,identity.tenant_id,identity.user_id)
 
     @app.post("/api/admin/widget/setup")
     def widget_setup(request: Request):

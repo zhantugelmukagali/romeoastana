@@ -24,6 +24,12 @@
 <section aria-label="Подключение виджета"><h2>Виджет в заказе</h2>
 <p>Подготовка создаёт служебное поле для проверки списаний. Продажи включаются после завершения настройки магазина.</p>
 <button id="setup-widget" type="button">Подготовить виджет</button><p id="setup-status" role="status" aria-live="polite"></p></section>
+<section aria-label="Автоматическое начисление"><h2>Обработка заказов</h2>
+<p>Начало программы фиксируется один раз после подключения магазина. Покупки, созданные раньше, не получают новые начисления.</p>
+<button id="configure-automation" type="button">Зафиксировать начало программы</button>
+<button id="refresh-automation" type="button">Проверить обработку</button>
+<p id="automation-status" role="status" aria-live="polite"></p>
+<div id="automation-details"></div></section>
 <section aria-label="История правил"><h2>История изменений</h2><div id="history"></div><button id="more" hidden>Показать ещё</button></section>
 </section>
 </main></body></html>

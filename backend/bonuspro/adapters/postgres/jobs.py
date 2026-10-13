@@ -87,8 +87,9 @@ class Jobs:
         with self.ledger.transaction(tenant_id) as conn:
             self.complete_in(conn,tenant_id,job_id,lease_id,apply=apply)
 
-    def fail(self, tenant_id, job_id, lease_id, *, error_code, permanent=False):
+    def fail(self, tenant_id, job_id, lease_id, *, error_code, permanent=False, retry_after=0):
         tenant,job,lease=map(uuid_value,(tenant_id,job_id,lease_id))
+        natural(retry_after,"retry_after",86400)
         if error_code not in ERROR_CODES or not isinstance(permanent,bool):
             raise ValueError("invalid safe error classification")
         with self.ledger.transaction(tenant) as conn:
@@ -98,7 +99,7 @@ class Jobs:
             if not row:
                 raise Conflict("job lease expired or replaced")
             terminal=permanent or row["attempts"]>=8
-            delay=min(300,2**row["attempts"])+randbelow(5)
+            delay=max(retry_after,min(300,2**row["attempts"])+randbelow(5))
             conn.execute(
                 "UPDATE bonuspro.jobs SET state=%s,lease_id=NULL,lease_until=NULL,last_error=%s,"
                 "available_at=clock_timestamp()+%s*interval '1 second' WHERE tenant_id=%s AND id=%s",
