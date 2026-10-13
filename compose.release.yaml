@@ -1,0 +1,79 @@
+name: bonuspro-release
+x-app: &app
+  image: ${BONUSPRO_IMAGE:?Set an immutable image tag}
+  read_only: true
+  tmpfs: [/tmp:size=32m,mode=1777]
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  init: true
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: bonuspro
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    secrets: [db_password]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    shm_size: 128mb
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U postgres -d bonuspro"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+  bootstrap:
+    <<: *app
+    profiles: [maintenance]
+    command: [python, deploy/bootstrap.py]
+    healthcheck: {disable: true}
+    environment:
+      DATABASE_ADMIN_URL_FILE: /run/secrets/admin_database_url
+      DATABASE_MIGRATION_URL_FILE: /run/secrets/migration_database_url
+      DATABASE_URL_FILE: /run/secrets/app_database_url
+      LIFECYCLE_DATABASE_URL_FILE: /run/secrets/lifecycle_database_url
+    secrets: [admin_database_url, migration_database_url, app_database_url, lifecycle_database_url]
+    depends_on:
+      db: {condition: service_healthy}
+  migrate:
+    <<: *app
+    profiles: [maintenance]
+    command: [python, deploy/migrate.py]
+    healthcheck: {disable: true}
+    environment:
+      DATABASE_MIGRATION_URL_FILE: /run/secrets/migration_database_url
+    secrets: [migration_database_url]
+    depends_on:
+      db: {condition: service_healthy}
+  app:
+    <<: *app
+    restart: unless-stopped
+    ports: ["127.0.0.1:18080:8000"]
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the HTTPS origin}
+      MOYSKLAD_APP_ID: ${MOYSKLAD_APP_ID:?Set the registered app UUID}
+      MOYSKLAD_APP_UID: ${MOYSKLAD_APP_UID:?Set the registered app UID}
+      MOYSKLAD_VENDOR_SECRET_FILE: /run/secrets/vendor_secret
+      TOKEN_ENCRYPTION_KEY_FILE: /run/secrets/token_encryption_key
+      DATABASE_URL_FILE: /run/secrets/app_database_url
+      LIFECYCLE_DATABASE_URL_FILE: /run/secrets/lifecycle_database_url
+    secrets: [vendor_secret, token_encryption_key, app_database_url, lifecycle_database_url]
+    depends_on:
+      db: {condition: service_healthy}
+volumes:
+  pgdata:
+secrets:
+  db_password: {file: ./deploy/secrets/db_password}
+  admin_database_url: {file: ./deploy/secrets/admin_database_url}
+  migration_database_url: {file: ./deploy/secrets/migration_database_url}
+  app_database_url: {file: ./deploy/secrets/app_database_url}
+  lifecycle_database_url: {file: ./deploy/secrets/lifecycle_database_url}
+  vendor_secret: {file: ./deploy/secrets/vendor_secret}
+  token_encryption_key: {file: ./deploy/secrets/token_encryption_key}

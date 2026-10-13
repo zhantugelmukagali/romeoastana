@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from pydantic import BaseModel, Field, SecretStr, ConfigDict
+from pydantic import BaseModel, Field, SecretStr, ConfigDict, field_validator
 
 from bonuspro.settings import Settings
 from bonuspro.security import AuthenticationFailed
@@ -46,7 +46,14 @@ class ContextExchange(BaseModel):
 class ReturnDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision: Literal["reverse","waive"]
-    reason: str = Field(min_length=1,max_length=500,pattern=r".*\\S.*")
+    reason: str = Field(min_length=1,max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank(cls,value):
+        if not value.strip():
+            raise ValueError("reason is required")
+        return value.strip()
 
 
 class BodyLimit:
@@ -147,7 +154,8 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None):
             with psycopg.connect(config.database_url,connect_timeout=3) as conn:
                 conn.execute("SET LOCAL statement_timeout='3s'")
                 exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs')").fetchone()
-                if not all(exists):
+                revision = conn.execute("SELECT version_num FROM public.alembic_version").fetchall()
+                if not all(exists) or revision != [("0005",)]:
                     raise RuntimeError("missing schema")
             return {"status":"ready"}
         except (psycopg.Error,RuntimeError):

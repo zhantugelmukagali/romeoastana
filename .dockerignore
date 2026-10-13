@@ -1,0 +1,14 @@
+*
+!requirements-server.lock
+!backend
+!backend/**
+!web
+!web/**
+!migrations
+!migrations/**
+!alembic.ini
+!deploy
+!deploy/**
+**/__pycache__
+**/*.pyc
+deploy/secrets

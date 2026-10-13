@@ -77,3 +77,27 @@ jobs:
           .browser/bin/playwright install --with-deps chromium
       - name: Test administrative return UX
         run: .browser/bin/python -m unittest discover -s tests/browser -v
+
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Build non-root application image
+        run: docker build --pull -t bonuspro:ci .
+      - name: Test real deployment roles, migrations and HTTP readiness
+        run: python3 scripts/ci_container_smoke.py
+  dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Audit pinned Python dependencies
+        run: |
+          python3 -m venv .audit
+          .audit/bin/pip install pip-audit==2.9.0
+          .audit/bin/pip-audit --disable-pip -r requirements-server.lock
