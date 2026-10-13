@@ -1,0 +1,35 @@
+name: Marketplace package
+on:
+  push:
+    branches: [bonuspro/rebuild]
+    paths: ['marketplace/**', 'scripts/check_marketplace.py', '.github/workflows/marketplace.yml']
+  pull_request:
+    paths: ['marketplace/**', 'scripts/check_marketplace.py', '.github/workflows/marketplace.yml']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install XML schema validator
+        run: |
+          python3 -m venv .marketplace-check
+          .marketplace-check/bin/pip install lxml==6.0.2
+      - name: Validate descriptor and upload files
+        run: .marketplace-check/bin/python scripts/check_marketplace.py
+      - name: Bundle registration materials
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bonuspro-registration-draft
+          path: |
+            marketplace/README.md
+            marketplace/GUIDE.md
+            marketplace/descriptor-draft.xml
+            marketplace/description-draft.txt
+            marketplace/bonuspro-icon.svg
+            marketplace/bonuspro-manual.zip
+          retention-days: 90
