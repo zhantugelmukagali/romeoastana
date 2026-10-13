@@ -49,7 +49,8 @@ jobs:
       - name: Install database test dependencies
         run: |
           python3 -m venv .venv
-          .venv/bin/pip install -r requirements-server.in
+          .venv/bin/pip install -r requirements-server.lock
+          .venv/bin/pip check
           .venv/bin/pip freeze
       - name: Provision isolated CI roles
         run: .venv/bin/python tests/integration/provision_ci.py

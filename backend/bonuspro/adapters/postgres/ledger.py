@@ -112,13 +112,13 @@ class Ledger:
             return self._snapshot(conn, tenant, wallet)
 
     @staticmethod
-    def _post(conn, tenant, wallet, operation_key, request_hash, delta, kind, actor, reason, reservation=None):
+    def _post(conn, tenant, wallet, operation_key, request_hash, delta, kind, actor, reason, reservation=None, credit_ref=None):
         transaction_id = uuid4()
         conn.execute(
             "INSERT INTO bonuspro.ledger_transactions "
-            "(tenant_id,id,wallet_id,operation_key,request_hash,kind,delta,reservation_id,actor_id,reason) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (tenant, transaction_id, wallet, operation_key, request_hash, kind, delta, reservation, actor, reason),
+            "(tenant_id,id,wallet_id,operation_key,request_hash,kind,delta,reservation_id,actor_id,reason,credit_ref_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (tenant, transaction_id, wallet, operation_key, request_hash, kind, delta, reservation, actor, reason, credit_ref),
         )
         with conn.cursor() as cur:
             cur.executemany(
@@ -176,6 +176,9 @@ class Ledger:
                     raise Conflict("idempotency key reused with different data")
                 return str(existing["id"])
             self._wallet_lock(conn, tenant, wallet)
+            if conn.execute("SELECT 1 FROM bonuspro.return_cases WHERE tenant_id=%s AND wallet_id=%s "
+                            "AND state='pending' LIMIT 1", (tenant, wallet)).fetchone():
+                raise Conflict("wallet requires administrative return review")
             available = self._snapshot(conn, tenant, wallet)["available"]
             if points > spend_limit(eligible_minor, available, rules):
                 raise Conflict("insufficient balance or order limit exceeded")
