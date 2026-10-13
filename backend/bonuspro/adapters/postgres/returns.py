@@ -115,3 +115,31 @@ class Returns:
             return self._result(conn.execute(
                 "SELECT * FROM bonuspro.return_cases WHERE tenant_id=%s AND id=%s", (tenant, case),
             ).fetchone())
+
+    def list_cases(self, tenant_id, *, state="pending", before=None):
+        tenant=uuid_value(tenant_id)
+        if state not in ("pending","reversed","waived"):
+            raise ValueError("unknown case state")
+        cursor=uuid_value(before) if before else None
+        with self.ledger.transaction(tenant) as conn:
+            rows=conn.execute(
+                "SELECT c.*,COALESCE(b.balance,0) AS balance,COALESCE(r.reserved,0) AS reserved "
+                "FROM bonuspro.return_cases c "
+                "LEFT JOIN LATERAL (SELECT sum(amount) AS balance FROM bonuspro.ledger_postings p "
+                "WHERE p.tenant_id=c.tenant_id AND p.wallet_id=c.wallet_id AND p.account='customer') b ON true "
+                "LEFT JOIN LATERAL (SELECT sum(points) AS reserved FROM bonuspro.reservations r "
+                "WHERE r.tenant_id=c.tenant_id AND r.wallet_id=c.wallet_id AND r.state IN ('held','verifying')) r ON true "
+                "WHERE c.tenant_id=%s AND c.state=%s AND (%s::uuid IS NULL OR c.id<%s::uuid) "
+                "ORDER BY c.id DESC LIMIT 51", (tenant,state,cursor,cursor)).fetchall()
+            # UUID cursor is stable across resolutions and avoids unbounded OFFSET.
+            more=len(rows)>50
+            items=[]
+            for row in rows[:50]:
+                items.append(dict(
+                    id=str(row["id"]),wallet_id=str(row["wallet_id"]),return_id=str(row["return_id"]),
+                    points=row["points"],state=row["state"],balance=int(row["balance"]),
+                    available=max(0,int(row["balance"])-int(row["reserved"])),
+                    created_at=row["created_at"].isoformat(),resolution_reason=row["resolution_reason"],
+                    resolved_by=str(row["resolved_by"]) if row["resolved_by"] else None,
+                ))
+            return {"items":items,"next_cursor":items[-1]["id"] if more else None}

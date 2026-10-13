@@ -1,11 +1,13 @@
 """Installation and session endpoints; financial writes are not exposed yet."""
 from uuid import UUID
+from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Literal
 
 import psycopg
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field, SecretStr, ConfigDict
@@ -14,7 +16,8 @@ from bonuspro.settings import Settings
 from bonuspro.security import AuthenticationFailed
 from bonuspro.adapters.moysklad.vendor import VendorClient, ProviderUnavailable
 from bonuspro.adapters.postgres.installations import Installations
-from bonuspro.adapters.postgres.ledger import Conflict, NotFound
+from bonuspro.adapters.postgres.ledger import Ledger, Conflict, NotFound
+from bonuspro.adapters.postgres.returns import Returns
 
 REMAP = "https://api.moysklad.ru/api/remap/1.2"
 
@@ -38,6 +41,12 @@ class Deactivation(BaseModel):
 class ContextExchange(BaseModel):
     model_config = ConfigDict(extra="forbid")
     token: SecretStr = Field(min_length=1,max_length=4096)
+
+
+class ReturnDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    decision: Literal["reverse","waive"]
+    reason: str = Field(min_length=1,max_length=500,pattern=r".*\\S.*")
 
 
 class BodyLimit:
@@ -71,6 +80,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None):
     config = settings or Settings.from_env()
     repo = store or Installations(config.database_url, config.lifecycle_database_url, config.credentials)
     provider = vendor or VendorClient(config.credentials)
+    returns = Returns(Ledger(config.database_url))
     app = FastAPI(title="БонусПро",docs_url=None,redoc_url=None,openapi_url=None)
     app.add_middleware(BodyLimit)
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=[urlsplit(config.origin).hostname])
@@ -136,7 +146,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None):
         try:
             with psycopg.connect(config.database_url,connect_timeout=3) as conn:
                 conn.execute("SET LOCAL statement_timeout='3s'")
-                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions')").fetchone()
+                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs')").fetchone()
                 if not all(exists):
                     raise RuntimeError("missing schema")
             return {"status":"ready"}
@@ -182,5 +192,31 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None):
         if identity.role!="admin":
             raise HTTPException(403,"administrator required")
         return repo.state(identity.tenant_id)
+
+
+    @app.get("/api/admin/returns")
+    def return_cases(request: Request, state: Literal["pending","reversed","waived"]="pending",
+                     before: UUID | None=None):
+        identity = repo.authenticate(bearer(request))
+        if identity.role!="admin":
+            raise HTTPException(403,"administrator required")
+        return returns.list_cases(identity.tenant_id,state=state,before=str(before) if before else None)
+
+    @app.post("/api/admin/returns/{case_id}/resolve")
+    def resolve_return(case_id: UUID, body: ReturnDecision, request: Request):
+        same_origin(request)
+        identity = repo.authenticate(bearer(request))
+        if identity.role!="admin":
+            raise HTTPException(403,"administrator required")
+        return returns.resolve(identity.tenant_id,str(case_id),decision=body.decision,
+                               actor_id=identity.user_id,role=identity.role,reason=body.reason.strip())
+
+    web = Path(__file__).resolve().parents[3] / "web"
+    app.mount("/assets",StaticFiles(directory=web / "assets"),name="assets")
+
+    @app.get("/")
+    @app.get("/admin")
+    def admin_page():
+        return FileResponse(web / "index.html")
 
     return app

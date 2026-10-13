@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>БонусПро · Возвраты</title><link rel="stylesheet" href="/assets/app.css">
+<script type="module" src="/assets/app.js"></script></head>
+<body><main>
+<header><div><span class="brand">БонусПро</span><h1>Возвраты</h1></div><button id="refresh" hidden>Обновить</button></header>
+<p id="status" role="status" aria-live="polite">Подключаемся к МойСклад…</p>
+<button id="retry" hidden>Повторить подключение</button>
+<section id="workspace" hidden aria-label="Разбор возвратов">
+<p class="hint">Если начисленные бонусы уже потрачены, решение принимает администратор. Баланс не уходит в минус.</p>
+<nav aria-label="Статус возвратов"><button data-state="pending" aria-pressed="true">Требуют решения</button><button data-state="reversed" aria-pressed="false">Начисление отменено</button><button data-state="waived" aria-pressed="false">Бонусы сохранены</button></nav>
+<div id="cases"></div><button id="more" hidden>Показать ещё</button>
+</section>
+<dialog id="decision" aria-labelledby="decision-title"><form id="decision-form">
+<h2 id="decision-title">Решение по возврату</h2><p id="impact"></p>
+<label for="reason">Причина решения</label><textarea id="reason" name="reason" required maxlength="500" rows="3"></textarea>
+<p id="form-error" class="error" role="alert"></p><div class="actions"><button id="cancel" type="button">Отмена</button><button id="confirm" type="submit" class="primary">Подтвердить</button></div>
+</form></dialog>
+</main></body></html>
