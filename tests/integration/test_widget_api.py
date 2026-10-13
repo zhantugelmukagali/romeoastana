@@ -3,7 +3,7 @@ from dataclasses import replace
 from decimal import Decimal
 from uuid import uuid4
 from fastapi.testclient import TestClient
-from test_redemptions import RedemptionTests
+import test_redemptions as redemption_fixture
 from bonuspro.api.app import create_app
 from bonuspro.settings import Settings
 from bonuspro.adapters.moysklad.remap import OrderEvidence, BASE
@@ -13,7 +13,7 @@ def ref(kind,identity):return {"meta":{"type":kind,"href":BASE+"/entity/"+kind+"
 
 class WidgetAPITests(unittest.TestCase):
     def setUp(self):
-        self.fx=RedemptionTests();self.fx.setUp()
+        self.fx=redemption_fixture.RedemptionTests();self.fx.setUp()
         self.reads=[];self.currency=str(uuid4())
         outer=self
         class Provider:

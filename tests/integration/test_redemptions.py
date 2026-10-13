@@ -98,6 +98,25 @@ class RedemptionTests(unittest.TestCase):
         with self.assertRaises(psycopg.Error):
             with self.ledger.transaction(self.tenant) as conn:
                 conn.execute("DELETE FROM bonuspro.redemption_attempts WHERE id=%s",(prepared["id"],))
+    def test_activation_revocation_blocks_saved_confirmation(self):
+        prepared=self.prepare();saved=self.persisted(prepared)
+        self.install.change(self.tenant,dict(iat=int(time.time()),exp=int(time.time())+60,jti=str(uuid4())),"Suspend")
+        with self.assertRaises(Conflict):self.redemptions.confirm_saved(self.tenant,saved)
+        self.assertEqual(self.ledger.snapshot(self.tenant,self.wallet)["balance"],5000)
+
+    def test_new_request_for_same_order_cannot_reserve_again(self):
+        self.prepare()
+        with self.assertRaises(Conflict):self.prepare()
+        self.assertEqual(self.ledger.snapshot(self.tenant,self.wallet)["reserved"],1000)
+
+    def test_committed_order_edit_is_reported_without_second_debit(self):
+        prepared=self.prepare();saved=self.persisted(prepared)
+        self.redemptions.confirm_saved(self.tenant,saved)
+        altered=replace(saved,marker="changed")
+        result=self.redemptions.confirm_saved(self.tenant,altered)
+        self.assertFalse(result["verified"])
+        self.assertEqual(self.ledger.snapshot(self.tenant,self.wallet)["balance"],4000)
+
     def test_unknown_result_reservation_cannot_expire_or_release(self):
         prepared=self.prepare()
         with self.assertRaises(Conflict):self.ledger.release_unapplied(self.tenant,prepared["id"])

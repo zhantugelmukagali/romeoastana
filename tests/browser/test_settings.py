@@ -28,6 +28,7 @@ class SettingsBrowserTests(unittest.TestCase):
         if not url.startswith("https://widget.test/"):return route.abort()
         path=url.split("https://widget.test",1)[1]
         if path=="/api/session":return route.fulfill(json={"token":"synthetic-session"})
+        if path=="/api/admin/widget/setup":return route.fulfill(json={"configured":True})
         if path=="/api/me":return route.fulfill(json={"role":"admin"})
         if path.startswith("/api/admin/rules/history"):return route.fulfill(json={"items":[self.current] if self.current else [],"next_cursor":None})
         if path=="/api/admin/rules":
@@ -47,6 +48,11 @@ class SettingsBrowserTests(unittest.TestCase):
         self.page.goto("https://online.moysklad.ru/test-host")
         self.frame=self.page.frame_locator("iframe")
         self.frame.get_by_text("Сохраните первоначальные правила.",exact=True).wait_for()
+
+    def test_widget_setup_does_not_claim_sales_are_active(self):
+        self.open()
+        self.frame.get_by_role("button",name="Подготовить виджет",exact=True).click()
+        self.frame.get_by_text("Виджет подготовлен. Это не включает рабочие списания.",exact=True).wait_for()
 
     def test_initial_rules_and_goods_only_message(self):
         self.open()

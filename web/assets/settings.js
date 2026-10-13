@@ -19,6 +19,7 @@ function busy(value) {
   working=value;
   $("rules-form").querySelectorAll("input,textarea,button").forEach(x=>x.disabled=value);
   $("more").disabled=value;
+  $("setup-widget").disabled=value;
 }
 async function api(path,options={}) {
   let response;
@@ -89,3 +90,14 @@ $("reload").onclick=async()=>{if(working)return;busy(true);try{await load();}cat
 $("more").onclick=async()=>{if(working)return;busy(true);try{await history(true);}catch(e){status(e.message,true);}finally{busy(false);}};
 $("earn").oninput=preview;$("spend").oninput=preview;$("retry").onclick=connect;
 connect();
+
+$("setup-widget").onclick=async()=>{
+  if(working)return;busy(true);$("setup-status").textContent="Проверяем подключение…";
+  try{
+    const response=await fetch("/api/admin/widget/setup",{method:"POST",credentials:"omit",cache:"no-store",
+      headers:{"Content-Type":"application/json",Authorization:"Bearer "+session},signal:AbortSignal.timeout(15000)});
+    if(!response.ok)throw new Error(response.status===403?"Нужны права администратора и доступ решения к своим дополнительным полям.":"Не удалось подготовить виджет. Проверьте подключение и повторите.");
+    $("setup-status").textContent="Виджет подготовлен. Это не включает рабочие списания.";
+  }catch(error){$("setup-status").textContent=error.name==="TimeoutError"?"Ответ задерживается. Повторная проверка найдёт уже созданное поле.":error.message;}
+  finally{busy(false);}
+};

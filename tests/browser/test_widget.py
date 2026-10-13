@@ -90,6 +90,19 @@ class WidgetBrowserTests(unittest.TestCase):
         self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
         self.assertEqual(self.frame.get_by_label("Списать бонусы",exact=True).input_value(),"")
         self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)
+    def test_change_during_prepare_does_not_apply_stale_positions(self):
+        self.delay_change=True;self.open();self.apply()
+        self.frame.get_by_text("Данные изменились или запрос уже выполнялся. Проверьте сохранение; резерв сохранён.",exact=True).wait_for()
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+        self.assertEqual(len(self.prepares),1)
+
+    def test_create_page_does_not_send_unsupported_feedback(self):
+        self.open()
+        self.page.evaluate("""window.feedback=0;window.addEventListener('message',e=>{if(e.data.name==='OpenFeedback')feedback++});
+        send({name:'Open',messageId:190,extensionPoint:'document.customerorder.create',objectId:null});""")
+        self.frame.get_by_text("Сначала сохраните заказ с выбранным покупателем в МойСклад.",exact=True).wait_for()
+        self.assertEqual(self.page.evaluate("feedback"),0)
+
     def test_wrong_origin_or_source_cannot_supply_open_message(self):
         self.open()
         self.page.frames[1].evaluate("window.postMessage({name:'Open',messageId:999,extensionPoint:'document.customerorder.create'},'*')")
