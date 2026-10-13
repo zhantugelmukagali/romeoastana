@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, Response, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from pydantic import BaseModel, Field, SecretStr, ConfigDict, field_validator
+from pydantic import BaseModel, Field, SecretStr, ConfigDict, field_validator, StrictInt
 
 from bonuspro.settings import Settings
 from bonuspro.security import AuthenticationFailed
@@ -18,6 +18,7 @@ from bonuspro.adapters.moysklad.vendor import VendorClient, ProviderUnavailable
 from bonuspro.adapters.postgres.installations import Installations
 from bonuspro.adapters.postgres.ledger import Ledger, Conflict, NotFound
 from bonuspro.adapters.postgres.returns import Returns
+from bonuspro.adapters.postgres.checkout import Checkout
 
 REMAP = "https://api.moysklad.ru/api/remap/1.2"
 
@@ -46,6 +47,23 @@ class ContextExchange(BaseModel):
 class ReturnDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision: Literal["reverse","waive"]
+    reason: str = Field(min_length=1,max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank(cls,value):
+        if not value.strip():
+            raise ValueError("reason is required")
+        return value.strip()
+
+
+class RuleUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    earn_bps: StrictInt = Field(ge=0,le=10000)
+    spend_bps: StrictInt = Field(ge=0,le=10000)
+    delivery_policy: Literal["exclude"] = "exclude"
+    expected_version: StrictInt = Field(ge=0,le=2147483646)
+    request_id: UUID
     reason: str = Field(min_length=1,max_length=500)
 
     @field_validator("reason")
@@ -88,6 +106,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None):
     repo = store or Installations(config.database_url, config.lifecycle_database_url, config.credentials)
     provider = vendor or VendorClient(config.credentials)
     returns = Returns(Ledger(config.database_url))
+    checkout = Checkout(Ledger(config.database_url))
     app = FastAPI(title="БонусПро",docs_url=None,redoc_url=None,openapi_url=None)
     app.add_middleware(BodyLimit)
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=[urlsplit(config.origin).hostname])
@@ -153,9 +172,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None):
         try:
             with psycopg.connect(config.database_url,connect_timeout=3) as conn:
                 conn.execute("SET LOCAL statement_timeout='3s'")
-                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs')").fetchone()
+                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets')").fetchone()
                 revision = conn.execute("SELECT version_num FROM public.alembic_version").fetchall()
-                if not all(exists) or revision != [("0005",)]:
+                if not all(exists) or revision != [("0006",)]:
                     raise RuntimeError("missing schema")
             return {"status":"ready"}
         except (psycopg.Error,RuntimeError):
@@ -218,6 +237,38 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None):
             raise HTTPException(403,"administrator required")
         return returns.resolve(identity.tenant_id,str(case_id),decision=body.decision,
                                actor_id=identity.user_id,role=identity.role,reason=body.reason.strip())
+
+    @app.get("/api/admin/rules")
+    def get_rules(request: Request):
+        identity = repo.authenticate(bearer(request))
+        if identity.role != "admin":
+            raise HTTPException(403,"administrator required")
+        return {"current":checkout.rules(identity.tenant_id)}
+
+    @app.get("/api/admin/rules/history")
+    def get_rules_history(request: Request, before: int | None = None):
+        identity = repo.authenticate(bearer(request))
+        if identity.role != "admin":
+            raise HTTPException(403,"administrator required")
+        if before is not None and not 1 <= before <= 2147483647:
+            raise HTTPException(422,"invalid cursor")
+        return checkout.history(identity.tenant_id,before=before)
+
+    @app.put("/api/admin/rules")
+    def update_rules(body: RuleUpdate, request: Request):
+        same_origin(request)
+        identity = repo.authenticate(bearer(request))
+        if identity.role != "admin":
+            raise HTTPException(403,"administrator required")
+        result = checkout.save_rules(identity.tenant_id,earn_bps=body.earn_bps,
+                    spend_bps=body.spend_bps,delivery_policy=body.delivery_policy,
+                    expected_version=body.expected_version,request_id=str(body.request_id),
+                    actor_id=identity.user_id,reason=body.reason)
+        return {"current":result}
+
+    @app.get("/settings")
+    def settings_page():
+        return FileResponse(web / "settings.html")
 
     web = Path(__file__).resolve().parents[3] / "web"
     app.mount("/assets",StaticFiles(directory=web / "assets"),name="assets")
