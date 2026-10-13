@@ -4,7 +4,7 @@ Only a trusted application layer may call this adapter after authorization and
 document reconciliation. VerifiedDiscount is an internal contract, not a public
 API request model. Its producer (the MoySklad adapter) is not implemented yet.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -61,15 +61,16 @@ class Ledger:
     @contextmanager
     def transaction(self, tenant_id: str):
         tenant = uuid_value(tenant_id)
-        with psycopg.connect(self.dsn, row_factory=dict_row, connect_timeout=5) as conn:
-            conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
-            role = conn.execute("SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user").fetchone()
-            if role["rolsuper"] or role["rolbypassrls"]:
-                raise RuntimeError("application connection must not bypass row security")
-            conn.execute("SELECT set_config('bonuspro.tenant_id', %s, true)", (tenant,))
-            conn.execute("SET LOCAL lock_timeout = '5s'")
-            conn.execute("SET LOCAL statement_timeout = '10s'")
-            yield conn
+        with closing(psycopg.connect(self.dsn, row_factory=dict_row, connect_timeout=5)) as conn:
+            with conn:
+                conn.execute("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
+                role = conn.execute("SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname=current_user").fetchone()
+                if role["rolsuper"] or role["rolbypassrls"]:
+                    raise RuntimeError("application connection must not bypass row security")
+                conn.execute("SELECT set_config('bonuspro.tenant_id', %s, true)", (tenant,))
+                conn.execute("SET LOCAL lock_timeout = '5s'")
+                conn.execute("SET LOCAL statement_timeout = '10s'")
+                yield conn
 
     @staticmethod
     def _key_lock(conn, tenant: str, key: str):

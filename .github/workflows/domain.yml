@@ -100,4 +100,4 @@ jobs:
         run: |
           python3 -m venv .audit
           .audit/bin/pip install pip-audit==2.9.0
-          .audit/bin/pip-audit --disable-pip -r requirements-server.lock
+          .audit/bin/pip-audit --disable-pip --no-deps -r requirements-server.lock

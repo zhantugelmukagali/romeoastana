@@ -2,7 +2,7 @@ name: bonuspro-release
 x-app: &app
   image: ${BONUSPRO_IMAGE:?Set an immutable image tag}
   read_only: true
-  tmpfs: [/tmp:size=32m,mode=1777]
+  tmpfs: ["/tmp:size=32m,mode=1777"]
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   init: true

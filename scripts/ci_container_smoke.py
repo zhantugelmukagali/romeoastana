@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import urllib.request
 import urllib.error
+import tempfile
 
 def run(*args):
     subprocess.run(args,check=True,timeout=240)
@@ -51,6 +52,29 @@ def main():
             assert error.code==401
         run(*command,"exec","-T","app","python","-c",
             "import os; assert os.getuid()==10001; assert not os.access('/app',os.W_OK)")
+        # Restore a non-empty balanced journal into an independent database.
+        tenant="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        wallet="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        actor="cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        run(*command,"exec","-T","db","psql","-U","postgres","-d","bonuspro","-v","ON_ERROR_STOP=1","-c",
+            "INSERT INTO bonuspro.tenants(id) VALUES ('"+tenant+"')")
+        seed=("from bonuspro.settings import secret; from bonuspro.adapters.postgres.ledger import Ledger; "
+              "l=Ledger(secret('DATABASE_URL')); l.create_wallet('"+tenant+"','"+wallet+"'); "
+              "l.credit('"+tenant+"','"+wallet+"',points=1000,key='restore-test',actor_id='"+actor+"',reason='Synthetic restore fixture')")
+        run(*command,"exec","-T","app","python","-c",seed)
+        with tempfile.TemporaryFile() as archive:
+            subprocess.run([*command,"exec","-T","db","pg_dump","-U","postgres","-d","bonuspro","-Fc"],
+                           stdout=archive,check=True,timeout=60)
+            assert archive.tell()>0
+            run(*command,"exec","-T","db","createdb","-U","postgres","bonuspro_restore")
+            archive.seek(0)
+            subprocess.run([*command,"exec","-T","db","pg_restore","-U","postgres","-d","bonuspro_restore","--exit-on-error"],
+                           stdin=archive,check=True,timeout=60)
+        verify=("from bonuspro.settings import secret; from bonuspro.adapters.postgres.ledger import Ledger; "
+                "dsn=secret('DATABASE_URL').rsplit('/',1)[0]+'/bonuspro_restore'; l=Ledger(dsn); "
+                "assert l.snapshot('"+tenant+"','"+wallet+"')['balance']==1000; "
+                "print('Backup restored: balanced journal and runtime RLS role verified')")
+        run(*command,"exec","-T","app","python","-c",verify)
         print("Container, least-privilege bootstrap, repeat migration, readiness and anonymous access checks passed.")
     finally:
         run(*command,"logs","--tail","50")
