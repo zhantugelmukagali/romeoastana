@@ -345,10 +345,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         return {"current":result}
 
 
-    def widget_identity(request):
+    def admin_identity(request):
         identity=repo.authenticate(bearer(request))
-        # User-context exposes a role, not document-specific write permissions.
-        # Until explicit operator authorization exists, do not elevate a worker to an app-token admin.
+        # Administrative actions always require the provider-confirmed administrator role.
         if identity.role!="admin":
             raise HTTPException(403,"administrator required")
         return identity
@@ -364,12 +363,12 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     @app.get("/api/admin/operators")
     def operator_list(request: Request):
-        identity=widget_identity(request)
+        identity=admin_identity(request)
         return operators.listing(identity.tenant_id)
 
     @app.put("/api/admin/operators/{user_id}")
     def operator_update(user_id: UUID,body: OperatorUpdate,request: Request):
-        same_origin(request);identity=widget_identity(request)
+        same_origin(request);identity=admin_identity(request)
         return operators.update(identity.tenant_id,str(user_id),enabled=body.enabled,
             expected_version=body.expected_version,request_id=str(body.request_id),actor=identity.user_id,reason=body.reason)
 
@@ -378,7 +377,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     @app.post("/api/admin/redemptions/{operation_id}/release")
     def release_cancelled(operation_id: UUID,body: IssueDecision,request: Request):
-        same_origin(request);identity=widget_identity(request)
+        same_origin(request);identity=admin_identity(request)
         service=Voids(automation.ledger);operation=service.lookup(identity.tenant_id,str(operation_id))
         client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.15) if remap_factory is RemapClient else document_client(identity)
         proof=FulfillmentReader(client).read(str(operation["order_id"]),marker_id=redemptions.binding(identity.tenant_id))
@@ -387,7 +386,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     @app.post("/api/admin/activate")
     def activate_program(body: ProgramActivation,request: Request):
-        same_origin(request);identity=widget_identity(request)
+        same_origin(request);identity=admin_identity(request)
         return ActivationService(repo).activate(identity.tenant_id,str(body.request_id),
             identity.user_id,body.reason,provider)
 
@@ -397,12 +396,12 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     @app.get("/api/admin/imports")
     def import_history(request: Request):
-        identity=widget_identity(request)
+        identity=admin_identity(request)
         return imports.history(identity.tenant_id)
 
     @app.post("/api/admin/imports/preview")
     def import_preview(body: ImportPreview,request: Request):
-        same_origin(request);identity=widget_identity(request)
+        same_origin(request);identity=admin_identity(request)
         client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.15) if remap_factory is RemapClient else document_client(identity)
         result=imports.preview(identity.tenant_id,body.csv_text,identity.user_id,client)
         repo.authenticate(bearer(request))
@@ -410,18 +409,18 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     @app.post("/api/admin/imports/{batch_id}/commit")
     def import_commit(batch_id: UUID,body: ImportCommit,request: Request):
-        same_origin(request);identity=widget_identity(request)
+        same_origin(request);identity=admin_identity(request)
         return imports.commit(identity.tenant_id,str(batch_id),digest=body.digest,actor=identity.user_id,reason=body.reason)
 
     @app.get("/api/admin/settlements")
     def settlement_list(request: Request,state: Literal["pending","applied","waived","superseded"]="pending",before: UUID | None=None):
-        identity=widget_identity(request)
+        identity=admin_identity(request)
         return automation.settlements.list_cases(identity.tenant_id,state=state,before=str(before) if before else None)
 
     @app.post("/api/admin/settlements/{case_id}/resolve")
     def settlement_resolve(case_id: UUID,body: SettlementDecision,request: Request):
         same_origin(request)
-        identity=widget_identity(request)
+        identity=admin_identity(request)
         case=automation.settlements.case(identity.tenant_id,str(case_id))
         if case["state"]!="pending":
             if case["decision"]==body.decision and case["reason"]==body.reason and str(case["actor_id"])==identity.user_id:
@@ -435,7 +434,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     @app.post("/api/admin/issues/{issue_id}/resolve")
     def issue_resolve(issue_id: UUID,body: IssueDecision,request: Request):
-        same_origin(request);identity=widget_identity(request)
+        same_origin(request);identity=admin_identity(request)
         with automation.ledger.transaction(identity.tenant_id) as conn:
             issue=conn.execute("SELECT order_id FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND id=%s",
                               (identity.tenant_id,str(issue_id))).fetchone()
@@ -451,13 +450,13 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     @app.get("/api/admin/automation")
     def automation_status(request: Request):
-        identity=widget_identity(request)
+        identity=admin_identity(request)
         return automation.dashboard(identity.tenant_id)
 
     @app.post("/api/admin/automation")
     async def automation_configure(request: Request):
         same_origin(request)
-        identity=widget_identity(request)
+        identity=admin_identity(request)
         # Server time only; a caller cannot backdate earning or nominate another tenant.
         if await request.body():
             raise HTTPException(422,"no configuration body accepted")
@@ -468,7 +467,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     @app.post("/api/admin/widget/setup")
     def widget_setup(request: Request):
         same_origin(request)
-        identity=widget_identity(request)
+        identity=admin_identity(request)
         marker=document_client(identity).marker_attribute(create=True)
         repo.authenticate(bearer(request))
         redemptions.bind(identity.tenant_id,marker,identity.user_id)

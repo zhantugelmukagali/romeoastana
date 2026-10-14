@@ -38,20 +38,24 @@ This is an administrator action; no production metadata was changed by the devel
 A timeout during metadata provisioning is resolved by reading the named metadata on the next attempt;
 generic document writes are not exposed by the HTTP client.
 
-Installation **Activated** is required to prepare/commit a redemption. Lifecycle installation still returns
-SettingsRequired. Do not force Activated in production: stages 3–4 (automatic accrual/returns), reconciliation
-and actual installation acceptance must pass first. Only isolated CI fixtures activate a synthetic account.
+Installation **Activated** is required to prepare/commit a redemption. Lifecycle installation returns
+SettingsRequired; administrator activation confirms Vendor API status and persists the cutoff (CUTOVER.md).
+Do not activate the customer account before actual integration acceptance.
 
-Document endpoints currently require the MoySklad **admin** role. The user-context protocol's coarse worker
-role is not treated as permission to use the application's broader token on arbitrary customer orders.
-A deliberate employee authorization policy and real non-admin acceptance are still required for rollout.
+Document endpoints permit administrators and explicitly authorized operators. Permission grants cover
+all customer orders in that tenant; they do not reproduce MoySklad document-specific restrictions.
+Administrative APIs remain admin-only. Grant revocation is checked again in the financial transaction.
 
 ## Uncertain results
 Prepared operations enter verifying before data leaves the server. An interrupted response, rejected form
 update, page close, amount mismatch or failed provider request cannot release that reservation automatically.
 A retry returns the same operation without redispatching stale form data.
-There is no general cancel/release button in this stage. Background reconciliation and an audited recovery
-workflow must be supplied in the following stages; this is a release blocker, not a hidden success path.
+The worker can finish a saved matching discount without the original browser.
+Administrators may release an attempt older than 15 minutes only after proof of an unposted,
+unpaid, unshipped original order with no marker or unsupported invoice/prepayment links.
+The immutable void is required by a database trigger. Late obsolete markers are quarantined
+for manual correction at the next reconciliation; this is not a provider-side atomic write.
+Arbitrary release of active or ambiguous orders remains unavailable. See RETURN_POLICY.md.
 
 Change disables new application until the employee saves; refresh alone does not clear dirty state.
 On a cached Open the old document state is discarded, and late results are ignored using an epoch.
@@ -61,7 +65,7 @@ Host events are accepted only from the actual parent and exact MoySklad origin.
 Tests exercise real PostgreSQL transactions and Chromium with synthetic provider/host transports.
 They do not prove the actual MoySklad permissions, schema acceptance, tax rounding, marker merge semantics,
 document editing or competing BonusPlus behavior. These remain explicit acceptance items.
-Schema 0007 adds immutable RLS-protected attempts and marker bindings. Application readiness requires 0007.
+Schema 0007 adds immutable RLS-protected attempts and marker bindings. Application readiness requires the complete current schema 0013.
 The VPS is still on its previous image/schema: do not run migrations separately from a coordinated image upgrade.
 
 Official contracts reviewed:

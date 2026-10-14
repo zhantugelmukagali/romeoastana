@@ -23,7 +23,7 @@
     </permissions>
   </access>
   <iframes>
-    <iframe type="main" sourceUrl="https://loyalty.addwise.kz/admin" useContextKey="false">
+    <iframe type="main" sourceUrl="https://loyalty.addwise.kz/settings" useContextKey="false">
       <uses><user-context/></uses>
     </iframe>
   </iframes>

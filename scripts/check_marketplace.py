@@ -59,6 +59,7 @@ assert len(frames) == 1 and frames[0].get("sourceUrl") == "https://loyalty.addwi
 assert frames[0].get("useContextKey") == "false"
 assert frames[0].find("a:uses/a:user-context", q) is not None
 assert descriptor.find("a:widgets", q) is None  # previous registration kept available
+assert widget_descriptor.find("a:iframes/a:iframe", q).get("sourceUrl") == "https://loyalty.addwise.kz/settings"
 widgets = widget_descriptor.find("a:widgets", q)
 assert len(widgets) == 2
 assert widget_descriptor.find("a:access/a:permissions/a:useOwnAttributeMetadata", q) is not None
