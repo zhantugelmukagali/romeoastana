@@ -144,6 +144,57 @@ class EventSyncTests(unittest.TestCase):
             with self.ledger.transaction(self.tenant) as conn:conn.execute("DELETE FROM bonuspro.webhook_inbox")
         with self.assertRaises(psycopg.Error):
             with self.ledger.transaction(self.tenant) as conn:conn.execute("UPDATE bonuspro.webhook_inbox SET events='[]'::jsonb")
+    def test_notification_storm_is_bounded_and_does_not_move_stream_cursor(self):
+        from psycopg.types.json import Jsonb
+        with self.ledger.transaction(self.tenant) as conn:
+            conn.execute("INSERT INTO bonuspro.webhook_inbox(tenant_id,generation,request_id,payload_hash,events) "
+                "SELECT %s::uuid,%s::uuid,gen_random_uuid(),%s,%s FROM generate_series(1,1000)",
+                (self.tenant,self.generation,"a"*64,Jsonb([self.event()])))
+        with self.assertRaises(Conflict):self.ingest()
+        self.choose("paymentin");before=self.auto.state(self.tenant)["starts_at"]
+        class Client:
+            def changed_ids_between(inner,*a):return [str(uuid4())]
+        with self.assertRaises(Conflict):self.streams.scan(self.tenant,Client(),self.now)
+        with self.ledger.transaction(self.tenant) as conn:
+            self.assertEqual(conn.execute("SELECT cursor_at FROM bonuspro.sync_streams WHERE stream='paymentin'").fetchone()["cursor_at"],before)
+        self.assertEqual(self.balance()["balance"],5000)
+
+    def test_new_change_is_prioritized_over_old_queued_history(self):
+        historical=str(uuid4())
+        with self.ledger.transaction(self.tenant) as conn:
+            conn.execute("INSERT INTO bonuspro.order_monitors(tenant_id,order_id,urgency) VALUES (%s,%s,2)",(self.tenant,historical))
+        self.auto.jobs.enqueue(self.tenant,order_id=historical,key="old-history")
+        with self.ledger.transaction(self.tenant) as conn:self.auto.hint_in(conn,self.tenant,self.fx.order)
+        self.auto.jobs.enqueue(self.tenant,order_id=self.fx.order,key="new-change")
+        claimed=self.auto.jobs.claim(self.tenant)
+        self.assertEqual(str(claimed["entity_id"]),self.fx.order)
+        self.assertEqual(claimed["priority"],0)
+
+    def test_old_completed_checks_are_bounded_and_new_hint_wakes_them(self):
+        with psycopg.connect(os.environ["TEST_ADMIN_DSN"]) as conn:
+            conn.execute("UPDATE bonuspro.order_monitors SET first_seen_at=now()-interval '2 years' WHERE tenant_id=%s AND order_id=%s",
+                (self.tenant,self.fx.order))
+        with self.ledger.transaction(self.tenant) as conn:
+            row=conn.execute("SELECT hint_version FROM bonuspro.order_monitors WHERE order_id=%s",(self.fx.order,)).fetchone()
+            self.auto.outcome_in(conn,self.tenant,self.fx.order,"credited",row["hint_version"])
+            delay=conn.execute("SELECT extract(epoch FROM next_due-now()) AS d,urgency FROM bonuspro.order_monitors WHERE order_id=%s",(self.fx.order,)).fetchone()
+            self.assertGreater(delay["d"],29*86400);self.assertEqual(delay["urgency"],2)
+            self.auto.hint_in(conn,self.tenant,self.fx.order)
+        self.assertGreater(self.auto.schedule(self.tenant),0)
+        self.assertEqual(self.balance()["balance"],5000)
+
+    def test_large_completed_history_does_not_fill_the_due_queue(self):
+        with self.ledger.transaction(self.tenant) as conn:
+            conn.execute("INSERT INTO bonuspro.order_monitors(tenant_id,order_id,outcome,next_due) "
+                "SELECT %s::uuid,gen_random_uuid(),'credited',now()+interval '1 day' FROM generate_series(1,5000)",(self.tenant,))
+            conn.execute("INSERT INTO bonuspro.order_monitors(tenant_id,order_id) "
+                "SELECT %s::uuid,gen_random_uuid() FROM generate_series(1,25)",(self.tenant,))
+        self.assertEqual(self.auto.schedule(self.tenant),20)
+        with self.ledger.transaction(self.tenant) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) AS n FROM bonuspro.jobs WHERE state='queued'").fetchone()["n"],20)
+            self.assertEqual(conn.execute("SELECT count(*) AS n FROM bonuspro.order_monitors WHERE outcome='credited' AND next_due>now()").fetchone()["n"],5000)
+        self.assertEqual(self.balance()["balance"],5000)
+
     def test_cleanup_only_removes_old_terminal_technical_rows(self):
         self.ingest();self.signals.drain(self.tenant,object())
         active=self.ingest()
@@ -183,6 +234,23 @@ class EventApiTests(unittest.TestCase):
         body=json.loads(json.dumps(self.body));body["events"][0]["accountId"]=str(uuid4())
         self.assertEqual(self.client.post(self.path,json=body).status_code,422)
         self.assertEqual(self.signals.status(self.fx.fx.tenant)["inbox"]["pending"],0)
+    def test_setup_confirms_counts_without_exposing_callback_capability(self):
+        from fastapi.testclient import TestClient
+        from bonuspro.api.app import create_app
+        from bonuspro.settings import Settings
+        outer=self
+        class Provider:
+            def __init__(inner,*a,**kw):pass
+            def ensure_webhooks(inner,url):
+                outer.assertTrue(url.startswith("https://testserver/hooks/remap/"));return 21
+        config=Settings("https://testserver",self.fx.fx.install.config,self.fx.fx.ledger.dsn,self.fx.fx.install.lifecycle_dsn)
+        with TestClient(create_app(config,store=self.fx.fx.install,remap_factory=Provider),base_url="https://testserver") as client:
+            result=client.post("/api/admin/webhooks/setup",headers=self.fx.headers)
+            self.assertEqual(result.status_code,200,result.text)
+            self.assertEqual(result.json(),{"configured":True,"hook_count":21})
+            self.assertNotIn("/hooks/",result.text)
+        self.assertTrue(self.signals.status(self.fx.fx.tenant)["configured"])
+
     def test_setup_requires_admin_and_origin(self):
         path="/api/admin/webhooks/setup"
         self.assertEqual(self.client.post(path).status_code,403)

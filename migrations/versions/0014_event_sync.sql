@@ -1,7 +1,9 @@
 ALTER TABLE bonuspro.order_monitors ADD COLUMN hint_version bigint NOT NULL DEFAULT 0 CHECK(hint_version>=0);
 ALTER TABLE bonuspro.order_monitors ADD COLUMN first_seen_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE bonuspro.order_monitors ADD COLUMN urgency smallint NOT NULL DEFAULT 1 CHECK(urgency BETWEEN 0 AND 2);
+ALTER TABLE bonuspro.jobs ADD COLUMN priority smallint NOT NULL DEFAULT 1 CHECK(priority BETWEEN 0 AND 2);
 ALTER TABLE bonuspro.jobs ADD COLUMN hint_version bigint NOT NULL DEFAULT 0 CHECK(hint_version>=0);
-GRANT UPDATE(hint_version) ON bonuspro.order_monitors TO bonuspro_app;
+GRANT UPDATE(hint_version,urgency) ON bonuspro.order_monitors TO bonuspro_app;
 
 CREATE TABLE bonuspro.sync_streams (
  tenant_id uuid NOT NULL REFERENCES bonuspro.automation_config(tenant_id),
@@ -84,8 +86,8 @@ GRANT DELETE ON bonuspro.webhook_inbox TO bonuspro_app;
 
 CREATE OR REPLACE FUNCTION bonuspro.guard_job() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF ROW(NEW.tenant_id,NEW.id,NEW.operation_key,NEW.request_hash,NEW.kind,NEW.entity_id,NEW.created_at,NEW.hint_version)
- IS DISTINCT FROM ROW(OLD.tenant_id,OLD.id,OLD.operation_key,OLD.request_hash,OLD.kind,OLD.entity_id,OLD.created_at,OLD.hint_version)
+ IF ROW(NEW.tenant_id,NEW.id,NEW.operation_key,NEW.request_hash,NEW.kind,NEW.entity_id,NEW.created_at,NEW.hint_version,NEW.priority)
+ IS DISTINCT FROM ROW(OLD.tenant_id,OLD.id,OLD.operation_key,OLD.request_hash,OLD.kind,OLD.entity_id,OLD.created_at,OLD.hint_version,OLD.priority)
  OR OLD.state IN ('done','dead') THEN
   RAISE EXCEPTION 'immutable job identity or terminal state' USING ERRCODE='23514';
  END IF;
@@ -105,3 +107,5 @@ FOR EACH ROW EXECUTE FUNCTION bonuspro.prune_terminal_job();
 GRANT DELETE ON bonuspro.jobs TO bonuspro_app;
 CREATE INDEX jobs_terminal_retention ON bonuspro.jobs(tenant_id,updated_at) WHERE state IN ('done','dead');
 CREATE INDEX inbox_terminal_retention ON bonuspro.webhook_inbox(tenant_id,completed_at) WHERE state IN ('done','discarded');
+CREATE INDEX monitor_due_priority ON bonuspro.order_monitors(tenant_id,urgency,next_due,order_id);
+CREATE INDEX jobs_queue_priority ON bonuspro.jobs(tenant_id,priority,available_at,id) WHERE state='queued';

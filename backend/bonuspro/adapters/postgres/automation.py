@@ -37,8 +37,8 @@ class Automation:
 
     @staticmethod
     def hint_in(conn,tenant,order):
-        conn.execute("INSERT INTO bonuspro.order_monitors(tenant_id,order_id) VALUES (%s,%s) "
-                     "ON CONFLICT (tenant_id,order_id) DO UPDATE SET next_due=LEAST(bonuspro.order_monitors.next_due,now()),hint_version=bonuspro.order_monitors.hint_version+1",
+        conn.execute("INSERT INTO bonuspro.order_monitors(tenant_id,order_id,urgency) VALUES (%s,%s,0) "
+                     "ON CONFLICT (tenant_id,order_id) DO UPDATE SET next_due=LEAST(bonuspro.order_monitors.next_due,now()),hint_version=bonuspro.order_monitors.hint_version+1,urgency=0",
                      (tenant,order))
 
     def discovery_complete(self,tenant,*,expected_cursor,until,orders):
@@ -54,7 +54,7 @@ class Automation:
     def schedule(self,tenant,limit=20):
         with self.ledger.transaction(tenant) as conn:
             rows=conn.execute("SELECT * FROM bonuspro.order_monitors WHERE tenant_id=%s AND next_due<=now() "
-                             "ORDER BY next_due,order_id LIMIT %s FOR UPDATE SKIP LOCKED",(tenant,limit)).fetchall()
+                             "ORDER BY urgency,next_due,order_id LIMIT %s FOR UPDATE SKIP LOCKED",(tenant,limit)).fetchall()
             for row in rows:
                 active=conn.execute("SELECT 1 FROM bonuspro.jobs WHERE tenant_id=%s AND entity_id=%s "
                                     "AND state IN ('queued','running') LIMIT 1",(tenant,row["order_id"])).fetchone()
@@ -68,11 +68,14 @@ class Automation:
     @staticmethod
     def outcome_in(conn,tenant,order,outcome,expected_hint=None):
         interval=86400 if outcome in ("credited","historical","cancelled") else (3600 if outcome=="provider_error" else 60)
-        conn.execute("UPDATE bonuspro.order_monitors SET outcome=%s,checked_at=now(),next_due=CASE "
+        conn.execute("UPDATE bonuspro.order_monitors SET outcome=%s,checked_at=now(),urgency=CASE "
+                     "WHEN %s::bigint IS NULL OR hint_version>%s THEN 0 WHEN %s IN ('credited','historical','cancelled') THEN 2 ELSE 1 END,next_due=CASE "
                      "WHEN %s::bigint IS NULL OR hint_version>%s THEN LEAST(next_due,now()+interval '60 seconds') "
                      "WHEN first_seen_at<now()-interval '30 days' AND %s IN ('waiting_payment','waiting_shipment') THEN now()+interval '1 hour' "
+                     "WHEN %s IN ('credited','historical','cancelled') AND first_seen_at<now()-interval '1 year' THEN now()+interval '30 days' "
+                     "WHEN %s IN ('credited','historical','cancelled') AND first_seen_at<now()-interval '7 days' THEN now()+interval '7 days' "
                      "ELSE now()+%s*interval '1 second' END WHERE tenant_id=%s AND order_id=%s",
-                     (outcome,expected_hint,expected_hint,outcome,interval,tenant,order))
+                     (outcome,expected_hint,expected_hint,outcome,expected_hint,expected_hint,outcome,outcome,outcome,interval,tenant,order))
 
     @staticmethod
     def issue_in(conn,tenant,order,wallet,reason,evidence_hash):

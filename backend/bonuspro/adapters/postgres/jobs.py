@@ -30,9 +30,9 @@ class Jobs:
                 raise Conflict("job idempotency key changed")
             return str(prior["id"])
         job=str(uuid4())
-        conn.execute("INSERT INTO bonuspro.jobs(tenant_id,id,operation_key,request_hash,kind,entity_id,hint_version) "
-                     "VALUES (%s,%s,%s,%s,'reconcile_order',%s,COALESCE((SELECT hint_version FROM bonuspro.order_monitors WHERE tenant_id=%s AND order_id=%s),0))",
-                     (tenant,job,key,digest,order,tenant,order))
+        conn.execute("INSERT INTO bonuspro.jobs(tenant_id,id,operation_key,request_hash,kind,entity_id,hint_version,priority) "
+                     "VALUES (%s,%s,%s,%s,'reconcile_order',%s,COALESCE((SELECT hint_version FROM bonuspro.order_monitors WHERE tenant_id=%s AND order_id=%s),0),COALESCE((SELECT urgency FROM bonuspro.order_monitors WHERE tenant_id=%s AND order_id=%s),1))",
+                     (tenant,job,key,digest,order,tenant,order,tenant,order))
         return job
 
     def enqueue(self, tenant_id, *, order_id, key):
@@ -57,7 +57,7 @@ class Jobs:
                 "SELECT * FROM bonuspro.jobs WHERE tenant_id=%s AND attempts<8 AND "
                 "((state='queued' AND available_at<=clock_timestamp()) OR "
                 "(state='running' AND lease_until<=clock_timestamp())) "
-                "ORDER BY available_at,id LIMIT 1 FOR UPDATE SKIP LOCKED",(tenant,)).fetchone()
+                "ORDER BY priority,available_at,id LIMIT 1 FOR UPDATE SKIP LOCKED",(tenant,)).fetchone()
             if not row:
                 return None
             lease=str(uuid4())

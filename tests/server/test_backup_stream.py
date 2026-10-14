@@ -25,6 +25,12 @@ class BackupStreamTests(unittest.TestCase):
         for value in (encoded[:-1],encoded[:-20],encoded+b"x",encoded[:48]):
             with self.assertRaises(InvalidBackup):self.decode(value)
     def test_record_reordering_and_unbounded_length_are_rejected(self):
+        import struct
+        value=self.encode(b"a"*(CHUNK+5))
+        first_end=48+4+struct.unpack(">I",value[48:52])[0]
+        second_end=first_end+4+struct.unpack(">I",value[first_end:first_end+4])[0]
+        with self.assertRaises(InvalidBackup):
+            self.decode(value[:48]+value[first_end:second_end]+value[48:first_end]+value[second_end:])
         encoded=bytearray(self.encode(b"secret"));encoded[48:52]=b"\xff"*4
         with self.assertRaises(InvalidBackup):self.decode(encoded)
     def test_reader_handles_short_reads(self):
