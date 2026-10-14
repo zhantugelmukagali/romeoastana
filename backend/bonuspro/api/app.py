@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.exceptions import RequestValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.datastructures import MutableHeaders
 from pydantic import BaseModel, Field, SecretStr, ConfigDict, field_validator, StrictInt, StrictBool
 
 from bonuspro.settings import Settings
@@ -130,6 +131,31 @@ class RedemptionRequest(BaseModel):
     source_hash: str = Field(pattern="^[0-9a-f]{64}$")
 
 
+class SecurityHeaders:
+    """Add headers directly to ASGI response-start; never wrap or consume its body."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+
+        async def secured_send(message):
+            if message["type"] == "http.response.start":
+                message = dict(message)
+                message["headers"] = list(message.get("headers", []))
+                headers = MutableHeaders(scope=message)
+                headers["Cache-Control"] = "no-store"
+                headers["X-Content-Type-Options"] = "nosniff"
+                headers["Referrer-Policy"] = "no-referrer"
+                headers["Content-Security-Policy"] = (
+                    "default-src 'self'; frame-ancestors https://online.moysklad.ru; "
+                    "object-src 'none'; base-uri 'none'")
+            await send(message)
+
+        await self.app(scope, receive, secured_send)
+
+
 class BodyLimit:
     def __init__(self, app, maximum=65536):
         self.app, self.maximum = app, maximum
@@ -173,14 +199,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     app.add_middleware(BodyLimit)
     app.add_middleware(TrustedHostMiddleware,allowed_hosts=[urlsplit(config.origin).hostname])
 
-    @app.middleware("http")
-    async def headers(request, call_next):
-        response = await call_next(request)
-        response.headers["Cache-Control"]="no-store"
-        response.headers["X-Content-Type-Options"]="nosniff"
-        response.headers["Referrer-Policy"]="no-referrer"
-        response.headers["Content-Security-Policy"]="default-src 'self'; frame-ancestors https://online.moysklad.ru; object-src 'none'; base-uri 'none'"
-        return response
+    app.add_middleware(SecurityHeaders)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, error):
