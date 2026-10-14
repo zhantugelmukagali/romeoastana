@@ -1,5 +1,6 @@
 import time
 import unittest
+from unittest.mock import patch
 from uuid import uuid4
 import jwt
 import httpx
@@ -40,13 +41,62 @@ class SecurityTests(unittest.TestCase):
     def test_time_bounds_and_required_jti(self):
         now=int(time.time())
         cases=[self.claims(exp=now-1),self.claims(iat=now+10),
-               self.claims(exp=now+1000),self.claims(jti=""),self.claims(iat=True)]
+               self.claims(exp=now-2,iat=now-1),self.claims(jti=""),self.claims(iat=True)]
         missing=self.claims()
         del missing["jti"]
         cases.append(missing)
         for claims in cases:
             with self.assertRaises(AuthenticationFailed):
                 self.config.verify_vendor(jwt.encode(claims,self.config.vendor_secret,algorithm="HS256"))
+
+
+    def test_inbound_lifetime_is_not_outbound_300_second_limit(self):
+        claims=self.claims(exp=int(time.time())+3600)
+        token=jwt.encode(claims,self.config.vendor_secret,algorithm="HS256")
+        self.assertEqual(self.config.verify_vendor(token)["exp"],claims["exp"])
+        outbound=jwt.decode(self.config.outbound_jwt(),self.config.vendor_secret,algorithms=["HS256"])
+        self.assertLessEqual(outbound["exp"]-outbound["iat"],300)
+
+    def test_fractional_numeric_dates_preserve_expiration_boundary(self):
+        with patch("bonuspro.security.time.time",return_value=2000000000.5):
+            claims=self.claims(iat=2000000000.25,exp=2000000000.75)
+            token=jwt.encode(claims,self.config.vendor_secret,algorithm="HS256")
+            actual=self.config.verify_vendor(token)
+            self.assertEqual(actual["iat"],2000000000)
+            self.assertEqual(actual["exp"],2000000000.75)
+            with patch("bonuspro.security.time.time",return_value=2000000000.75):
+                with self.assertRaises(AuthenticationFailed):
+                    self.config.verify_vendor(token)
+
+    def test_invalid_numeric_dates_and_not_before_are_rejected(self):
+        now=time.time()
+        for override in ({"iat":"1"},{"exp":True},{"exp":float("nan")},
+                         {"exp":float("inf")},{"iat":-1},{"exp":10**400},
+                         {"nbf":now+60},{"nbf":"1"},{"nbf":float("nan")},
+                         {"iat":now+0.5}):
+            token=jwt.encode(self.claims(**override),self.config.vendor_secret,algorithm="HS256")
+            with self.assertRaises(AuthenticationFailed):
+                self.config.verify_vendor(token)
+
+    def test_authentication_diagnostics_do_not_log_secrets_or_claims(self):
+        claims=self.claims(jti="private-replay-id",arbitrary="private-payload")
+        wrong=jwt.encode(claims,"wrong-key-"+"z"*32,algorithm="HS256")
+        with self.assertLogs("bonuspro.vendor_auth",level="WARNING") as logs:
+            with self.assertRaises(AuthenticationFailed):
+                self.config.verify_vendor(wrong)
+        self.assertEqual(len(logs.output),1)
+        self.assertIn("reason=signature",logs.output[0])
+        for private in (wrong,self.config.vendor_secret,"private-replay-id","private-payload"):
+            self.assertNotIn(private,"".join(logs.output))
+
+    def test_expired_token_diagnostic_is_specific_and_redacted(self):
+        claims=self.claims(exp=int(time.time())-1)
+        token=jwt.encode(claims,self.config.vendor_secret,algorithm="HS256")
+        with self.assertLogs("bonuspro.vendor_auth",level="WARNING") as logs:
+            with self.assertRaises(AuthenticationFailed):
+                self.config.verify_vendor(token)
+        self.assertIn("reason=expired",logs.output[0])
+        self.assertNotIn(token,"".join(logs.output))
 
     def test_credentials_are_encrypted_and_bound_to_tenant(self):
         account=str(uuid4())

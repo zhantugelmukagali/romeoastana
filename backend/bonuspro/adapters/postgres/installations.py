@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 from hashlib import sha256
 import json
+import logging
 import secrets
 from uuid import UUID, uuid4
 from datetime import datetime, timezone
@@ -45,6 +46,7 @@ class Installations:
                 "ON CONFLICT DO NOTHING RETURNING jti", (claims["jti"],claims["exp"])
             ).fetchone()
             if not consumed:
+                logging.getLogger("bonuspro.vendor_auth").warning("VENDOR_AUTH_REJECT reason=replay")
                 raise AuthenticationFailed("repeated authentication token")
             conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("installation/"+account,))
             row = conn.execute("SELECT * FROM bonuspro.installations WHERE tenant_id=%s FOR UPDATE",

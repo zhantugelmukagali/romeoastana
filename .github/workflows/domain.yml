@@ -1,7 +1,7 @@
 name: Domain checks
 on:
   push:
-    branches: [main, bonuspro/rebuild]
+    branches: [main, bonuspro/rebuild, bonuspro/vendor-auth-fix]
   pull_request:
 permissions:
   contents: read
