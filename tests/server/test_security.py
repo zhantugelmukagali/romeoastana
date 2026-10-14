@@ -56,13 +56,14 @@ class SecurityTests(unittest.TestCase):
             self.config.verify_vendor(token)
 
     def test_header_reasons_are_specific_and_never_echo_header_values(self):
+        # PyJWT rejects unsupported/malformed critical headers during parsing.
         cases=[
             ({"alg":"HS384","typ":"JWT"},"HS384","header_algorithm_hs384"),
             ({"alg":"HS512","typ":"JWT"},"HS512","header_algorithm_hs512"),
             ({"typ":"private-untrusted-header"},"HS256","header_type"),
             ({"typ":True},"HS256","header_type"),
-            ({"crit":["private-untrusted-header"]},"HS256","header_critical"),
-            ({"crit":[]},"HS256","header_critical"),
+            ({"crit":["private-untrusted-header"]},"HS256","jwt_format"),
+            ({"crit":[]},"HS256","jwt_format"),
         ]
         for headers,algorithm,reason in cases:
             token=jwt.encode(self.claims(),self.config.vendor_secret,algorithm=algorithm,headers=headers)
