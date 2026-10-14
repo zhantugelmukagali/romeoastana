@@ -118,6 +118,16 @@ async function automationStatus(){
   $("automation-details").replaceChildren();
   for(const [key,count] of Object.entries(data.orders||{}))
     $("automation-details").append(node("p",(outcomes[key]||"На проверке")+": "+count));
+  if(data.jobs?.dead)$("automation-details").append(node("p","Заданий с исчерпанными попытками: "+data.jobs.dead+". Нужна проверка подключения и документов."));
+  if(data.attention?.pending_returns)$("automation-details").append(node("p","Возвратов на решении администратора: "+data.attention.pending_returns+". Откройте «Возвраты и сверка»."));
+  if(data.attention?.stale_reservations)$("automation-details").append(node("p","Списаний без подтверждения более 15 минут: "+data.attention.stale_reservations+". Резервы сохранены; проверьте исходные заказы."));
+  if(config?.heartbeat_at&&Date.now()-Date.parse(config.heartbeat_at)>600000)
+    $("automation-details").append(node("p","Обработка не обновлялась более 10 минут. Проверьте фоновый обработчик."));
+  for(const item of data.unverified||[]){
+    const line=node("p","Ожидает подтверждения: "+item.points+" бонусов · ");
+    const link=node("a","Открыть заказ");link.href="https://online.moysklad.ru/app/#customerorder/edit?id="+encodeURIComponent(item.order_id);
+    link.target="_blank";link.rel="noopener noreferrer";line.append(link);$("automation-details").append(line);
+  }
   if(data.issues?.length)$("automation-details").append(node("p","Есть расхождения в документах. Списание по затронутым клиентам приостановлено до разбора."));
 }
 $("refresh-automation").onclick=async()=>{

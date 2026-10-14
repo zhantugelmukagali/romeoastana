@@ -233,5 +233,11 @@ class Automation:
             issues=conn.execute("SELECT id,order_id,reason,created_at FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND resolved_at IS NULL "
                                 "ORDER BY created_at DESC LIMIT 50",(tenant,)).fetchall()
             jobs=conn.execute("SELECT state,count(*) AS n FROM bonuspro.jobs WHERE tenant_id=%s GROUP BY state",(tenant,)).fetchall()
+            stale=conn.execute("SELECT count(*) AS n FROM bonuspro.reservations WHERE tenant_id=%s AND state='verifying' "
+                               "AND created_at<clock_timestamp()-interval '15 minutes'",(tenant,)).fetchone()["n"]
+            pending=conn.execute("SELECT count(*) AS n FROM bonuspro.settlement_cases WHERE tenant_id=%s AND state='pending'",(tenant,)).fetchone()["n"]
+            queue=conn.execute("SELECT min(created_at) AS oldest FROM bonuspro.jobs WHERE tenant_id=%s AND state IN ('queued','running')",(tenant,)).fetchone()["oldest"]
+            unknown=conn.execute("SELECT order_id,points,created_at FROM bonuspro.reservations WHERE tenant_id=%s AND state='verifying' ORDER BY created_at LIMIT 50",(tenant,)).fetchall()
         return dict(configuration=self.state(tenant),orders={r["outcome"]:r["n"] for r in counts},
-                    jobs={r["state"]:r["n"] for r in jobs},issues=issues)
+                    jobs={r["state"]:r["n"] for r in jobs},issues=issues,
+                    attention=dict(stale_reservations=stale,pending_returns=pending,oldest_job=queue),unverified=unknown)
