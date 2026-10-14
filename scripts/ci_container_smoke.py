@@ -59,6 +59,8 @@ def main():
             with urllib.request.urlopen(request,timeout=5) as response:
                 assert response.status==200,path
                 assert response.headers["X-Content-Type-Options"]=="nosniff"
+        from ci_static_transport import check_static_transport
+        check_static_transport()
         request=urllib.request.Request("http://127.0.0.1:18080/api/admin/returns",headers={"Host":"ci.bonuspro.test"})
         try:
             urllib.request.urlopen(request,timeout=5)
