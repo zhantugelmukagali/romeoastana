@@ -93,7 +93,10 @@ class Redemptions:
             if conn.execute("SELECT 1 FROM bonuspro.return_cases WHERE tenant_id=%s AND wallet_id=%s AND state='pending'",
                             (tenant,wallet)).fetchone():
                 raise Conflict("return review required")
-            if conn.execute("SELECT 1 FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND wallet_id=%s LIMIT 1",
+            if conn.execute("SELECT 1 FROM bonuspro.settlement_cases WHERE tenant_id=%s AND wallet_id=%s AND state='pending' LIMIT 1",
+                            (tenant,wallet)).fetchone():
+                raise Conflict("return settlement review required")
+            if conn.execute("SELECT 1 FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND wallet_id=%s AND resolved_at IS NULL LIMIT 1",
                             (tenant,wallet)).fetchone():
                 raise Conflict("wallet requires reconciliation review")
             funds=self.ledger._snapshot(conn,tenant,wallet)

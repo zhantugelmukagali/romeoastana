@@ -7,7 +7,6 @@ amounts. Preview is informational, not a reservation and not authorization to de
 from dataclasses import asdict, dataclass
 from uuid import uuid4
 
-from bonuspro.adapters.postgres.automation import Automation
 from bonuspro.domain.finance import Rules, natural, quote, spend_limit
 from bonuspro.adapters.postgres.ledger import (
     Ledger, Conflict, NotFound, fingerprint, uuid_value, text_value,
@@ -148,11 +147,15 @@ class Checkout:
                              "(tenant_id,order_id,counterparty_id,wallet_id,rule_version,initial_source_hash,enrolled_by) "
                              "VALUES (%s,%s,%s,%s,%s,%s,%s)",
                              (tenant,snapshot.order_id,snapshot.counterparty_id,wallet,row["version"],source_hash,actor))
+            from bonuspro.adapters.postgres.automation import Automation
             Automation.hint_in(conn,tenant,snapshot.order_id)
             funds = self.ledger._snapshot(conn,tenant,wallet)
             pending = conn.execute("SELECT 1 FROM bonuspro.return_cases WHERE tenant_id=%s AND wallet_id=%s "
                                    "AND state='pending' LIMIT 1",(tenant,wallet)).fetchone()
-            review = conn.execute("SELECT 1 FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND wallet_id=%s LIMIT 1",
+            settlement = conn.execute("SELECT 1 FROM bonuspro.settlement_cases WHERE tenant_id=%s AND wallet_id=%s AND state='pending' LIMIT 1",
+                                      (tenant,wallet)).fetchone()
+            pending = pending or settlement
+            review = conn.execute("SELECT 1 FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND wallet_id=%s AND resolved_at IS NULL LIMIT 1",
                                   (tenant,wallet)).fetchone()
             pending = pending or review
             existing = conn.execute("SELECT state FROM bonuspro.reservations WHERE tenant_id=%s AND order_id=%s "

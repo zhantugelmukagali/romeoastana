@@ -24,6 +24,7 @@ class Fixture:
         for line in self.ship_lines:line["id"]=str(uuid4())
         self.pay={**copy.deepcopy(self.doc),"id":self.payment,"meta":{"type":"paymentin"},
                   "operations":[{**ref("customerorder",self.order),"linkedSum":1200000}]}
+        self.returns=[];self.return_lines={}
         self.include_ship=True;self.include_pay=True;self.on_demand=False;self.reads=0;self.mutate=False
     def order_evidence(self,identity):
         self.reads+=1
@@ -31,8 +32,17 @@ class Fixture:
         return OrderEvidence(copy.deepcopy(self.doc),tuple(copy.deepcopy(self.lines)),
             (copy.deepcopy(self.pay),) if self.include_pay else (),
             (copy.deepcopy(self.ship),) if self.include_ship else ())
-    def positions(self,*args):return copy.deepcopy(self.ship_lines)
-    def linked(self,*args):return [copy.deepcopy(self.pay)] if self.on_demand else []
+    def positions(self,kind,identity):
+        return copy.deepcopy(self.return_lines[identity] if kind=="salesreturn" else self.ship_lines)
+    def linked(self,doc,field,allowed):
+        if field=="returns":return copy.deepcopy(self.returns)
+        return [copy.deepcopy(self.pay)] if self.on_demand else []
+    def return_goods(self,quantity=1):
+        identity=str(uuid4())
+        doc={**copy.deepcopy(self.ship),"id":identity,"demand":ref("demand",self.demand),"sum":int(1000000*quantity)}
+        lines=[{**copy.deepcopy(self.ship_lines[0]),"id":str(uuid4()),"quantity":quantity}]
+        self.returns.append(doc);self.return_lines[identity]=lines
+        return doc
     def entity(self,*args):return {"isoCode":"KZT"}
     def read(self):return FulfillmentReader(self).read(self.order)
 
@@ -88,8 +98,25 @@ class FulfillmentTests(unittest.TestCase):
     def test_unposted_shipment_and_returns_do_not_earn(self):
         self.fx.ship["applicable"]=False
         self.assertEqual(self.fx.read().outcome,"waiting_shipment")
-        self.fx.ship["applicable"]=True;self.fx.ship["returns"]=[ref("salesreturn")]
+        self.fx.ship["applicable"]=True;self.fx.return_goods()
         self.assertEqual(self.fx.read().outcome,"return_review")
+    def test_partial_return_has_verified_quantities_and_undo_is_observed(self):
+        from decimal import Decimal
+        returned=self.fx.return_goods(Decimal("0.5"))
+        proof=self.fx.read()
+        self.assertEqual(proof.returned[0].quantity,Decimal("0.5"))
+        self.assertTrue(proof.full_shipment and proof.full_payment)
+        returned["applicable"]=False
+        self.assertEqual(self.fx.read().outcome,"eligible")
+    def test_excessive_return_wrong_demand_and_unposted_parent_fail(self):
+        returned=self.fx.return_goods(2)
+        with self.assertRaises(InvalidDocument):self.fx.read()
+        self.fx.return_lines[returned["id"]][0]["quantity"]=1;returned["sum"]=1000000
+        returned["demand"]=ref("demand")
+        with self.assertRaises(InvalidDocument):self.fx.read()
+        returned["demand"]=ref("demand",self.fx.demand);self.fx.ship["applicable"]=False
+        with self.assertRaises(InvalidDocument):self.fx.read()
+
     def test_cancelled_and_unstable_graph_do_not_earn(self):
         self.fx.doc["applicable"]=False
         self.assertEqual(self.fx.read().outcome,"cancelled")

@@ -113,13 +113,13 @@ class Ledger:
             return self._snapshot(conn, tenant, wallet)
 
     @staticmethod
-    def _post(conn, tenant, wallet, operation_key, request_hash, delta, kind, actor, reason, reservation=None, credit_ref=None):
+    def _post(conn, tenant, wallet, operation_key, request_hash, delta, kind, actor, reason, reservation=None, credit_ref=None, settlement_event=None):
         transaction_id = uuid4()
         conn.execute(
             "INSERT INTO bonuspro.ledger_transactions "
-            "(tenant_id,id,wallet_id,operation_key,request_hash,kind,delta,reservation_id,actor_id,reason,credit_ref_id) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (tenant, transaction_id, wallet, operation_key, request_hash, kind, delta, reservation, actor, reason, credit_ref),
+            "(tenant_id,id,wallet_id,operation_key,request_hash,kind,delta,reservation_id,actor_id,reason,credit_ref_id,settlement_event_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (tenant, transaction_id, wallet, operation_key, request_hash, kind, delta, reservation, actor, reason, credit_ref, settlement_event),
         )
         with conn.cursor() as cur:
             cur.executemany(
@@ -180,7 +180,10 @@ class Ledger:
             if conn.execute("SELECT 1 FROM bonuspro.return_cases WHERE tenant_id=%s AND wallet_id=%s "
                             "AND state='pending' LIMIT 1", (tenant, wallet)).fetchone():
                 raise Conflict("wallet requires administrative return review")
-            if conn.execute("SELECT 1 FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND wallet_id=%s LIMIT 1",
+            if conn.execute("SELECT 1 FROM bonuspro.settlement_cases WHERE tenant_id=%s AND wallet_id=%s AND state='pending' LIMIT 1",
+                            (tenant,wallet)).fetchone():
+                raise Conflict("return settlement review required")
+            if conn.execute("SELECT 1 FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND wallet_id=%s AND resolved_at IS NULL LIMIT 1",
                             (tenant,wallet)).fetchone():
                 raise Conflict("wallet requires reconciliation review")
             available = self._snapshot(conn, tenant, wallet)["available"]

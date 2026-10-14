@@ -58,6 +58,10 @@ class Fulfillment:
     outcome: str
     evidence_hash: str
     deadline: float
+    returned: tuple = ()
+    full_shipment: bool = False
+    full_payment: bool = False
+    cancel_safe: bool = False
 
 
 class FulfillmentReader:
@@ -69,6 +73,7 @@ class FulfillmentReader:
         if len(evidence.demands)>20 or len(evidence.payments)>40:
             raise InvalidDocument("too many related documents for one reconciliation")
         demands=[]
+        seen_returns=set()
         payments={(p["meta"]["type"]+"/"+uuid(p["id"])):p for p in evidence.payments}
         for demand in evidence.demands:
             did=uuid(demand["id"])
@@ -80,7 +85,14 @@ class FulfillmentReader:
                 payments[key]=payment
             if len(payments)>40:
                 raise InvalidDocument("too many payments")
-            demands.append((demand,positions))
+            returns=[]
+            for returned in self.client.linked(demand,"returns",{"salesreturn"}):
+                rid=uuid(returned["id"])
+                if rid in seen_returns or len(seen_returns)>=40:
+                    raise InvalidDocument("duplicate or excessive returns")
+                seen_returns.add(rid)
+                returns.append((returned,self.client.positions("salesreturn",rid)))
+            demands.append((demand,positions,returns))
         return evidence,demands,payments
 
     def read(self,order_id,*,marker_id=None):
@@ -95,26 +107,37 @@ class FulfillmentReader:
         doc=evidence.order
         saved=normalize_order(self.client,evidence,marker_id=marker_id,allow_fulfilled=True)
         created=moment(doc.get("created"))
-        if saved.snapshot.cancelled:
-            return Fulfillment(saved,created,0,0,"cancelled",digest(second),start+120)
         posted=[]
         paid=0
-        has_returns=False
-        for demand,rows in demands:
+        returned_lines=[]
+        for demand,rows,returns in demands:
             if link(demand,"customerOrder",{"customerorder"})[1]!=saved.snapshot.order_id:
                 raise InvalidDocument("shipment belongs to another order")
             party_check(demand,doc)
-            returns=demand.get("returns",[])
-            if not isinstance(returns,list):
-                raise InvalidDocument("invalid return links")
-            has_returns=has_returns or bool(returns)
-            if not demand["applicable"]:
-                continue
             normalized=normalize_order(self.client,OrderEvidence(
                 {**demand,"payedSum":0,"shippedSum":0},tuple(rows),(),()),allow_fulfilled=True)
             if normalized.vat_included!=saved.vat_included or normalized.vat_enabled!=saved.vat_enabled:
                 raise InvalidDocument("shipment tax mismatch")
-            posted.append(normalized)
+            demand_returns=[]
+            for returned,positions in returns:
+                if link(returned,"demand",{"demand"})[1]!=uuid(demand["id"]):
+                    raise InvalidDocument("return belongs to another shipment")
+                party_check(returned,doc)
+                if not returned["applicable"]:
+                    continue
+                if not demand["applicable"]:
+                    raise InvalidDocument("posted return references unposted shipment")
+                value=normalize_order(self.client,OrderEvidence(
+                    {**returned,"payedSum":0,"shippedSum":0},tuple(positions),(),()),allow_fulfilled=True)
+                if value.vat_included!=saved.vat_included or value.vat_enabled!=saved.vat_enabled:
+                    raise InvalidDocument("return tax mismatch")
+                demand_returns.extend(value.lines)
+            shipped_basket=basket(normalized.lines)
+            if any(k not in shipped_basket or qty>shipped_basket[k] for k,qty in basket(demand_returns).items()):
+                raise InvalidDocument("returned quantity exceeds matching shipment")
+            returned_lines.extend(demand_returns)
+            if demand["applicable"]:
+                posted.append(normalized)
         posted_ids={x.snapshot.order_id for x in posted}
         for payment in payments.values():
             party_check(payment,doc)
@@ -140,8 +163,8 @@ class FulfillmentReader:
         shipped=sum(x.snapshot.total_minor for x in posted)
         actual=basket([line for demand in posted for line in demand.lines])
         expected=basket(saved.lines)
-        if has_returns:
-            outcome="return_review"
+        if saved.snapshot.cancelled:
+            outcome="cancelled"
         elif actual!=expected:
             # Partial shipment waits; alien lines/over-shipment require review, never full earning.
             outcome="waiting_shipment" if all(k in expected and q<=expected[k] for k,q in actual.items()) else "document_review"
@@ -150,5 +173,8 @@ class FulfillmentReader:
         elif paid<saved.snapshot.total_minor:
             outcome="waiting_payment"
         else:
-            outcome="eligible"
-        return Fulfillment(saved,created,paid,shipped,outcome,digest(second),start+120)
+            outcome="return_review" if returned_lines else "eligible"
+        return Fulfillment(saved,created,paid,shipped,outcome,digest(second),start+120,
+                           tuple(returned_lines),actual==expected and shipped==saved.snapshot.total_minor,
+                           paid>=saved.snapshot.total_minor,
+                           saved.snapshot.cancelled and not posted and paid==0)

@@ -24,6 +24,7 @@ from bonuspro.adapters.postgres.redemptions import Redemptions
 from bonuspro.adapters.postgres.automation import Automation
 from bonuspro.adapters.moysklad.remap import RemapClient, RemapError, RetryLater, AccessDenied, EntityMissing
 from bonuspro.adapters.moysklad.order import read_order
+from bonuspro.adapters.moysklad.fulfillment import FulfillmentReader
 
 REMAP = "https://api.moysklad.ru/api/remap/1.2"
 
@@ -59,6 +60,21 @@ class ReturnDecision(BaseModel):
     def nonblank(cls,value):
         if not value.strip():
             raise ValueError("reason is required")
+        return value.strip()
+
+
+class SettlementDecision(ReturnDecision):
+    decision: Literal["apply","waive"]
+
+
+class IssueDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str = Field(min_length=1,max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def nonblank(cls,value):
+        if not value.strip():raise ValueError("reason required")
         return value.strip()
 
 
@@ -198,9 +214,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         try:
             with psycopg.connect(config.database_url,connect_timeout=3) as conn:
                 conn.execute("SET LOCAL statement_timeout='3s'")
-                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues')").fetchone()
+                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events')").fetchone()
                 revision = conn.execute("SELECT version_num FROM public.alembic_version").fetchall()
-                if not all(exists) or revision != [("0008",)]:
+                if not all(exists) or revision != [("0009",)]:
                     raise RuntimeError("missing schema")
             return {"status":"ready"}
         except (psycopg.Error,RuntimeError):
@@ -303,6 +319,42 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     def document_client(identity):
         return remap_factory(repo.remap_token(identity.tenant_id),identity.tenant_id)
+
+    @app.get("/api/admin/settlements")
+    def settlement_list(request: Request,state: Literal["pending","applied","waived","superseded"]="pending",before: UUID | None=None):
+        identity=widget_identity(request)
+        return automation.settlements.list_cases(identity.tenant_id,state=state,before=str(before) if before else None)
+
+    @app.post("/api/admin/settlements/{case_id}/resolve")
+    def settlement_resolve(case_id: UUID,body: SettlementDecision,request: Request):
+        same_origin(request)
+        identity=widget_identity(request)
+        case=automation.settlements.case(identity.tenant_id,str(case_id))
+        if case["state"]!="pending":
+            if case["decision"]==body.decision and case["reason"]==body.reason and str(case["actor_id"])==identity.user_id:
+                return {"state":case["state"]}
+            raise Conflict("case already resolved")
+        client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.15) if remap_factory is RemapClient else document_client(identity)
+        proof=FulfillmentReader(client).read(str(case["order_id"]),marker_id=redemptions.binding(identity.tenant_id))
+        repo.authenticate(bearer(request))
+        return automation.resolve_settlement(identity.tenant_id,str(case_id),proof,
+            decision=body.decision,reason=body.reason,actor=identity.user_id)
+
+    @app.post("/api/admin/issues/{issue_id}/resolve")
+    def issue_resolve(issue_id: UUID,body: IssueDecision,request: Request):
+        same_origin(request);identity=widget_identity(request)
+        with automation.ledger.transaction(identity.tenant_id) as conn:
+            issue=conn.execute("SELECT order_id FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND id=%s",
+                              (identity.tenant_id,str(issue_id))).fetchone()
+            if not issue:raise NotFound("issue missing")
+        client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.15) if remap_factory is RemapClient else document_client(identity)
+        proof=FulfillmentReader(client).read(str(issue["order_id"]),marker_id=redemptions.binding(identity.tenant_id))
+        repo.authenticate(bearer(request))
+        return automation.resolve_issue(identity.tenant_id,str(issue_id),proof,actor=identity.user_id,reason=body.reason)
+
+    @app.get("/reconciliation")
+    def reconciliation_page():
+        return FileResponse(web / "reconciliation.html")
 
     @app.get("/api/admin/automation")
     def automation_status(request: Request):

@@ -89,7 +89,7 @@ class AutomationTests(unittest.TestCase):
             list(pool.map(lambda job:self.a.complete(self.tenant,job,proof),jobs))
         self.assertEqual(self.balance()["balance"],5500)
     def test_changed_credited_order_blocks_new_spend_without_negative_balance(self):
-        self.run_proof();self.run_proof(self.proof(outcome="waiting_payment"))
+        self.run_proof();self.run_proof(self.proof(outcome="document_review"))
         self.assertEqual(self.balance()["balance"],5500)
         with self.assertRaises(Conflict):self.fx.prepare()
         self.assertEqual(self.outcome(),"document_review")

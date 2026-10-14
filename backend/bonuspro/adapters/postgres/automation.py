@@ -4,6 +4,7 @@ from uuid import uuid4
 import time
 from bonuspro.adapters.postgres.ledger import Ledger, Conflict, VerifiedDiscount, fingerprint, uuid_value, MAX_POINTS
 from bonuspro.adapters.postgres.jobs import Jobs
+from bonuspro.adapters.postgres.settlements import Settlements
 from bonuspro.domain.finance import Rules, earned_points
 
 
@@ -11,6 +12,7 @@ class Automation:
     def __init__(self,ledger: Ledger):
         self.ledger=ledger
         self.jobs=Jobs(ledger)
+        self.settlements=Settlements(ledger)
 
     def configure(self,tenant,actor):
         tenant,actor=map(uuid_value,(tenant,actor))
@@ -74,7 +76,7 @@ class Automation:
         conn.execute("INSERT INTO bonuspro.reconciliation_issues(tenant_id,order_id,wallet_id,reason,evidence_hash) "
                      "VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",(tenant,order,wallet,reason,evidence_hash))
 
-    def apply_in(self,conn,tenant,job,proof):
+    def apply_in(self,conn,tenant,job,proof,*,resolution=None,actor=None):
         if time.monotonic()>proof.deadline or str(job["entity_id"])!=proof.saved.snapshot.order_id:
             raise Conflict("stale or mismatched evidence")
         saved=proof.saved;s=saved.snapshot
@@ -90,13 +92,11 @@ class Automation:
         context=conn.execute("SELECT * FROM bonuspro.order_contexts WHERE tenant_id=%s AND order_id=%s",(tenant,s.order_id)).fetchone()
         prior=conn.execute("SELECT * FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s",(tenant,s.order_id)).fetchone()
         financial_hash=fingerprint(saved.financial())
-        if prior:
-            if prior["financial_hash"]!=financial_hash or prior["saved_marker"]!=saved.marker or proof.outcome!="eligible":
-                self.ledger._wallet_lock(conn,tenant,str(prior["wallet_id"]))
-                self.issue_in(conn,tenant,s.order_id,str(prior["wallet_id"]),"changed_credited_order",proof.evidence_hash)
-                self.outcome_in(conn,tenant,s.order_id,"document_review")
-            else:
-                self.outcome_in(conn,tenant,s.order_id,"credited")
+        if prior and (prior["financial_hash"]!=financial_hash or prior["saved_marker"]!=saved.marker or proof.outcome=="document_review"):
+            self.ledger._wallet_lock(conn,tenant,str(prior["wallet_id"]))
+            self.issue_in(conn,tenant,s.order_id,str(prior["wallet_id"]),"changed_credited_order",proof.evidence_hash)
+            self.outcome_in(conn,tenant,s.order_id,"document_review")
+            if resolution:raise Conflict("correct the sale document before resolving its return")
             return
         attempt=conn.execute("SELECT a.*,r.quote_hash,r.points,r.state FROM bonuspro.redemption_attempts a "
             "JOIN bonuspro.reservations r ON r.tenant_id=a.tenant_id AND r.id=a.id WHERE a.tenant_id=%s AND a.order_id=%s "
@@ -104,7 +104,7 @@ class Automation:
             (tenant,s.order_id)).fetchone()
         bonus_minor=0
         if attempt:
-            if saved.marker!=attempt["marker"] or saved.financial()!=attempt["plan"]["after"] or s.cancelled:
+            if saved.marker!=attempt["marker"] or saved.financial()!=attempt["plan"]["after"] :
                 self.outcome_in(conn,tenant,s.order_id,"redemption_pending")
                 return
             self.ledger.confirm_discount_in(conn,tenant,str(attempt["id"]),proof=VerifiedDiscount(
@@ -112,6 +112,13 @@ class Automation:
             bonus_minor=attempt["points"]*100
         elif saved.marker:
             self.outcome_in(conn,tenant,s.order_id,"document_review")
+            return
+        if prior:
+            rule=conn.execute("SELECT * FROM bonuspro.rule_versions WHERE tenant_id=%s AND version=%s",
+                              (tenant,context["rule_version"])).fetchone()
+            outcome=self.settlements.apply_in(conn,tenant,proof,context,prior,attempt,
+                Rules(rule["earn_bps"],rule["spend_bps"]),actor or str(config["actor_id"]),resolution=resolution)
+            self.outcome_in(conn,tenant,s.order_id,outcome)
             return
         if proof.created_at<config["starts_at"]:
             self.outcome_in(conn,tenant,s.order_id,"historical")
@@ -137,13 +144,11 @@ class Automation:
                 (tenant,s.order_id,s.counterparty_id,wallet,rule["version"],saved.source_hash,config["actor_id"]))
             context=dict(wallet_id=wallet,rule_version=rule["version"])
         wallet=str(context["wallet_id"])
-        if proof.outcome!="eligible":
-            self.outcome_in(conn,tenant,s.order_id,proof.outcome)
-            return
+        complete=(proof.outcome=="eligible" or (proof.full_payment and proof.full_shipment)) and not s.cancelled
         rule=conn.execute("SELECT * FROM bonuspro.rule_versions WHERE tenant_id=%s AND version=%s",
                           (tenant,context["rule_version"])).fetchone()
         base=s.eligible_minor+bonus_minor
-        points=earned_points(base,Rules(rule["earn_bps"],rule["spend_bps"]))
+        points=earned_points(base,Rules(rule["earn_bps"],rule["spend_bps"])) if complete else 0
         self.ledger._wallet_lock(conn,tenant,wallet)
         if self.ledger._snapshot(conn,tenant,wallet)["balance"]+points>MAX_POINTS:
             raise Conflict("balance limit exceeded")
@@ -152,11 +157,15 @@ class Automation:
             tx=self.ledger._post(conn,tenant,wallet,"earn/"+s.order_id,
                 fingerprint(dict(order=s.order_id,base=base,points=points,rule=rule["version"])),
                 points,"credit",str(config["actor_id"]),"Full payment and shipment verified by reconciliation")
-        conn.execute("INSERT INTO bonuspro.order_accruals "
-            "(tenant_id,order_id,wallet_id,credit_id,points,eligible_minor,saved_marker,financial_hash,evidence_hash,rule_version) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (tenant,s.order_id,wallet,tx,points,base,saved.marker,financial_hash,proof.evidence_hash,rule["version"]))
-        self.outcome_in(conn,tenant,s.order_id,"credited")
+        if complete:
+            conn.execute("INSERT INTO bonuspro.order_accruals "
+                "(tenant_id,order_id,wallet_id,credit_id,points,eligible_minor,saved_marker,financial_hash,evidence_hash,rule_version) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (tenant,s.order_id,wallet,tx,points,base,saved.marker,financial_hash,proof.evidence_hash,rule["version"]))
+            prior=dict(points=points)
+        outcome=self.settlements.apply_in(conn,tenant,proof,context,prior,attempt,
+            Rules(rule["earn_bps"],rule["spend_bps"]),actor or str(config["actor_id"]),resolution=resolution)
+        self.outcome_in(conn,tenant,s.order_id,outcome)
         if time.monotonic()>proof.deadline:
             raise Conflict("evidence expired during transaction")
 
@@ -166,6 +175,38 @@ class Automation:
             if time.monotonic()>proof.deadline:
                 raise Conflict("evidence expired during application")
         self.jobs.complete(tenant,str(job["id"]),str(job["lease_id"]),apply=apply)
+
+    def resolve_settlement(self,tenant,case_id,proof,*,decision,reason,actor):
+        case=self.settlements.case(tenant,case_id)
+        if case["state"]!="pending":
+            if case["decision"]==decision and case["reason"]==reason and str(case["actor_id"])==actor:
+                return {"state":case["state"]}
+            raise Conflict("case already resolved")
+        with self.ledger.transaction(tenant) as conn:
+            self.apply_in(conn,tenant,{"entity_id":case["order_id"]},proof,
+                          resolution=(case_id,decision,reason),actor=actor)
+            if time.monotonic()>proof.deadline:raise Conflict("expired resolution proof")
+        return {"state":self.settlements.case(tenant,case_id)["state"]}
+
+    def resolve_issue(self,tenant,identity,proof,*,actor,reason):
+        from bonuspro.adapters.postgres.ledger import text_value,NotFound
+        text_value(reason,"reason",500)
+        with self.ledger.transaction(tenant) as conn:
+            issue=conn.execute("SELECT * FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND id=%s",
+                              (tenant,uuid_value(identity))).fetchone()
+            if not issue:raise NotFound("issue not found")
+            if issue["resolved_at"]:
+                if str(issue["resolved_by"])==actor and issue["resolution_reason"]==reason:return {"resolved":True}
+                raise Conflict("issue already resolved")
+            self.apply_in(conn,tenant,{"entity_id":issue["order_id"]},proof)
+            prior=conn.execute("SELECT * FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s",
+                               (tenant,issue["order_id"])).fetchone()
+            if not prior or prior["financial_hash"]!=fingerprint(proof.saved.financial()) or prior["saved_marker"]!=proof.saved.marker or proof.outcome=="document_review":
+                raise Conflict("document is still inconsistent")
+            if time.monotonic()>proof.deadline:raise Conflict("expired correction proof")
+            conn.execute("UPDATE bonuspro.reconciliation_issues SET resolved_at=clock_timestamp(),resolved_by=%s,resolution_reason=%s "
+                         "WHERE tenant_id=%s AND id=%s AND resolved_at IS NULL",(actor,reason,tenant,identity))
+        return {"resolved":True}
 
     def invalid(self,tenant,order,reason):
         with self.ledger.transaction(tenant) as conn:
@@ -184,7 +225,7 @@ class Automation:
     def dashboard(self,tenant):
         with self.ledger.transaction(tenant) as conn:
             counts=conn.execute("SELECT outcome,count(*) AS n FROM bonuspro.order_monitors WHERE tenant_id=%s GROUP BY outcome",(tenant,)).fetchall()
-            issues=conn.execute("SELECT order_id,reason,created_at FROM bonuspro.reconciliation_issues WHERE tenant_id=%s "
+            issues=conn.execute("SELECT id,order_id,reason,created_at FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND resolved_at IS NULL "
                                 "ORDER BY created_at DESC LIMIT 50",(tenant,)).fetchall()
             jobs=conn.execute("SELECT state,count(*) AS n FROM bonuspro.jobs WHERE tenant_id=%s GROUP BY state",(tenant,)).fetchall()
         return dict(configuration=self.state(tenant),orders={r["outcome"]:r["n"] for r in counts},
