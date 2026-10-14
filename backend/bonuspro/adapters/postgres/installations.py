@@ -85,6 +85,9 @@ class Installations:
                 "WHERE tenant_id=%s AND state IN ('SettingsRequired','Activated')", (tenant,)).fetchone()
             if row is None:
                 raise AuthenticationFailed("installation is inactive")
+            conn.execute("INSERT INTO bonuspro.known_operators(tenant_id,user_id,login) VALUES (%s,%s,%s) "
+                         "ON CONFLICT (tenant_id,user_id) DO UPDATE SET login=EXCLUDED.login,last_seen=clock_timestamp()",
+                         (tenant,user,context.login))
             conn.execute(
                 "INSERT INTO bonuspro.sessions(tenant_id,token_hash,generation,user_id,role,expires_at) "
                 "VALUES (%s,%s,%s,%s,%s,now()+interval '15 minutes')",

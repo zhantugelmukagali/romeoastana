@@ -33,3 +33,5 @@ GRANT INSERT ON bonuspro.activation_requests TO bonuspro_app;
 GRANT INSERT ON bonuspro.activation_completions TO bonuspro_lifecycle;
 GRANT SELECT ON bonuspro.rule_versions,bonuspro.widget_bindings,bonuspro.automation_config,bonuspro.sync_state TO bonuspro_lifecycle;
 GRANT INSERT ON bonuspro.automation_config,bonuspro.sync_state TO bonuspro_lifecycle;
+
+GRANT EXECUTE ON FUNCTION bonuspro.current_tenant() TO bonuspro_lifecycle;

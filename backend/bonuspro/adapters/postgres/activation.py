@@ -38,6 +38,10 @@ class ActivationService:
             if not row:raise NotFound("activation intent missing")
             if not state or state["generation"]!=row["generation"] or state["state"] not in ("SettingsRequired","Activated"):
                 raise Conflict("installation changed during activation")
+            completed=conn.execute("SELECT 1 FROM bonuspro.activation_completions WHERE tenant_id=%s AND request_id=%s",(tenant,request_id)).fetchone()
+            if completed and state["state"]=="Activated":
+                cutoff=conn.execute("SELECT starts_at FROM bonuspro.automation_config WHERE tenant_id=%s",(tenant,)).fetchone()
+                return {"state":"Activated","starts_at":cutoff["starts_at"].isoformat()}
             rule=conn.execute("SELECT version FROM bonuspro.rule_versions WHERE tenant_id=%s ORDER BY version DESC LIMIT 1",(tenant,)).fetchone()
             marker=conn.execute("SELECT marker_id FROM bonuspro.widget_bindings WHERE tenant_id=%s",(tenant,)).fetchone()
             if rule["version"]!=row["rule_version"] or marker["marker_id"]!=row["marker_id"]:

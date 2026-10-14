@@ -14,6 +14,7 @@ class UserContext:
     tenant_id: str
     user_id: str
     role: str
+    login: str = ""
 
 
 class VendorClient:
@@ -47,7 +48,7 @@ class VendorClient:
             tenant, user = str(UUID(data["accountId"])), str(UUID(data["userId"]))
             if data["role"] not in ("admin","cashier","worker","individual"):
                 raise AuthenticationFailed("unknown role")
-            return UserContext(tenant, user, data["role"])
+            return UserContext(tenant, user, data["role"],str(data.get("userUid",""))[:256])
         except httpx.HTTPError as exc:
             # Never interpolate HTTP requests, which can include Authorization.
             raise ProviderUnavailable("context service unavailable") from None

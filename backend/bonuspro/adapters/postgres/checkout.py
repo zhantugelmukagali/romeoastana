@@ -104,7 +104,7 @@ class Checkout:
             return self._rule_dict(row)
 
     def preview(self, tenant_id, snapshot: OrderSnapshot, *, requested_points, actor_id,
-                eligibility_version: int):
+                eligibility_version: int,authorize=None):
         tenant, actor = map(uuid_value,(tenant_id,actor_id))
         natural(requested_points,"requested_points")
         natural(eligibility_version,"eligibility_version",2147483647)
@@ -113,6 +113,7 @@ class Checkout:
         snapshot.validate_for_discount()
         source_hash = fingerprint(asdict(snapshot))
         with self.ledger.transaction(tenant) as conn:
+            if authorize:authorize(conn)
             # Configuration selection and new enrolment cannot race with a settings change.
             self.ledger._key_lock(conn,tenant,"settings")
             self.ledger._key_lock(conn,tenant,"order/"+snapshot.order_id)

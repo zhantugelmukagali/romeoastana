@@ -52,7 +52,7 @@ class Redemptions:
     def public(row):
         return dict(id=str(row["id"]),order_id=str(row["order_id"]),state=row["state"],points=row["points"])
 
-    def prepare(self,tenant,order: SavedOrder,*,points,request_id,actor_id,expected_source):
+    def prepare(self,tenant,order: SavedOrder,*,points,request_id,actor_id,expected_source,authorize=None):
         tenant,request_id,actor=map(uuid_value,(tenant,request_id,actor_id))
         natural(points,"points")
         digest_value(expected_source)
@@ -60,6 +60,7 @@ class Redemptions:
             raise Conflict("wrong tenant")
         body_hash=fingerprint(dict(order=order.snapshot.order_id,points=points,actor=actor,source=expected_source))
         with self.ledger.transaction(tenant) as conn:
+            if authorize:authorize(conn)
             self.ledger._key_lock(conn,tenant,"widget/request/"+request_id)
             previous=conn.execute("SELECT a.*,r.state,r.points FROM bonuspro.redemption_attempts a "
                 "JOIN bonuspro.reservations r ON r.tenant_id=a.tenant_id AND r.id=a.id "
@@ -121,7 +122,7 @@ class Redemptions:
             return dict(id=rid,order_id=order.snapshot.order_id,state="verifying",points=points,
                         update_state=plan["update_state"],replayed=False)
 
-    def confirm_saved(self,tenant,order: SavedOrder):
+    def confirm_saved(self,tenant,order: SavedOrder,*,authorize=None):
         row=self.existing(tenant,order.snapshot.order_id)
         if not row:
             raise NotFound("redemption not found")
@@ -138,10 +139,11 @@ class Redemptions:
         proof=VerifiedDiscount(order.snapshot.order_id,reservation["quote_hash"],row["points"]*100,order.snapshot.revision)
         # Same advisory key as lifecycle.change: revocation cannot overtake this debit.
         with self.ledger.transaction(tenant) as conn:
+            if authorize:authorize(conn)
             conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("installation/"+tenant,))
             active=conn.execute("SELECT state FROM bonuspro.installations WHERE tenant_id=%s",(tenant,)).fetchone()
             if not active or active["state"]!="Activated":
                 raise Conflict("installation is not activated")
-            transaction=self.ledger.confirm_discount(tenant,str(row["id"]),proof=proof)
+            transaction=self.ledger.confirm_discount_in(conn,tenant,str(row["id"]),proof=proof)
         return dict(id=str(row["id"]),order_id=order.snapshot.order_id,state="committed",
                     points=row["points"],verified=True,transaction_id=transaction)
