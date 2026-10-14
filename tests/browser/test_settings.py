@@ -16,7 +16,7 @@ class SettingsBrowserTests(unittest.TestCase):
         self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1280,"height":1200})
         self.page=self.context.new_page()
-        self.automation_config=None;self.activations=[]
+        self.automation_config=None;self.activations=[];self.hooks_calls=0;self.hooks_drop=False
         self.current=None;self.saved=[];self.drop_first=False;self.conflict=False
         self.context.route("**/*",self.route)
 
@@ -29,6 +29,10 @@ class SettingsBrowserTests(unittest.TestCase):
         if not url.startswith("https://widget.test/"):return route.abort()
         path=url.split("https://widget.test",1)[1]
         if path=="/api/session":return route.fulfill(json={"token":"synthetic-session"})
+        if path=="/api/admin/webhooks/setup":
+            self.hooks_calls+=1
+            if self.hooks_drop and self.hooks_calls==1:return route.abort()
+            return route.fulfill(json={"configured":True,"hook_count":21})
         if path=="/api/admin/widget/setup":return route.fulfill(json={"configured":True})
         if path=="/api/admin/automation":
             if route.request.method=="POST":
@@ -58,6 +62,18 @@ class SettingsBrowserTests(unittest.TestCase):
         self.page.goto("https://online.moysklad.ru/test-host")
         self.frame=self.page.frame_locator("iframe")
         self.frame.get_by_text("Сохраните первоначальные правила.",exact=True).wait_for()
+
+    def test_webhook_setup_retry_and_narrow_layout(self):
+        self.hooks_drop=True;self.open()
+        self.page.set_viewport_size({"width":390,"height":1200})
+        button=self.frame.get_by_role("button",name="Подключить уведомления",exact=True)
+        button.click()
+        self.frame.get_by_text("Подключение не подтверждено.",exact=False).wait_for()
+        button.click()
+        self.frame.get_by_text("Уведомления подключены. Автоматическую обработку проверьте ниже.",exact=True).wait_for()
+        self.assertEqual(self.hooks_calls,2)
+        frame=self.page.frames[1]
+        self.assertTrue(frame.evaluate("document.documentElement.scrollWidth<=innerWidth+1"))
 
     def test_widget_setup_does_not_claim_sales_are_active(self):
         self.open()

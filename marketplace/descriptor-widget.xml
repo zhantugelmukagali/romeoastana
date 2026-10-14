@@ -10,6 +10,7 @@
     <scope>custom</scope>
     <permissions>
       <useOwnAttributeMetadata/>
+      <useOwnWebhooks/>
       <customerOrder><view/></customerOrder>
       <demand><view/></demand>
       <salesReturn><view/></salesReturn>

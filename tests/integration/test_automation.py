@@ -157,6 +157,7 @@ class AutomationTests(unittest.TestCase):
     def test_worker_discovery_failure_keeps_cursor_for_restart(self):
         before=self.a.state(self.tenant)["scan_until"]
         class Client:
+            def changed_ids_between(inner,*args):return []
             def order_ids_between(inner,start,end):raise RetryLater(300)
         worker=Worker(self.fx.ledger,self.fx.install,self.tenant,client_factory=lambda *a,**kw:Client())
         self.assertEqual(worker.cycle(now=before+timedelta(minutes=10)),"provider_unavailable")
@@ -182,6 +183,7 @@ class AutomationTests(unittest.TestCase):
         ship={**doc,"id":demand,"customerOrder":ref("customerorder",fx.order)}
         pay={**doc,"id":payment,"meta":{"type":"paymentin"},"operations":[{**ref("customerorder",fx.order),"linkedSum":s.total_minor}]}
         class Client:
+            def changed_ids_between(inner,*args):return []
             tenant=fx.tenant
             def order_evidence(inner,id):return OrderEvidence(copy.deepcopy(doc),copy.deepcopy(lines),(copy.deepcopy(pay),),(copy.deepcopy(ship),))
             def positions(inner,*args):return copy.deepcopy(lines)
@@ -194,13 +196,14 @@ class AutomationTests(unittest.TestCase):
 
     def test_worker_recovers_queued_order(self):
         class Client:
+            def changed_ids_between(inner,*args):return []
             def order_ids_between(inner,start,end):return []
         worker=Worker(self.fx.ledger,self.fx.install,self.tenant,client_factory=lambda *a,**kw:Client())
         with patch("bonuspro.worker.FulfillmentReader.read",return_value=self.proof()):
             self.assertEqual(worker.cycle(),"processed")
         self.assertEqual(self.balance()["balance"],5500)
     def test_worker_rate_limit_keeps_job_and_cooldown(self):
-        worker=Worker(self.fx.ledger,self.fx.install,self.tenant,client_factory=lambda *a,**kw:object())
+        worker=Worker(self.fx.ledger,self.fx.install,self.tenant,client_factory=lambda *a,**kw:__import__("types").SimpleNamespace(changed_ids_between=lambda *a:[]))
         with patch("bonuspro.worker.FulfillmentReader.read",side_effect=RetryLater(600)):
             self.assertEqual(worker.cycle(),"provider_unavailable")
         self.assertEqual(self.balance()["balance"],5000)

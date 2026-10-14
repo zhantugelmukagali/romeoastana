@@ -26,6 +26,8 @@ from bonuspro.adapters.postgres.imports import Imports
 from bonuspro.adapters.postgres.activation import ActivationService
 from bonuspro.adapters.postgres.operators import Operators,OperatorDenied
 from bonuspro.adapters.postgres.voids import Voids
+from bonuspro.adapters.postgres.signals import Signals
+from bonuspro.events import signature,verify_signature,parse_events
 from bonuspro.importing import ImportInvalid
 from bonuspro.adapters.moysklad.remap import RemapClient, RemapError, RetryLater, AccessDenied, EntityMissing
 from bonuspro.adapters.moysklad.order import read_order
@@ -165,6 +167,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     automation = Automation(Ledger(config.database_url))
     imports = Imports(Ledger(config.database_url))
     operators = Operators(Ledger(config.database_url))
+    signals = Signals(Ledger(config.database_url))
     remap_factory = remap_factory or RemapClient
     app = FastAPI(title="БонусПро",docs_url=None,redoc_url=None,openapi_url=None)
     app.add_middleware(BodyLimit)
@@ -250,9 +253,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         try:
             with psycopg.connect(config.database_url,connect_timeout=3) as conn:
                 conn.execute("SET LOCAL statement_timeout='3s'")
-                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events'),to_regclass('bonuspro.import_batches'),to_regclass('bonuspro.opening_balances'),to_regclass('bonuspro.activation_requests'),to_regclass('bonuspro.activation_completions'),to_regclass('bonuspro.operator_permissions'),to_regclass('bonuspro.redemption_voids')").fetchone()
+                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events'),to_regclass('bonuspro.import_batches'),to_regclass('bonuspro.opening_balances'),to_regclass('bonuspro.activation_requests'),to_regclass('bonuspro.activation_completions'),to_regclass('bonuspro.operator_permissions'),to_regclass('bonuspro.redemption_voids'),to_regclass('bonuspro.webhook_inbox'),to_regclass('bonuspro.sync_streams'),to_regclass('bonuspro.related_documents')").fetchone()
                 revision = conn.execute("SELECT version_num FROM public.alembic_version").fetchall()
-                if not all(exists) or revision != [("0013",)]:
+                if not all(exists) or revision != [("0014",)]:
                     raise RuntimeError("missing schema")
             return {"status":"ready"}
         except (psycopg.Error,RuntimeError):
@@ -472,6 +475,29 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         repo.authenticate(bearer(request))
         redemptions.bind(identity.tenant_id,marker,identity.user_id)
         return {"configured":True}
+
+    @app.post("/api/admin/webhooks/setup")
+    def webhook_setup(request: Request):
+        same_origin(request)
+        identity=admin_identity(request)
+        generation=signals.generation(identity.tenant_id)
+        tag=signature(config.credentials.encryption_key,config.credentials.app_id,identity.tenant_id,generation)
+        url=config.origin+"/hooks/remap/"+config.credentials.app_id+"/"+identity.tenant_id+"/"+generation+"/"+tag
+        count=document_client(identity).ensure_webhooks(url)
+        admin_identity(request)
+        signals.record_setup(identity.tenant_id,generation,count)
+        return {"configured":True,"hook_count":count}
+
+    @app.post("/hooks/remap/{app_id}/{account_id}/{generation}/{tag}")
+    async def remap_notification(app_id: UUID,account_id: UUID,generation: UUID,tag: str,request: Request):
+        if str(app_id)!=config.credentials.app_id:raise AuthenticationFailed("wrong webhook application")
+        verify_signature(config.credentials.encryption_key,str(app_id),str(account_id),str(generation),tag)
+        request_id=request.query_params.get("requestId")
+        try:request_id=str(UUID(request_id))
+        except (ValueError,TypeError,AttributeError):raise HTTPException(422,"notification identity required")
+        events=parse_events(await request.body(),str(account_id))
+        await run_in_threadpool(signals.ingest,str(account_id),str(generation),request_id,events)
+        return Response(status_code=204)
 
     @app.get("/api/widget/orders/{order_id}")
     def widget_order(order_id: UUID,request: Request):

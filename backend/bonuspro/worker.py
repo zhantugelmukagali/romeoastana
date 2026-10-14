@@ -15,6 +15,8 @@ from bonuspro.adapters.postgres.ledger import Ledger, Conflict, uuid_value
 from bonuspro.adapters.postgres.installations import Installations
 from bonuspro.adapters.postgres.automation import Automation
 from bonuspro.adapters.postgres.redemptions import Redemptions
+from bonuspro.adapters.postgres.signals import Signals
+from bonuspro.adapters.postgres.streams import Streams
 from bonuspro.adapters.moysklad.remap import RemapClient, RetryLater, InvalidDocument, EntityMissing, AccessDenied
 from bonuspro.adapters.moysklad.fulfillment import FulfillmentReader
 
@@ -29,6 +31,8 @@ class Worker:
         self.automation=Automation(ledger)
         self.redemptions=Redemptions(ledger)
         self.client_factory=client_factory
+        self.signals=Signals(ledger)
+        self.streams=Streams(ledger,self.signals)
 
     def client(self):
         return self.client_factory(self.installations.remap_token(self.tenant),self.tenant,
@@ -62,6 +66,12 @@ class Worker:
                 if end>=cursor and end>start:
                     orders=self.client().order_ids_between(start,end)
                     self.automation.discovery_complete(self.tenant,expected_cursor=cursor,until=end,orders=orders)
+                self.signals.drain(self.tenant,self.client())
+                try:
+                    self.streams.scan(self.tenant,self.client(),now)
+                except Conflict:
+                    pass # Capacity/cursor conflict preserves the window; drain jobs to free it.
+                self.signals.prune(self.tenant)
                 self.automation.schedule(self.tenant)
                 for _ in range(4):
                     job=self.automation.jobs.claim(self.tenant,lease_seconds=300)
@@ -76,7 +86,7 @@ class Worker:
                         raise
                     except (InvalidDocument,EntityMissing) as error:
                         reason="provider_document_missing" if isinstance(error,EntityMissing) else "invalid_credited_document"
-                        self.automation.invalid(self.tenant,str(job["entity_id"]),reason)
+                        self.automation.invalid(self.tenant,str(job["entity_id"]),reason,job.get("hint_version"))
                         self.fail_job(job,"invalid_document",permanent=True)
                     except (AuthenticationFailed,AccessDenied):
                         self.fail_job(job,"provider_unavailable",delay=300)

@@ -62,6 +62,7 @@ class Fulfillment:
     full_shipment: bool = False
     full_payment: bool = False
     cancel_safe: bool = False
+    related: tuple = ()
 
 
 class FulfillmentReader:
@@ -179,8 +180,12 @@ class FulfillmentReader:
             outcome="waiting_payment"
         else:
             outcome="return_review" if returned_lines else "eligible"
+        related={("customerorder",saved.snapshot.order_id)}
+        related.update(("demand",uuid(d["id"])) for d,_,_ in demands)
+        related.update((p["meta"]["type"],uuid(p["id"])) for p in payments.values())
+        related.update(("salesreturn",uuid(r["id"])) for _,_,returns in demands for r,_ in returns)
         return Fulfillment(saved,created,paid,shipped,outcome,digest(second),start+120,
                            tuple(returned_lines),actual==expected and shipped==saved.snapshot.total_minor,
                            paid>=saved.snapshot.total_minor,
                            saved.snapshot.cancelled and not posted and linked_paid==0
-                           and not doc.get("invoicesOut") and not doc.get("prepayments"))
+                           and not doc.get("invoicesOut") and not doc.get("prepayments"),tuple(sorted(related)))

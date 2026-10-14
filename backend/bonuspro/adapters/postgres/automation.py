@@ -38,7 +38,7 @@ class Automation:
     @staticmethod
     def hint_in(conn,tenant,order):
         conn.execute("INSERT INTO bonuspro.order_monitors(tenant_id,order_id) VALUES (%s,%s) "
-                     "ON CONFLICT (tenant_id,order_id) DO UPDATE SET next_due=LEAST(bonuspro.order_monitors.next_due,now())",
+                     "ON CONFLICT (tenant_id,order_id) DO UPDATE SET next_due=LEAST(bonuspro.order_monitors.next_due,now()),hint_version=bonuspro.order_monitors.hint_version+1",
                      (tenant,order))
 
     def discovery_complete(self,tenant,*,expected_cursor,until,orders):
@@ -66,10 +66,13 @@ class Automation:
             return len(rows)
 
     @staticmethod
-    def outcome_in(conn,tenant,order,outcome):
-        interval=60 if outcome not in ("credited","historical") else 300
-        conn.execute("UPDATE bonuspro.order_monitors SET outcome=%s,checked_at=now(),next_due=now()+%s*interval '1 second' "
-                     "WHERE tenant_id=%s AND order_id=%s",(outcome,interval,tenant,order))
+    def outcome_in(conn,tenant,order,outcome,expected_hint=None):
+        interval=86400 if outcome in ("credited","historical","cancelled") else (3600 if outcome=="provider_error" else 60)
+        conn.execute("UPDATE bonuspro.order_monitors SET outcome=%s,checked_at=now(),next_due=CASE "
+                     "WHEN %s::bigint IS NULL OR hint_version>%s THEN LEAST(next_due,now()+interval '60 seconds') "
+                     "WHEN first_seen_at<now()-interval '30 days' AND %s IN ('waiting_payment','waiting_shipment') THEN now()+interval '1 hour' "
+                     "ELSE now()+%s*interval '1 second' END WHERE tenant_id=%s AND order_id=%s",
+                     (outcome,expected_hint,expected_hint,outcome,interval,tenant,order))
 
     @staticmethod
     def issue_in(conn,tenant,order,wallet,reason,evidence_hash):
@@ -80,6 +83,8 @@ class Automation:
         if time.monotonic()>proof.deadline or str(job["entity_id"])!=proof.saved.snapshot.order_id:
             raise Conflict("stale or mismatched evidence")
         saved=proof.saved;s=saved.snapshot
+        def outcome(value):
+            self.outcome_in(conn,tenant,s.order_id,value,job.get("hint_version"))
         if s.tenant_id!=tenant:
             raise Conflict("evidence belongs to another tenant")
         conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("installation/"+tenant,))
@@ -89,13 +94,15 @@ class Automation:
             raise Conflict("automation not active")
         self.ledger._key_lock(conn,tenant,"settings")
         self.ledger._key_lock(conn,tenant,"order/"+s.order_id)
+        from bonuspro.adapters.postgres.signals import Signals
+        Signals.index_in(conn,tenant,s.order_id,proof.related)
         context=conn.execute("SELECT * FROM bonuspro.order_contexts WHERE tenant_id=%s AND order_id=%s",(tenant,s.order_id)).fetchone()
         prior=conn.execute("SELECT * FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s",(tenant,s.order_id)).fetchone()
         financial_hash=fingerprint(saved.financial())
         if prior and (prior["financial_hash"]!=financial_hash or prior["saved_marker"]!=saved.marker or proof.outcome=="document_review"):
             self.ledger._wallet_lock(conn,tenant,str(prior["wallet_id"]))
             self.issue_in(conn,tenant,s.order_id,str(prior["wallet_id"]),"changed_credited_order",proof.evidence_hash)
-            self.outcome_in(conn,tenant,s.order_id,"document_review")
+            outcome("document_review")
             if resolution:raise Conflict("correct the sale document before resolving its return")
             return
         attempt=conn.execute("SELECT a.*,r.quote_hash,r.points,r.state FROM bonuspro.redemption_attempts a "
@@ -105,7 +112,7 @@ class Automation:
         bonus_minor=0
         if attempt:
             if saved.marker!=attempt["marker"] or saved.financial()!=attempt["plan"]["after"] :
-                self.outcome_in(conn,tenant,s.order_id,"redemption_pending")
+                outcome("redemption_pending")
                 return
             self.ledger.confirm_discount_in(conn,tenant,str(attempt["id"]),proof=VerifiedDiscount(
                 s.order_id,attempt["quote_hash"],attempt["points"]*100,s.revision))
@@ -114,20 +121,20 @@ class Automation:
             if context:
                 self.ledger._wallet_lock(conn,tenant,str(context["wallet_id"]))
                 self.issue_in(conn,tenant,s.order_id,str(context["wallet_id"]),"unrecognized_bonus_marker",proof.evidence_hash)
-            self.outcome_in(conn,tenant,s.order_id,"document_review")
+            outcome("document_review")
             return
         if prior:
             rule=conn.execute("SELECT * FROM bonuspro.rule_versions WHERE tenant_id=%s AND version=%s",
                               (tenant,context["rule_version"])).fetchone()
-            outcome=self.settlements.apply_in(conn,tenant,proof,context,prior,attempt,
+            result=self.settlements.apply_in(conn,tenant,proof,context,prior,attempt,
                 Rules(rule["earn_bps"],rule["spend_bps"]),actor or str(config["actor_id"]),resolution=resolution)
-            self.outcome_in(conn,tenant,s.order_id,outcome)
+            outcome(result)
             return
         if proof.created_at<config["starts_at"]:
-            self.outcome_in(conn,tenant,s.order_id,"historical")
+            outcome("historical")
             return
         if context and str(context["counterparty_id"])!=s.counterparty_id:
-            self.outcome_in(conn,tenant,s.order_id,"document_review")
+            outcome("document_review")
             return
         # New accounts/contexts are enrolled automatically by discovery; employees do not connect orders manually.
         if not context:
@@ -166,9 +173,9 @@ class Automation:
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (tenant,s.order_id,wallet,tx,points,base,saved.marker,financial_hash,proof.evidence_hash,rule["version"]))
             prior=dict(points=points)
-        outcome=self.settlements.apply_in(conn,tenant,proof,context,prior,attempt,
+        result=self.settlements.apply_in(conn,tenant,proof,context,prior,attempt,
             Rules(rule["earn_bps"],rule["spend_bps"]),actor or str(config["actor_id"]),resolution=resolution)
-        self.outcome_in(conn,tenant,s.order_id,outcome)
+        outcome(result)
         if time.monotonic()>proof.deadline:
             raise Conflict("evidence expired during transaction")
 
@@ -222,14 +229,14 @@ class Automation:
                          "WHERE tenant_id=%s AND id=%s AND resolved_at IS NULL",(actor,reason,tenant,identity))
         return {"resolved":True}
 
-    def invalid(self,tenant,order,reason):
+    def invalid(self,tenant,order,reason,expected_hint=None):
         with self.ledger.transaction(tenant) as conn:
             prior=conn.execute("SELECT wallet_id FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s",
                                (tenant,order)).fetchone()
             if prior:
                 self.ledger._wallet_lock(conn,tenant,str(prior["wallet_id"]))
                 self.issue_in(conn,tenant,order,str(prior["wallet_id"]),reason,"unavailable")
-            self.outcome_in(conn,tenant,order,"provider_error")
+            self.outcome_in(conn,tenant,order,"provider_error",expected_hint)
 
     def cooldown(self,tenant,seconds,error):
         with self.ledger.transaction(tenant) as conn:
@@ -247,6 +254,7 @@ class Automation:
             pending=conn.execute("SELECT count(*) AS n FROM bonuspro.settlement_cases WHERE tenant_id=%s AND state='pending'",(tenant,)).fetchone()["n"]
             queue=conn.execute("SELECT min(created_at) AS oldest FROM bonuspro.jobs WHERE tenant_id=%s AND state IN ('queued','running')",(tenant,)).fetchone()["oldest"]
             unknown=conn.execute("SELECT id,order_id,points,created_at FROM bonuspro.reservations WHERE tenant_id=%s AND state='verifying' ORDER BY created_at LIMIT 50",(tenant,)).fetchall()
-        return dict(configuration=self.state(tenant),orders={r["outcome"]:r["n"] for r in counts},
+        from bonuspro.adapters.postgres.signals import Signals
+        return dict(synchronization=Signals(self.ledger).status(tenant),configuration=self.state(tenant),orders={r["outcome"]:r["n"] for r in counts},
                     jobs={r["state"]:r["n"] for r in jobs},issues=issues,
                     attention=dict(stale_reservations=stale,pending_returns=pending,oldest_job=queue),unverified=unknown)

@@ -19,6 +19,9 @@ DOCUMENTS=frozenset(("customerorder","demand","salesreturn","paymentin","payment
 POSITION_DOCUMENTS=frozenset(("customerorder","demand","salesreturn"))
 
 
+class ScanTooLarge(Exception):
+    """A discovery window must be subdivided before its cursor may advance."""
+
 class RemapError(RuntimeError):
     pass
 
@@ -99,7 +102,9 @@ class RemapClient:
         # Private method: callers below construct this path exclusively from enums/UUIDs.
         if not path.startswith("/entity/") or any(x in path for x in ("..","?","#","%","\\","@")):
             raise InvalidDocument("invalid resource path")
-        if method not in ("GET","POST") or (method=="POST" and path!="/entity/customerorder/metadata/attributes"):
+        allowed_post=path in ("/entity/customerorder/metadata/attributes","/entity/webhook")
+        allowed_put=path.startswith("/entity/webhook/") and path=="/entity/webhook/"+uuid(path.rsplit("/",1)[-1])
+        if method not in ("GET","POST","PUT") or (method=="POST" and not allowed_post) or (method=="PUT" and not allowed_put):
             raise InvalidDocument("unsupported write resource")
         now=time.monotonic()
         if self.deadline is not None and now+11>=self.deadline:
@@ -211,6 +216,75 @@ class RemapClient:
             if len(rows)!=1000:
                 raise RetryLater(1,"conflict")
         raise InvalidDocument("discovery collection too large")
+
+    def changed_ids_between(self,kind,field,start,end):
+        """Complete bounded page set; never acknowledge a partial or moving window."""
+        from bonuspro.events import KINDS
+        from bonuspro.adapters.moysklad.fulfillment import moment,MSK
+        if kind not in KINDS or field not in ("created","updated") or (field=="created" and kind!="customerorder"):
+            raise ValueError("unsupported change stream")
+        if start.tzinfo is None or end.tzinfo is None or end<start:raise ValueError("aware window required")
+        def stamp(value):return value.astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        result=[];seen=set();expected=None
+        lower=start.replace(microsecond=start.microsecond//1000*1000)
+        for offset in range(0,10000,1000):
+            page=self._get("/entity/"+kind,{"limit":1000,"offset":offset,
+                "filter":field+">="+stamp(start)+";"+field+"<="+stamp(end),"order":field+",asc"})
+            size=page.get("meta",{}).get("size");rows=page.get("rows")
+            if type(size) is not int or size<0 or not isinstance(rows,list):raise InvalidDocument("invalid change page")
+            if size>10000:raise ScanTooLarge()
+            if expected is not None and size!=expected:raise RetryLater(1,"conflict")
+            expected=size
+            if len(rows)>1000 or len(result)+len(rows)>size:raise InvalidDocument("invalid change collection")
+            for row in rows:
+                if not isinstance(row,dict):raise InvalidDocument("invalid changed document")
+                identity=uuid(row.get("id"))
+                if uuid(row.get("accountId"))!=self.tenant or row.get("meta",{}).get("type")!=kind:
+                    raise InvalidDocument("changed document account/type mismatch")
+                if not lower<=moment(row.get(field))<=end or identity in seen:raise RetryLater(1,"conflict")
+                seen.add(identity);result.append(identity)
+            if len(result)==size:return result
+            if len(rows)!=1000:raise RetryLater(1,"conflict")
+        raise ScanTooLarge()
+
+    def ensure_webhooks(self,url):
+        from bonuspro.events import KINDS,ACTIONS
+        from urllib.parse import urlsplit
+        parsed=urlsplit(url)
+        if parsed.scheme!="https" or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("plain HTTPS callback required")
+        prefix=url.rsplit("/",2)[0]+"/"
+        rows=[];expected=None
+        for offset in range(0,1000,100):
+            page=self._get("/entity/webhook",{"limit":100,"offset":offset})
+            size=page.get("meta",{}).get("size");part=page.get("rows")
+            if type(size) is not int or not 0<=size<=1000 or not isinstance(part,list) or len(part)>100:
+                raise InvalidDocument("incomplete webhook collection")
+            if expected is not None and expected!=size:raise RetryLater(1,"conflict")
+            expected=size;rows.extend(part)
+            if len(rows)==size:break
+            if len(part)!=100:raise RetryLater(1,"conflict")
+        if len(rows)!=expected:raise InvalidDocument("incomplete webhook collection")
+        completed=0
+        for kind in KINDS:
+            for action in ACTIONS:
+                matches=[x for x in rows if isinstance(x,dict) and x.get("entityType")==kind and x.get("action")==action
+                         and isinstance(x.get("url"),str) and x["url"].startswith(prefix)]
+                if len(matches)>1:raise InvalidDocument("ambiguous own webhook")
+                body=dict(url=url,entityType=kind,action=action,enabled=True)
+                if matches:
+                    existing=matches[0]
+                    if uuid(existing.get("accountId"))!=self.tenant:raise InvalidDocument("webhook account mismatch")
+                    _,identity=reference(existing.get("meta"),{"webhook"})
+                    if existing.get("url")==url and existing.get("enabled") is True:
+                        row=existing
+                    else:row=self._request("PUT","/entity/webhook/"+identity,body=body)
+                else:row=self._request("POST","/entity/webhook",body=body)
+                if uuid(row.get("accountId"))!=self.tenant or row.get("url")!=url or row.get("entityType")!=kind or row.get("action")!=action or row.get("enabled") is not True:
+                    raise InvalidDocument("webhook registration not confirmed")
+                reference(row.get("meta"),{"webhook"})
+                completed+=1
+        return completed
 
     def entity(self,kind,identity):
         if kind not in ENTITIES:

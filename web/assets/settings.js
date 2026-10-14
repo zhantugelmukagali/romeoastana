@@ -20,6 +20,7 @@ function busy(value) {
   $("rules-form").querySelectorAll("input,textarea,button").forEach(x=>x.disabled=value);
   $("more").disabled=value;
   $("setup-widget").disabled=value;
+  $("setup-webhooks").disabled=value;
   $("configure-automation").disabled=value;
   $("refresh-automation").disabled=value;
 }
@@ -116,6 +117,14 @@ async function automationStatus(){
     (config.heartbeat_at?"Последняя обработка: "+new Date(config.heartbeat_at).toLocaleString("ru-RU")+".":"Обработчик ещё не запускался.")+
     (config.last_error?" Есть ошибка синхронизации.":"");
   $("automation-details").replaceChildren();
+  const sync=data.synchronization;
+  $("webhook-status").textContent=sync?.configured?"Уведомления подключены.":"Уведомления не подключены. Работает периодическая проверка API.";
+  if(sync?.inbox?.pending)$("automation-details").append(node("p","Уведомлений на обработке: "+sync.inbox.pending+"."));
+  if(sync?.inbox?.oldest&&Date.now()-Date.parse(sync.inbox.oldest)>600000)
+    $("automation-details").append(node("p","Уведомления ожидают более 10 минут. Проверьте обработчик и доступ к API."));
+  const cursors=(sync?.streams||[]).filter(x=>x.stream!=="created_rescan");
+  if(cursors.some(x=>Date.now()-Date.parse(x.cursor_at)>3600000))
+    $("automation-details").append(node("p","Поиск изменений отстаёт более чем на час. Проверки продолжаются; нужна проверка нагрузки."));
   for(const [key,count] of Object.entries(data.orders||{}))
     $("automation-details").append(node("p",(outcomes[key]||"На проверке")+": "+count));
   if(data.jobs?.dead)$("automation-details").append(node("p","Заданий с исчерпанными попытками: "+data.jobs.dead+". Нужна проверка подключения и документов."));
@@ -167,4 +176,18 @@ $("activate-program").onclick=async()=>{
     await automationStatus();
   }catch(e){$("activation-status").textContent="Запуск не подтверждён. Проверьте статус подключения и повторите с тем же основанием. "+e.message;}
   finally{busy(false);$("activate-program").disabled=false;}
+};
+
+$("setup-webhooks").onclick=async()=>{
+  if(working)return;busy(true);$("webhook-status").textContent="Проверяем уведомления…";
+  try{
+    const response=await fetch("/api/admin/webhooks/setup",{method:"POST",credentials:"omit",cache:"no-store",
+      headers:{Authorization:"Bearer "+session},signal:AbortSignal.timeout(15000)});
+    if(!response.ok)throw new Error(response.status===403?
+      "Решению нужны права на свои уведомления. Обновите установку и проверьте тариф МойСклад.":
+      "Подключение не подтверждено. Повторите проверку: уже созданные уведомления будут найдены.");
+    $("webhook-status").textContent="Уведомления подключены. Автоматическую обработку проверьте ниже.";
+  }catch(e){$("webhook-status").textContent=e.name==="TimeoutError"?
+    "Ответ задерживается. Повторная проверка найдёт уже созданные уведомления.":e.message;}
+  finally{busy(false);}
 };
