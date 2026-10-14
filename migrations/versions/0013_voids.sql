@@ -36,3 +36,7 @@ BEGIN
  RETURN NULL;
 END $$;
 CREATE CONSTRAINT TRIGGER void_complete AFTER INSERT ON bonuspro.redemption_voids DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION bonuspro.validate_void();
+
+ALTER TABLE bonuspro.reconciliation_issues DROP CONSTRAINT reconciliation_issues_reason_check;
+ALTER TABLE bonuspro.reconciliation_issues ADD CONSTRAINT reconciliation_issues_reason_check
+ CHECK(reason IN ('changed_credited_order','provider_document_missing','invalid_credited_document','unrecognized_bonus_marker'));
