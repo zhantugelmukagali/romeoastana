@@ -27,7 +27,7 @@ sudo python3 scripts/backup_vps.py --image-from-env
 Команда сообщает путь к файлу .pgdump.bpbk и контрольную сумму; она не утверждает,
 что копия уже перенесена наружу или восстановлена.
 
-sudo python3 scripts/verify_backup_vps.py /home/ubuntu/bonuspro-backups/encrypted/ИМЯ.pgdump.bpbk --image bonuspro:КОММИТ --expected-schema 0014
+sudo python3 scripts/verify_backup_vps.py /home/ubuntu/bonuspro-backups/encrypted/ИМЯ.pgdump.bpbk --image bonuspro:КОММИТ --expected-schema 0015
 
 Проверка сначала полностью расшифровывает файл в закрытый временный файл.
 Только после успешной аутентификации создаётся отдельная временная БД.
@@ -39,10 +39,21 @@ pg_restore должен завершиться без ошибок; провер
 ## Расписание
 
 В deploy есть bonuspro-backup.service и bonuspro-backup.timer.
-Они используют /home/ubuntu/bonuspro-release и текущий тег из .env.release, не выполняют
+Таймер запускает отдельную root-owned копию скрипта, а не файл из checkout,
+доступного для записи пользователю ubuntu. Скрипт использует /home/ubuntu/bonuspro-release
+и текущий тег из .env.release, не выполняет
 git pull и не меняют конфигурацию. UTC-расписание: ежедневно около 03:00 плюс до
-15 минут случайного сдвига. На VPS нужно установить файлы в /etc/systemd/system,
-выполнить daemon-reload, enable --now таймера и проверить первый запуск.
+15 минут случайного сдвига. На VPS после ручной проверки копирования:
+```sh
+sudo install -d -o root -g root -m 700 /usr/local/lib/bonuspro-backup
+sudo install -o root -g root -m 700 scripts/backup_vps.py /usr/local/lib/bonuspro-backup/backup_vps.py
+sudo install -o root -g root -m 644 deploy/bonuspro-backup.service deploy/bonuspro-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now bonuspro-backup.timer
+sudo systemctl start bonuspro-backup.service
+sudo systemctl status bonuspro-backup.service --no-pager
+```
+При обновлении кода резервирования root-owned копия переустанавливается явно.
 
 Расписание — пример, а не согласованный RPO. Для магазина согласовать частоту,
 хранение, размер и оповещение. Автоматическое удаление копий намеренно не включено,

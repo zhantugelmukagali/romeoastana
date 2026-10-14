@@ -68,6 +68,7 @@ def main():
         run(*command,"exec","-T","app","python","-c",
             "import os; assert os.getuid()==10001; assert not os.access('/app',os.W_OK)")
         run(*command,"--profile","automation","run","--rm","worker","python","-m","bonuspro.worker","--once")
+        run(*command,"--profile","marketplace","run","--rm","worker-pool","python","-m","bonuspro.pool","--once")
         with tempfile.TemporaryFile() as archive,tempfile.TemporaryFile() as encrypted,tempfile.TemporaryFile() as decoded:
             subprocess.run([*command,"exec","-T","db","pg_dump","-U","postgres","-d","bonuspro","-Fc"],
                            stdout=archive,check=True,timeout=60)

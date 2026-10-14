@@ -65,8 +65,8 @@ Host events are accepted only from the actual parent and exact MoySklad origin.
 Tests exercise real PostgreSQL transactions and Chromium with synthetic provider/host transports.
 They do not prove the actual MoySklad permissions, schema acceptance, tax rounding, marker merge semantics,
 document editing or competing BonusPlus behavior. These remain explicit acceptance items.
-Schema 0007 adds immutable RLS-protected attempts and marker bindings. Application readiness requires the complete current schema 0013.
-The VPS is still on its previous image/schema: do not run migrations separately from a coordinated image upgrade.
+Schema 0007 adds immutable RLS-protected attempts and marker bindings. Application readiness requires the complete current schema 0015.
+Owner output confirms VPS image 8a55609 / schema 0013. Code 0015 requires a coordinated image/migration upgrade; worker and live acceptance remain pending.
 
 Official contracts reviewed:
 - https://dev.moysklad.ru/doc/api/vendor/1.0/#vidzhety

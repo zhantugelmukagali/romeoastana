@@ -90,6 +90,28 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 3
+  worker-pool:
+    <<: *app
+    profiles: [marketplace]
+    restart: unless-stopped
+    command: [python, -m, bonuspro.pool]
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?Set the HTTPS origin}
+      MOYSKLAD_APP_ID: ${MOYSKLAD_APP_ID:?Set the registered app UUID}
+      MOYSKLAD_APP_UID: ${MOYSKLAD_APP_UID:?Set the registered app UID}
+      MOYSKLAD_VENDOR_SECRET_FILE: /run/secrets/vendor_secret
+      TOKEN_ENCRYPTION_KEY_FILE: /run/secrets/token_encryption_key
+      DATABASE_URL_FILE: /run/secrets/app_database_url
+      LIFECYCLE_DATABASE_URL_FILE: /run/secrets/app_database_url
+    secrets: [vendor_secret, token_encryption_key, app_database_url]
+    depends_on:
+      app: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -m, bonuspro.pool, --health]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
 volumes:
   pgdata:
 secrets:

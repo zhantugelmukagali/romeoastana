@@ -45,7 +45,8 @@ class Worker:
         except Conflict:
             pass  # A replacement owner alone can acknowledge an expired lease.
 
-    def cycle(self,*,now=None):
+    def cycle(self,*,now=None,max_jobs=4):
+        if type(max_jobs) is not int or not 1<=max_jobs<=4:raise ValueError("bounded job batch required")
         # A separate session lock prevents duplicate coordinators for this tenant.
         # No financial database transaction is held during network requests.
         with closing(psycopg.connect(self.ledger.dsn,autocommit=True,connect_timeout=5)) as lock:
@@ -73,7 +74,7 @@ class Worker:
                     pass # Capacity/cursor conflict preserves the window; drain jobs to free it.
                 self.signals.prune(self.tenant)
                 self.automation.schedule(self.tenant)
-                for _ in range(4):
+                for _ in range(max_jobs):
                     job=self.automation.jobs.claim(self.tenant,lease_seconds=300)
                     if not job:
                         break
