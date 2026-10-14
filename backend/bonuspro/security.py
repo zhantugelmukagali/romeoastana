@@ -2,12 +2,17 @@
 import base64
 import binascii
 import os
+import logging
+import math
 import time
 from dataclasses import dataclass, field
 from uuid import UUID, uuid4
 
 import jwt
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+
+logger = logging.getLogger("bonuspro.vendor_auth")
 
 
 class AuthenticationFailed(ValueError):
@@ -36,27 +41,56 @@ class Secrets:
                           self.vendor_secret, algorithm="HS256")
 
     def verify_vendor(self, token: str) -> dict:
-        if not isinstance(token, str) or len(token) > 8192:
+        # Emit fixed reason codes only: never tokens, keys, claims or exception text.
+        def reject(reason):
+            logger.warning("VENDOR_AUTH_REJECT reason=%s", reason)
             raise AuthenticationFailed("invalid authentication")
+
+        if not isinstance(token, str) or not token or len(token) > 8192:
+            reject("token_format")
         try:
             header = jwt.get_unverified_header(token)
             if header.get("alg") != "HS256" or header.get("typ") != "JWT" or header.get("crit"):
-                raise AuthenticationFailed("invalid authentication")
-            claims = jwt.decode(token, self.vendor_secret, algorithms=["HS256"],
-                                options={"require": ["iat","exp","jti"], "verify_aud": False})
-            if any(type(claims[x]) is not int for x in ("iat","exp")):
-                raise AuthenticationFailed("invalid authentication")
-            if not 0 < claims["exp"]-claims["iat"] <= 300:
-                raise AuthenticationFailed("invalid authentication")
-            if not isinstance(claims["jti"], str) or not 1 <= len(claims["jti"]) <= 256:
-                raise AuthenticationFailed("invalid authentication")
-            # Provider inbound JWT has no specified issuer/audience claims.
-            # Reject our outbound token type; its subject belongs only to outbound requests.
-            if "sub" in claims:
-                raise AuthenticationFailed("wrong token purpose")
-            return claims
-        except (jwt.PyJWTError, TypeError, ValueError) as exc:
-            raise AuthenticationFailed("invalid authentication") from exc
+                reject("header")
+            claims = jwt.decode(
+                token, self.vendor_secret, algorithms=["HS256"],
+                options={"require": ["iat", "exp", "jti"], "verify_aud": False,
+                         "verify_iat": False, "verify_exp": False, "verify_nbf": False})
+        except AuthenticationFailed:
+            raise
+        except jwt.InvalidSignatureError:
+            reject("signature")
+        except jwt.MissingRequiredClaimError:
+            reject("required_claim")
+        except (jwt.PyJWTError, TypeError, ValueError):
+            reject("jwt_format")
+
+        # Inbound NumericDate is a JSON number, including fractional seconds.
+        # The documented 300-second cap applies to developer -> provider tokens;
+        # it is not a documented lifetime limit for provider -> developer tokens.
+        for name in ("iat", "exp", "nbf"):
+            if name not in claims:
+                continue
+            value = claims[name]
+            if (type(value) not in (int, float) or not 0 <= value <= 253402300799
+                    or not math.isfinite(value)):
+                reject("numeric_date")
+        now = time.time()
+        if claims["exp"] <= now:
+            reject("expired")
+        if claims["iat"] > now or ("nbf" in claims and claims["nbf"] > now):
+            reject("not_yet_valid")
+        if claims["exp"] <= claims["iat"]:
+            reject("time_order")
+        if not isinstance(claims["jti"], str) or not 1 <= len(claims["jti"]) <= 256:
+            reject("jti")
+        # Our outbound token type has a subject and must never authorize callbacks.
+        if "sub" in claims:
+            reject("token_purpose")
+        # Lifecycle ordering is stored in whole seconds. Normalize only after
+        # validating the signature and the original, unrounded time boundaries.
+        claims["iat"] = math.floor(claims["iat"])
+        return claims
 
     def encrypt(self, tenant: str, token: str) -> str:
         tenant = str(UUID(tenant))

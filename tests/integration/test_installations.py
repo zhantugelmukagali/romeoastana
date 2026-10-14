@@ -41,8 +41,12 @@ class InstallationTests(unittest.TestCase):
         claims=self.claims()
         self.repo.change(self.account,claims,"Install","synthetic-remap-token")
         session=self.repo.create_session(self.identity)
-        with self.assertRaises(AuthenticationFailed):
-            self.repo.change(self.account,claims,"Install","synthetic-remap-token")
+        with self.assertLogs("bonuspro.vendor_auth",level="WARNING") as logs:
+            with self.assertRaises(AuthenticationFailed):
+                self.repo.change(self.account,claims,"Install","synthetic-remap-token")
+        self.assertEqual(len(logs.output),1)
+        self.assertIn("reason=replay",logs.output[0])
+        self.assertNotIn(claims["jti"],logs.output[0])
         self.repo.change(self.account,self.claims(1),"Install","synthetic-remap-token")
         self.assertEqual(self.repo.authenticate(session),self.identity)
 
@@ -120,6 +124,24 @@ class InstallationTests(unittest.TestCase):
             response=client.post("/api/session",json={"token":{"secret":"do-not-echo-this"}})
             self.assertEqual(response.status_code,422)
             self.assertNotIn("do-not-echo-this",response.text)
+
+    def test_http_long_lived_fractional_vendor_token_and_replay(self):
+        with self.client() as client:
+            path=f"/api/moysklad/vendor/1.0/apps/{self.config.app_id}/{self.account}"
+            body={"appUid":self.config.app_uid,"cause":"Install",
+                  "access":[{"resource":"https://api.moysklad.ru/api/remap/1.2/",
+                             "access_token":"synthetic-remap-token"}]}
+            claims=dict(self.claims(),iat=self.stamp+0.25,exp=time.time()+3600)
+            token=jwt.encode(claims,self.config.vendor_secret,algorithm="HS256")
+            headers={"Authorization":"Bearer "+token}
+            response=client.put(path,json=body,headers=headers)
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json(),{"status":"SettingsRequired"})
+            self.assertEqual(client.put(path,json=body,headers=headers).status_code,401)
+            with self.repo.lifecycle() as conn:
+                row=conn.execute("SELECT last_event_iat FROM bonuspro.installations WHERE tenant_id=%s",
+                                 (self.account,)).fetchone()
+            self.assertEqual(row["last_event_iat"],self.stamp)
 
     def test_http_session_origin_and_permissions(self):
         self.install()
