@@ -1,5 +1,6 @@
 """Actual ASGI/static responses must preserve bytes, lengths, ranges and headers."""
 import unittest
+import asyncio
 from pathlib import Path
 from uuid import uuid4
 from fastapi.testclient import TestClient
@@ -57,18 +58,22 @@ class StaticBodyTests(unittest.TestCase):
 
 
 class AsgiTransportTests(unittest.IsolatedAsyncioTestCase):
-    async def test_static_body_is_not_cancelled_by_body_receiving_wrapper(self):
+    async def test_static_body_is_complete_until_connection_really_closes(self):
         app = application()
         events = []
         first = True
+        completed = asyncio.Event()
         async def receive():
             nonlocal first
             if first:
                 first = False
                 return {"type":"http.request", "body":b"", "more_body":False}
+            await completed.wait()
             return {"type":"http.disconnect"}
         async def send(message):
             events.append(dict(message))
+            if message["type"] == "http.response.body" and not message.get("more_body", False):
+                completed.set()
         scope = {"type":"http", "asgi":{"version":"3.0","spec_version":"2.3"},
                  "http_version":"1.1", "method":"GET", "scheme":"https",
                  "path":"/assets/bridge.js", "raw_path":b"/assets/bridge.js",
