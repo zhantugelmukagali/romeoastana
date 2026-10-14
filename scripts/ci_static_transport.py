@@ -43,7 +43,7 @@ def check_static_transport():
                       "--fail", "--connect-timeout", "3", "--max-time", "15",
                       "--resolve", "ci.bonuspro.test:18443:127.0.0.1"]
             # Insecure is limited to a disposable local CA; production TLS is unchanged.
-            subprocess.run([*common, "--retry", "10", "--retry-connrefused", "--retry-delay", "1",
+            subprocess.run([*common, "--retry", "10", "--retry-all-errors", "--retry-delay", "1",
                             "--output", "/dev/null", "https://ci.bonuspro.test:18443/health/ready"],
                            check=True, timeout=180)
             for protocol, expected in (("--http1.1", "1.1"), ("--http2", "2")):
