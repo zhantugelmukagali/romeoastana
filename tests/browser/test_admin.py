@@ -20,6 +20,7 @@ class BrowserTests(unittest.TestCase):
         self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1280,"height":960})
         self.page=self.context.new_page()
+        self.host=HOST
         self.pending=[dict(CASE)]
         self.decisions=[]
         self.context.route("**/*",self.route)
@@ -32,7 +33,7 @@ class BrowserTests(unittest.TestCase):
     def route(self,route):
         url=route.request.url
         if url.startswith("https://online.moysklad.ru/"):
-            return route.fulfill(content_type="text/html",body=HOST)
+            return route.fulfill(content_type="text/html",body=self.host)
         if not url.startswith("https://widget.test/"):
             return route.abort()
         path=url.split("https://widget.test",1)[1]
@@ -87,3 +88,57 @@ class BrowserTests(unittest.TestCase):
         self.page.goto("https://widget.test/admin")
         self.page.get_by_text("Откройте БонусПро из МойСклад.",exact=True).wait_for()
         self.assertFalse(self.page.get_by_role("button",name="Обновить",exact=True).is_visible())
+
+    def test_context_request_waits_for_host_iframe_load_registration(self):
+        self.host="""<!doctype html><script>
+        let ready=false;
+        window.addEventListener('message',e=>{
+          if(ready && e.data.name==='UserContextRequest')
+            e.source.postMessage({name:'UserContextResponse',
+              correlationId:e.data.messageId,token:'synthetic-context'},'https://widget.test');
+        });
+        </script><iframe title="БонусПро" src="https://widget.test/admin"
+          onload="ready=true;this.contentWindow.postMessage({name:'Open',messageId:90},'https://widget.test')"
+          style="width:100%;height:850px"></iframe>"""
+        self.open()
+        self.assertTrue(self.frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).is_visible())
+
+    def test_null_correlation_host_error_is_specific_and_does_not_echo_private_fields(self):
+        self.host="""<!doctype html><script>
+        window.addEventListener('message',e=>{
+          if(e.data.name==='UserContextRequest')
+            e.source.postMessage({name:'InvalidMessageError',correlationId:null,
+              invalidMessage:{name:e.data.name,messageId:e.data.messageId},
+              errors:[{code:1004,error:'private-token-value-do-not-echo'}]},'https://widget.test');
+        });
+        </script><iframe title="БонусПро" src="https://widget.test/admin"
+          style="width:100%;height:850px"></iframe>"""
+        self.page.goto("https://online.moysklad.ru/test-host")
+        frame=self.page.frame_locator("iframe")
+        frame.get_by_text("МойСклад отклонил подключение. Код BP-CTX-1004.",exact=True).wait_for()
+        self.assertNotIn("private-token-value",self.page.frames[1].locator("body").inner_text())
+        self.assertTrue(frame.get_by_role("button",name="Повторить подключение",exact=True).is_visible())
+
+    def test_untrusted_source_does_not_authorize_context_and_timeout_has_only_flags(self):
+        self.host="""<!doctype html><script>
+        window.addEventListener('message',e=>{
+          if(e.data.name==='UserContextRequest')
+            e.source.postMessage({name:'UnrelatedMessage',correlationId:e.data.messageId+1,
+              token:'private-token-value-do-not-echo'},'https://widget.test');
+        });
+        </script><iframe title="БонусПро" src="https://widget.test/admin"
+          style="width:100%;height:850px"></iframe>"""
+        self.context.add_init_script("""if(location.hostname==='widget.test'){
+          const timer=window.setTimeout.bind(window);
+          window.setTimeout=(f,ms,...args)=>timer(f,ms===10000?500:ms,...args);
+        }""")
+        self.page.goto("https://online.moysklad.ru/test-host")
+        frame=self.page.frame_locator("iframe")
+        frame.get_by_role("heading",name="Возвраты",exact=True).wait_for()
+        self.page.frames[1].evaluate("""window.postMessage({
+          name:'UserContextResponse',correlationId:1,token:'private-token-value-do-not-echo'
+        },'*')""")
+        frame.get_by_text("МойСклад не ответил. Повторите подключение. Код BP-CTX-P1H1O0R0S0E0.",exact=True).wait_for()
+        body=self.page.frames[1].locator("body").inner_text()
+        self.assertNotIn("private-token-value",body)
+        self.assertFalse(frame.get_by_role("button",name="Обновить",exact=True).is_visible())
