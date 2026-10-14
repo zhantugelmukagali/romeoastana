@@ -50,8 +50,20 @@ class Secrets:
             reject("token_format")
         try:
             header = jwt.get_unverified_header(token)
-            if header.get("alg") != "HS256" or header.get("typ") != "JWT" or header.get("crit"):
-                reject("header")
+            algorithm = header.get("alg")
+            if algorithm != "HS256":
+                # Classify only allowlisted names; never echo arbitrary header data.
+                label = {"HS384": "hs384", "HS512": "hs512",
+                         "none": "none"}.get(algorithm, "other") if isinstance(algorithm, str) else "invalid"
+                reject("header_algorithm_" + label)
+            if "crit" in header:
+                reject("header_critical")
+            token_type = header.get("typ")
+            # typ is optional media-type metadata in RFC 7519 section 5.1.
+            # Permit its absence and JWT casing variants, while keeping the
+            # fixed algorithm, signature, purpose and replay checks mandatory.
+            if "typ" in header and (not isinstance(token_type, str) or token_type.upper() != "JWT"):
+                reject("header_type")
             claims = jwt.decode(
                 token, self.vendor_secret, algorithms=["HS256"],
                 options={"require": ["iat", "exp", "jti"], "verify_aud": False,
@@ -90,6 +102,8 @@ class Secrets:
         # Lifecycle ordering is stored in whole seconds. Normalize only after
         # validating the signature and the original, unrounded time boundaries.
         claims["iat"] = math.floor(claims["iat"])
+        if "typ" not in header:
+            logger.warning("VENDOR_AUTH_COMPAT typ=absent")
         return claims
 
     def encrypt(self, tenant: str, token: str) -> str:

@@ -143,6 +143,21 @@ class InstallationTests(unittest.TestCase):
                                  (self.account,)).fetchone()
             self.assertEqual(row["last_event_iat"],self.stamp)
 
+    def test_http_vendor_install_without_optional_type_metadata(self):
+        with self.client() as client:
+            path=f"/api/moysklad/vendor/1.0/apps/{self.config.app_id}/{self.account}"
+            body={"appUid":self.config.app_uid,"cause":"Install",
+                  "access":[{"resource":"https://api.moysklad.ru/api/remap/1.2/",
+                             "access_token":"synthetic-remap-token"}]}
+            token=jwt.encode(self.claims(),self.config.vendor_secret,algorithm="HS256",headers={"typ":None})
+            with self.assertLogs("bonuspro.vendor_auth",level="WARNING") as logs:
+                response=client.put(path,json=body,headers={"Authorization":"Bearer "+token})
+            self.assertEqual(response.status_code,200,response.text)
+            self.assertEqual(response.json(),{"status":"SettingsRequired"})
+            self.assertIn("VENDOR_AUTH_COMPAT typ=absent","".join(logs.output))
+            self.assertNotIn(token,"".join(logs.output))
+            self.assertEqual(client.put(path,json=body,headers={"Authorization":"Bearer "+token}).status_code,401)
+
     def test_http_session_origin_and_permissions(self):
         self.install()
         with self.client() as client:

@@ -38,6 +38,42 @@ class SecurityTests(unittest.TestCase):
             with self.assertRaises(AuthenticationFailed):
                 self.config.verify_vendor(token)
 
+
+    def test_optional_type_and_case_variants_require_valid_signature(self):
+        for token_type in (None,"jwt","Jwt","JWT"):
+            token=jwt.encode(self.claims(),self.config.vendor_secret,algorithm="HS256",
+                             headers={"typ":token_type})
+            self.assertIn("jti",self.config.verify_vendor(token))
+            forged=jwt.encode(self.claims(),"wrong-key-"+"z"*32,algorithm="HS256",
+                              headers={"typ":token_type})
+            with self.assertRaises(AuthenticationFailed):
+                self.config.verify_vendor(forged)
+
+    def test_outbound_reflection_is_rejected_without_type_metadata(self):
+        claims=jwt.decode(self.config.outbound_jwt(),self.config.vendor_secret,algorithms=["HS256"])
+        token=jwt.encode(claims,self.config.vendor_secret,algorithm="HS256",headers={"typ":None})
+        with self.assertRaises(AuthenticationFailed):
+            self.config.verify_vendor(token)
+
+    def test_header_reasons_are_specific_and_never_echo_header_values(self):
+        cases=[
+            ({"alg":"HS384","typ":"JWT"},"HS384","header_algorithm_hs384"),
+            ({"alg":"HS512","typ":"JWT"},"HS512","header_algorithm_hs512"),
+            ({"typ":"private-untrusted-header"},"HS256","header_type"),
+            ({"typ":True},"HS256","header_type"),
+            ({"crit":["private-untrusted-header"]},"HS256","header_critical"),
+            ({"crit":[]},"HS256","header_critical"),
+        ]
+        for headers,algorithm,reason in cases:
+            token=jwt.encode(self.claims(),self.config.vendor_secret,algorithm=algorithm,headers=headers)
+            with self.assertLogs("bonuspro.vendor_auth",level="WARNING") as logs:
+                with self.assertRaises(AuthenticationFailed):
+                    self.config.verify_vendor(token)
+            self.assertEqual(len(logs.output),1)
+            self.assertIn("reason="+reason,logs.output[0])
+            self.assertNotIn("private-untrusted-header",logs.output[0])
+            self.assertNotIn(token,logs.output[0])
+
     def test_time_bounds_and_required_jti(self):
         now=int(time.time())
         cases=[self.claims(exp=now-1),self.claims(iat=now+10),
