@@ -5,12 +5,12 @@
 
 ## Подтверждённые проверки
 
-Код 9e56ad8d12422f3fd2e6cb8f21b983868f9f3d8e:
-[Domain checks 38505333851](https://github.com/zhantugelmukagali/romeoastana/actions/runs/38505333851).
+Код 8287e4fa1a5b2f10e6e0260c379bae7d50b25098:
+[Domain checks 38507174043](https://github.com/zhantugelmukagali/romeoastana/actions/runs/38507174043).
 
 - 14 финансовых unit-тестов.
 - 78 тестов безопасности и контрактов провайдера.
-- 197 тестов PostgreSQL/API: деньги, роли, tenant RLS, конкуренция, возвраты,
+- 203 теста PostgreSQL/API: деньги, роли, tenant RLS, конкуренция, возвраты,
   импорт, активация, отзыв доступа, отменённые резервы и поздние метки.
 - 22 браузерных сценария Chromium, включая узкую ширину, потерянный ответ,
   подтверждение импорта/активации и выдачу/отзыв доступа.
@@ -20,8 +20,8 @@
 - Непустой журнал зашифрован и расшифрован контейнером, восстановлен pg_dump/pg_restore в отдельную тестовую БД;
   баланс прочитан ограниченной ролью с RLS.
 - Проверка зафиксированных Python-зависимостей pip-audit прошла.
-- [Marketplace / XSD](https://github.com/zhantugelmukagali/romeoastana/actions/runs/38505333777)
-  и [HTTPS deployment checks](https://github.com/zhantugelmukagali/romeoastana/actions/runs/38505333792) прошли.
+- [Marketplace / XSD](https://github.com/zhantugelmukagali/romeoastana/actions/runs/38507174024)
+  и [HTTPS deployment checks](https://github.com/zhantugelmukagali/romeoastana/actions/runs/38507173996) прошли.
 
 Сеть МойСклад в прикладных тестах и host в браузере имитируются. Тесты не доказывают
 реальную установку, скидку, настройку прав или состояние сервера заказчика.

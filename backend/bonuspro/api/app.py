@@ -483,7 +483,8 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         generation=signals.generation(identity.tenant_id)
         tag=signature(config.credentials.encryption_key,config.credentials.app_id,identity.tenant_id,generation)
         url=config.origin+"/hooks/remap/"+config.credentials.app_id+"/"+identity.tenant_id+"/"+generation+"/"+tag
-        count=document_client(identity).ensure_webhooks(url)
+        client=remap_factory(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=30,minimum_interval=0.15)
+        count=client.ensure_webhooks(url)
         admin_identity(request)
         signals.record_setup(identity.tenant_id,generation,count)
         return {"configured":True,"hook_count":count}
