@@ -155,4 +155,14 @@ class DiscoveryTests(unittest.TestCase):
         for value in (None,"2026-99-99","2026-10-14T10:00:00Z"):
             with self.assertRaises(InvalidDocument):moment(value)
 
+class CancellationSafetyTests(unittest.TestCase):
+    def test_invoice_link_prevents_unpaid_cancellation_proof(self):
+        f=Fixture();f.include_ship=False;f.include_pay=False;f.doc["applicable"]=False
+        f.doc["invoicesOut"]=[ref("invoiceout")]
+        self.assertFalse(FulfillmentReader(f).read(f.order).cancel_safe)
+    def test_payment_allocated_to_unposted_demand_prevents_safe_cancel(self):
+        f=Fixture();f.doc["applicable"]=False;f.ship["applicable"]=False
+        f.pay["operations"]=[{**ref("demand",f.demand),"linkedSum":1200000}]
+        self.assertFalse(FulfillmentReader(f).read(f.order).cancel_safe)
+
 if __name__=="__main__":unittest.main()

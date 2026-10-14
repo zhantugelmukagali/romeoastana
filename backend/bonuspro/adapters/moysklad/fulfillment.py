@@ -182,4 +182,5 @@ class FulfillmentReader:
         return Fulfillment(saved,created,paid,shipped,outcome,digest(second),start+120,
                            tuple(returned_lines),actual==expected and shipped==saved.snapshot.total_minor,
                            paid>=saved.snapshot.total_minor,
-                           saved.snapshot.cancelled and not posted and linked_paid==0)
+                           saved.snapshot.cancelled and not posted and linked_paid==0
+                           and not doc.get("invoicesOut") and not doc.get("prepayments"))
