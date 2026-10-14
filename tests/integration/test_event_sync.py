@@ -144,6 +144,22 @@ class EventSyncTests(unittest.TestCase):
             with self.ledger.transaction(self.tenant) as conn:conn.execute("DELETE FROM bonuspro.webhook_inbox")
         with self.assertRaises(psycopg.Error):
             with self.ledger.transaction(self.tenant) as conn:conn.execute("UPDATE bonuspro.webhook_inbox SET events='[]'::jsonb")
+    def test_routing_budget_exhaustion_keeps_inbox_and_does_not_starve_accrual(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from bonuspro.worker import Worker
+        from bonuspro.adapters.moysklad.fulfillment import Fulfillment
+        self.ingest([self.event("paymentin",str(uuid4()))])
+        proof=Fulfillment(self.fx.saved,self.auto.state(self.tenant)["starts_at"]+timedelta(seconds=1),
+            self.fx.saved.snapshot.total_minor,self.fx.saved.snapshot.total_minor,
+            "eligible","a"*64,time.monotonic()+120)
+        worker=Worker(self.ledger,self.fx.install,self.tenant,
+            client_factory=lambda *a,**kw:SimpleNamespace(order_ids_between=lambda *a:[],changed_ids_between=lambda *a:[]))
+        with patch.object(worker.signals,"drain",side_effect=RetryLater(5,"provider_timeout")),patch("bonuspro.worker.FulfillmentReader.read",return_value=proof):
+            self.assertEqual(worker.cycle(),"processed")
+        self.assertEqual(self.signals.status(self.tenant)["inbox"]["pending"],1)
+        self.assertEqual(self.balance()["balance"],5500)
+
     def test_notification_storm_is_bounded_and_does_not_move_stream_cursor(self):
         from psycopg.types.json import Jsonb
         with self.ledger.transaction(self.tenant) as conn:

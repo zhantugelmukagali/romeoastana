@@ -63,7 +63,7 @@ class Signals:
 
     def resolve(self,tenant,client,kind,identity):
         result=self.known(tenant,kind,identity)
-        try:result.update(affected_orders(client,kind,identity))
+        try:result.update(affected_orders(client,kind,identity,known=lambda k,i:self.known(tenant,k,i)))
         except EntityMissing:
             pass # Deletion is a hint for every previously indexed relationship.
         return result

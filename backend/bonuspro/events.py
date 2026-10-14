@@ -37,7 +37,7 @@ def parse_events(body,tenant):
     except (ValueError,TypeError,UnicodeError,RecursionError,InvalidDocument):
         raise InvalidDocument("invalid webhook envelope") from None
 
-def affected_orders(client,kind,identity):
+def affected_orders(client,kind,identity,*,known=None):
     """Resolve current references on the fixed API host; deleted links use the DB index."""
     if kind=="customerorder":return {uuid(identity)}
     doc=client.entity(kind,identity)
@@ -57,7 +57,8 @@ def affected_orders(client,kind,identity):
         allowed={"customerorder"} if kind=="demand" else ({"demand"} if kind=="salesreturn" else {"customerorder","demand","salesreturn"})
         target,identity=reference(meta,allowed)
         if target=="customerorder":result.add(identity)
-        elif target=="demand":result.update(affected_orders(client,"demand",identity))
-        elif target=="salesreturn" and kind in ("paymentin","paymentout","cashin","cashout"):
-            result.update(affected_orders(client,"salesreturn",identity))
+        elif target in ("demand","salesreturn"):
+            cached=known(target,identity) if known else set()
+            if cached:result.update(cached)
+            else:result.update(affected_orders(client,target,identity,known=known))
     return result

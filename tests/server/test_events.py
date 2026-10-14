@@ -49,6 +49,16 @@ class EventContractTests(unittest.TestCase):
                 if kind=="salesreturn":return {"demand":outer.ref("demand",demand)}
                 return {"customerOrder":outer.ref("customerorder",order)}
         self.assertEqual(affected_orders(Client(),"paymentin",self.document),{order})
+    def test_nested_index_is_a_hint_cache_and_does_not_skip_current_root(self):
+        order,demand=str(uuid4()),str(uuid4())
+        outer=self;calls=[]
+        class Client:
+            def entity(inner,kind,id):
+                calls.append(kind)
+                return {"operations":[outer.ref("demand",demand)]}
+        value=affected_orders(Client(),"paymentin",self.document,known=lambda k,i:{order} if (k,i)==("demand",demand) else set())
+        self.assertEqual(value,{order});self.assertEqual(calls,["paymentin"])
+
     def test_updated_scan_validates_timestamp_scope_and_region(self):
         start=datetime(2026,10,14,tzinfo=timezone.utc);end=start+timedelta(minutes=1)
         row={"id":self.document,"accountId":self.tenant,"meta":{"type":"paymentin"},"updated":"2026-10-14 03:00:30.000"}

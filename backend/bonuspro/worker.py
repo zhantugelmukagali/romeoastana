@@ -67,7 +67,13 @@ class Worker:
                 if end>=cursor and end>start:
                     orders=self.client().order_ids_between(start,end)
                     self.automation.discovery_complete(self.tenant,expected_cursor=cursor,until=end,orders=orders)
-                self.signals.drain(self.tenant,self.client())
+                try:
+                    self.signals.drain(self.tenant,self.client())
+                except RetryLater as error:
+                    if error.code!="provider_timeout":raise
+                    # Keep the inbox offset; its routing budget must not starve ordinary
+                    # financial checks, which can populate the missing relationship index.
+                    self.automation.cooldown(self.tenant,0,"provider_timeout")
                 try:
                     self.streams.scan(self.tenant,self.client(),now)
                 except Conflict:
