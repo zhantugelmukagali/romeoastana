@@ -22,6 +22,8 @@ from bonuspro.adapters.postgres.returns import Returns
 from bonuspro.adapters.postgres.checkout import Checkout
 from bonuspro.adapters.postgres.redemptions import Redemptions
 from bonuspro.adapters.postgres.automation import Automation
+from bonuspro.adapters.postgres.imports import Imports
+from bonuspro.importing import ImportInvalid
 from bonuspro.adapters.moysklad.remap import RemapClient, RemapError, RetryLater, AccessDenied, EntityMissing
 from bonuspro.adapters.moysklad.order import read_order
 from bonuspro.adapters.moysklad.fulfillment import FulfillmentReader
@@ -76,6 +78,15 @@ class IssueDecision(BaseModel):
     def nonblank(cls,value):
         if not value.strip():raise ValueError("reason required")
         return value.strip()
+
+
+class ImportPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    csv_text: str = Field(min_length=1,max_length=60000)
+
+
+class ImportCommit(IssueDecision):
+    digest: str = Field(pattern="^[0-9a-f]{64}$")
 
 
 class RuleUpdate(BaseModel):
@@ -137,6 +148,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     checkout = Checkout(Ledger(config.database_url))
     redemptions = Redemptions(Ledger(config.database_url))
     automation = Automation(Ledger(config.database_url))
+    imports = Imports(Ledger(config.database_url))
     remap_factory = remap_factory or RemapClient
     app = FastAPI(title="БонусПро",docs_url=None,redoc_url=None,openapi_url=None)
     app.add_middleware(BodyLimit)
@@ -159,6 +171,10 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     @app.exception_handler(AuthenticationFailed)
     async def invalid_auth(request, error):
         return JSONResponse({"error":"authentication required"},status_code=401)
+
+    @app.exception_handler(ImportInvalid)
+    async def invalid_import(request,error):
+        return JSONResponse({"error":"invalid_import","message":str(error)},status_code=422)
 
     @app.exception_handler(Conflict)
     async def conflict(request, error):
@@ -214,9 +230,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         try:
             with psycopg.connect(config.database_url,connect_timeout=3) as conn:
                 conn.execute("SET LOCAL statement_timeout='3s'")
-                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events')").fetchone()
+                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events'),to_regclass('bonuspro.import_batches'),to_regclass('bonuspro.opening_balances')").fetchone()
                 revision = conn.execute("SELECT version_num FROM public.alembic_version").fetchall()
-                if not all(exists) or revision != [("0009",)]:
+                if not all(exists) or revision != [("0010",)]:
                     raise RuntimeError("missing schema")
             return {"status":"ready"}
         except (psycopg.Error,RuntimeError):
@@ -319,6 +335,28 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     def document_client(identity):
         return remap_factory(repo.remap_token(identity.tenant_id),identity.tenant_id)
+
+    @app.get("/migration")
+    def migration_page():
+        return FileResponse(web / "migration.html")
+
+    @app.get("/api/admin/imports")
+    def import_history(request: Request):
+        identity=widget_identity(request)
+        return imports.history(identity.tenant_id)
+
+    @app.post("/api/admin/imports/preview")
+    def import_preview(body: ImportPreview,request: Request):
+        same_origin(request);identity=widget_identity(request)
+        client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.15) if remap_factory is RemapClient else document_client(identity)
+        result=imports.preview(identity.tenant_id,body.csv_text,identity.user_id,client)
+        repo.authenticate(bearer(request))
+        return result
+
+    @app.post("/api/admin/imports/{batch_id}/commit")
+    def import_commit(batch_id: UUID,body: ImportCommit,request: Request):
+        same_origin(request);identity=widget_identity(request)
+        return imports.commit(identity.tenant_id,str(batch_id),digest=body.digest,actor=identity.user_id,reason=body.reason)
 
     @app.get("/api/admin/settlements")
     def settlement_list(request: Request,state: Literal["pending","applied","waived","superseded"]="pending",before: UUID | None=None):

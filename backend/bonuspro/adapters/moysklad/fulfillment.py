@@ -109,6 +109,7 @@ class FulfillmentReader:
         created=moment(doc.get("created"))
         posted=[]
         paid=0
+        linked_paid=0
         returned_lines=[]
         for demand,rows,returns in demands:
             if link(demand,"customerOrder",{"customerorder"})[1]!=saved.snapshot.order_id:
@@ -160,6 +161,10 @@ class FulfillmentReader:
             if allocated>exact_minor(payment["sum"]):
                 raise InvalidDocument("payment allocations exceed payment")
             paid+=counted
+            related={uuid(x[0]["id"]) for x in demands}
+            linked_paid+=sum(exact_minor(o["linkedSum"]) for o in operations
+                if reference(o.get("meta"),{"customerorder","demand","invoiceout","retailshift","commissionreportout","prepayment"}) in
+                ({("customerorder",saved.snapshot.order_id)}|{("demand",i) for i in related}))
         shipped=sum(x.snapshot.total_minor for x in posted)
         actual=basket([line for demand in posted for line in demand.lines])
         expected=basket(saved.lines)
@@ -177,4 +182,4 @@ class FulfillmentReader:
         return Fulfillment(saved,created,paid,shipped,outcome,digest(second),start+120,
                            tuple(returned_lines),actual==expected and shipped==saved.snapshot.total_minor,
                            paid>=saved.snapshot.total_minor,
-                           saved.snapshot.cancelled and not posted and paid==0)
+                           saved.snapshot.cancelled and not posted and linked_paid==0)

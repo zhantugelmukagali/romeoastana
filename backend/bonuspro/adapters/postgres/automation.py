@@ -199,6 +199,11 @@ class Automation:
                 if str(issue["resolved_by"])==actor and issue["resolution_reason"]==reason:return {"resolved":True}
                 raise Conflict("issue already resolved")
             self.apply_in(conn,tenant,{"entity_id":issue["order_id"]},proof)
+            issue=conn.execute("SELECT * FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND id=%s FOR UPDATE",
+                              (tenant,uuid_value(identity))).fetchone()
+            if issue["resolved_at"]:
+                if str(issue["resolved_by"])==actor and issue["resolution_reason"]==reason:return {"resolved":True}
+                raise Conflict("issue already resolved")
             prior=conn.execute("SELECT * FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s",
                                (tenant,issue["order_id"])).fetchone()
             if not prior or prior["financial_hash"]!=fingerprint(proof.saved.financial()) or prior["saved_marker"]!=proof.saved.marker or proof.outcome=="document_review":

@@ -1,0 +1,15 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>БонусПро · Перенос остатков</title><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/migration.js"></script></head>
+<body><main><header><div><span class="brand">БонусПро</span><h1>Перенос остатков</h1></div><a href="/settings">Настройки</a></header>
+<p id="status" role="status" aria-live="polite">Подключаемся к МойСклад…</p><button id="retry" hidden>Повторить подключение</button>
+<section id="workspace" hidden>
+<p>Перенос выполняется до запуска программы. Клиентов сначала нужно сопоставить с контрагентами МойСклад по UUID. Совпадение имени не считается подтверждением.</p>
+<p>Формат: UTF-8 CSV, колонки <strong>counterparty_id,bonus_balance</strong>. До 100 клиентов и 60 КБ в одном файле. Балансы — целые неотрицательные бонусы.</p>
+<form id="upload"><label for="file">Файл остатков</label><input id="file" type="file" accept=".csv,text/csv" required>
+<button id="preview-button" type="submit">Проверить файл</button></form>
+<section id="preview" hidden><h2>Проверка перед переносом</h2><p id="total"></p><div id="rows"></div>
+<label for="reason">Основание переноса</label><textarea id="reason" rows="3" maxlength="500" placeholder="Например: остатки сверены с выгрузкой БонусПлюс на дату переключения"></textarea>
+<label><input id="confirmed" type="checkbox"> Клиенты и общая сумма сверены с исходной выгрузкой</label>
+<button id="commit" class="primary" disabled>Перенести остатки</button></section>
+<h2>История переносов</h2><button id="refresh">Обновить историю</button><div id="history"></div>
+</section></main></body></html>
