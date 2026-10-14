@@ -16,7 +16,7 @@ class ImportAPITests(unittest.TestCase):
                 "Origin":"https://testserver"}
     def test_admin_origin_and_preview_commit_boundary(self):
         h=self.headers();p="/api/admin/imports/preview";body={"csv_text":self.fx.csv()}
-        self.assertEqual(self.client.post(p,json=body).status_code,401)
+        self.assertEqual(self.client.post(p,headers={"Origin":"https://testserver"},json=body).status_code,401)
         self.assertEqual(self.client.post(p,headers=self.headers("worker"),json=body).status_code,403)
         self.assertEqual(self.client.post(p,headers={**h,"Origin":"https://evil.test"},json=body).status_code,403)
         r=self.client.post(p,headers=h,json=body);self.assertEqual(r.status_code,200,r.text);b=r.json()
