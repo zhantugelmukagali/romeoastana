@@ -111,6 +111,9 @@ class Automation:
                 s.order_id,attempt["quote_hash"],attempt["points"]*100,s.revision))
             bonus_minor=attempt["points"]*100
         elif saved.marker:
+            if context:
+                self.ledger._wallet_lock(conn,tenant,str(context["wallet_id"]))
+                self.issue_in(conn,tenant,s.order_id,str(context["wallet_id"]),"unrecognized_bonus_marker",proof.evidence_hash)
             self.outcome_in(conn,tenant,s.order_id,"document_review")
             return
         if prior:
@@ -206,7 +209,13 @@ class Automation:
                 raise Conflict("issue already resolved")
             prior=conn.execute("SELECT * FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s",
                                (tenant,issue["order_id"])).fetchone()
-            if not prior or prior["financial_hash"]!=fingerprint(proof.saved.financial()) or prior["saved_marker"]!=proof.saved.marker or proof.outcome=="document_review":
+            original_ok=bool(prior and prior["financial_hash"]==fingerprint(proof.saved.financial()) and prior["saved_marker"]==proof.saved.marker)
+            if not prior and not proof.saved.marker:
+                attempts=conn.execute("SELECT a.plan FROM bonuspro.redemption_attempts a JOIN bonuspro.redemption_voids v "
+                    "ON v.tenant_id=a.tenant_id AND v.reservation_id=a.id WHERE a.tenant_id=%s AND a.order_id=%s",
+                    (tenant,issue["order_id"])).fetchall()
+                original_ok=any(row["plan"]["before"]==proof.saved.financial() for row in attempts)
+            if not original_ok or proof.outcome=="document_review":
                 raise Conflict("document is still inconsistent")
             if time.monotonic()>proof.deadline:raise Conflict("expired correction proof")
             conn.execute("UPDATE bonuspro.reconciliation_issues SET resolved_at=clock_timestamp(),resolved_by=%s,resolution_reason=%s "
@@ -237,7 +246,7 @@ class Automation:
                                "AND created_at<clock_timestamp()-interval '15 minutes'",(tenant,)).fetchone()["n"]
             pending=conn.execute("SELECT count(*) AS n FROM bonuspro.settlement_cases WHERE tenant_id=%s AND state='pending'",(tenant,)).fetchone()["n"]
             queue=conn.execute("SELECT min(created_at) AS oldest FROM bonuspro.jobs WHERE tenant_id=%s AND state IN ('queued','running')",(tenant,)).fetchone()["oldest"]
-            unknown=conn.execute("SELECT order_id,points,created_at FROM bonuspro.reservations WHERE tenant_id=%s AND state='verifying' ORDER BY created_at LIMIT 50",(tenant,)).fetchall()
+            unknown=conn.execute("SELECT id,order_id,points,created_at FROM bonuspro.reservations WHERE tenant_id=%s AND state='verifying' ORDER BY created_at LIMIT 50",(tenant,)).fetchall()
         return dict(configuration=self.state(tenant),orders={r["outcome"]:r["n"] for r in counts},
                     jobs={r["state"]:r["n"] for r in jobs},issues=issues,
                     attention=dict(stale_reservations=stale,pending_returns=pending,oldest_job=queue),unverified=unknown)

@@ -21,8 +21,8 @@ function link(order){
 }
 function open(item,action){
   selected={item,action};$("reason").value="";$("error").textContent="";
-  $("title").textContent=action==="issue"?"Проверить исправление?":action==="apply"?"Выполнить пересчёт?":"Сохранить бонусы клиенту?";
-  $("impact").textContent=action==="issue"?"Сервер заново проверит документ. Блокировка снимется только после подтверждения исправления.":
+  $("title").textContent=action==="release"?"Освободить резерв отменённого заказа?":action==="issue"?"Проверить исправление?":action==="apply"?"Выполнить пересчёт?":"Сохранить бонусы клиенту?";
+  $("impact").textContent=action==="release"?"Закройте все вкладки этого заказа. Отмените проведение заказа без скидки, оплат и отгрузок. Сервер освободит резерв только после проверки исходных цен и отсутствия бонусной метки, не ранее 15 минут после запроса. Если скидка уже сохранена, освобождение запрещено.":action==="issue"?"Сервер заново проверит документ. Блокировка снимется только после подтверждения исправления.":
     action==="apply"?"Изменение баланса: "+signed(item.total_delta)+" бонусов. Зарезервированные бонусы не затрагиваются.":
     "Отрицательные корректировки по этому решению будут прощены клиенту. Положительные корректировки сохранятся. Решение записывается в историю.";
   $("decision").showModal();$("reason").focus();
@@ -59,6 +59,14 @@ async function load(append=false){
       card.append(link(item.order_id),node("p","Проверьте состав заказа, скидку и связанные документы. Списание по клиенту приостановлено."));
       const button=node("button","Проверить исправление");button.onclick=()=>open(item,"issue");card.append(button);$("issues").append(card);
     }
+    $("unverified").replaceChildren();
+    for(const item of diagnostic.unverified||[]){
+      const card=node("article","");card.className="case";
+      card.append(link(item.order_id),node("p","В резерве: "+fmt.format(item.points)+" бонусов"));
+      const button=node("button","Проверить отмену и освободить резерв");
+      button.onclick=()=>open(item,"release");card.append(button);$("unverified").append(card);
+    }
+    if(!$("unverified").childElementCount)$("unverified").append(node("p","Неподтверждённых списаний нет."));
     if(!diagnostic.issues.length)$("issues").append(node("p","Расхождений нет."));
     status($("cases").childElementCount?"":"Операций в этом разделе нет.");
   }catch(e){status(e.message,true);}
@@ -70,9 +78,10 @@ $("decision-form").onsubmit=async event=>{
   submitting=true;$("confirm").disabled=true;$("cancel").disabled=true;$("error").textContent="Проверяем сохранённые документы…";
   let success=false;
   try{
-    const issue=selected.action==="issue",id=encodeURIComponent(selected.item.id);
-    await api("/api/admin/"+(issue?"issues/":"settlements/")+id+"/resolve",
-      {method:"POST",body:JSON.stringify(issue?{reason}:{decision:selected.action,reason})});
+    const issue=selected.action==="issue",release=selected.action==="release",id=encodeURIComponent(selected.item.id);
+    const path=release?"redemptions/"+id+"/release":(issue?"issues/":"settlements/")+id+"/resolve";
+    await api("/api/admin/"+path,
+      {method:"POST",body:JSON.stringify(issue||release?{reason}:{decision:selected.action,reason})});
     $("decision").close();success=true;
   }catch(e){$("error").textContent=e.message;}
   finally{submitting=false;$("confirm").disabled=false;$("cancel").disabled=false;}
