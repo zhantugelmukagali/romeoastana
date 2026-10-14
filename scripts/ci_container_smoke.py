@@ -37,6 +37,20 @@ def main():
         run(*command,"config","--quiet")
         run(*command,"up","-d","--wait","--wait-timeout","120","db")
         run(*command,"--profile","maintenance","run","--rm","bootstrap")
+        baseline=("import os; from bonuspro.settings import secret; from alembic import command; from alembic.config import Config; "
+                  "os.environ['DATABASE_MIGRATION_URL']=secret('DATABASE_MIGRATION_URL').replace('postgresql://','postgresql+psycopg://',1); "
+                  "command.upgrade(Config('alembic.ini'),'0013')")
+        run(*command,"--profile","maintenance","run","--rm","migrate","python","-c",baseline)
+        # Seed schema 0013 before upgrading, so preservation of old money is exercised.
+        tenant="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        wallet="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        actor="cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        run(*command,"exec","-T","db","psql","-U","postgres","-d","bonuspro","-v","ON_ERROR_STOP=1","-c",
+            "INSERT INTO bonuspro.tenants(id) VALUES ('"+tenant+"')")
+        seed=("from bonuspro.settings import secret; from bonuspro.adapters.postgres.ledger import Ledger; "
+              "l=Ledger(secret('DATABASE_URL')); l.create_wallet('"+tenant+"','"+wallet+"'); "
+              "l.credit('"+tenant+"','"+wallet+"',points=1000,key='restore-test',actor_id='"+actor+"',reason='Synthetic restore fixture')")
+        run(*command,"run","--rm","--no-deps","app","python","-c",seed)
         run(*command,"--profile","maintenance","run","--rm","migrate")
         run(*command,"--profile","maintenance","run","--rm","migrate")
         run(*command,"up","-d","--wait","--wait-timeout","120","app")
@@ -54,24 +68,28 @@ def main():
         run(*command,"exec","-T","app","python","-c",
             "import os; assert os.getuid()==10001; assert not os.access('/app',os.W_OK)")
         run(*command,"--profile","automation","run","--rm","worker","python","-m","bonuspro.worker","--once")
-        # Restore a non-empty balanced journal into an independent database.
-        tenant="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-        wallet="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-        actor="cccccccc-cccc-4ccc-8ccc-cccccccccccc"
-        run(*command,"exec","-T","db","psql","-U","postgres","-d","bonuspro","-v","ON_ERROR_STOP=1","-c",
-            "INSERT INTO bonuspro.tenants(id) VALUES ('"+tenant+"')")
-        seed=("from bonuspro.settings import secret; from bonuspro.adapters.postgres.ledger import Ledger; "
-              "l=Ledger(secret('DATABASE_URL')); l.create_wallet('"+tenant+"','"+wallet+"'); "
-              "l.credit('"+tenant+"','"+wallet+"',points=1000,key='restore-test',actor_id='"+actor+"',reason='Synthetic restore fixture')")
-        run(*command,"exec","-T","app","python","-c",seed)
-        with tempfile.TemporaryFile() as archive:
+        with tempfile.TemporaryFile() as archive,tempfile.TemporaryFile() as encrypted,tempfile.TemporaryFile() as decoded:
             subprocess.run([*command,"exec","-T","db","pg_dump","-U","postgres","-d","bonuspro","-Fc"],
                            stdout=archive,check=True,timeout=60)
             assert archive.tell()>0
-            run(*command,"exec","-T","db","createdb","-U","postgres","bonuspro_restore")
             archive.seek(0)
+            subprocess.run([*command,"exec","-T","app","python","-m","bonuspro.backup_stream","encrypt",
+                            "--key-file","/run/secrets/token_encryption_key"],
+                           stdin=archive,stdout=encrypted,check=True,timeout=60)
+            encrypted.seek(0)
+            subprocess.run([*command,"exec","-T","app","python","-m","bonuspro.backup_stream","decrypt",
+                            "--key-file","/run/secrets/token_encryption_key"],
+                           stdin=encrypted,stdout=decoded,check=True,timeout=60)
+            assert decoded.tell()==archive.seek(0,2)
+            archive.seek(0);decoded.seek(0)
+            while True:
+                first=archive.read(1024*1024);second=decoded.read(1024*1024)
+                assert first==second
+                if not first:break
+            run(*command,"exec","-T","db","createdb","-U","postgres","bonuspro_restore")
+            decoded.seek(0)
             subprocess.run([*command,"exec","-T","db","pg_restore","-U","postgres","-d","bonuspro_restore","--exit-on-error"],
-                           stdin=archive,check=True,timeout=60)
+                           stdin=decoded,check=True,timeout=60)
         verify=("from bonuspro.settings import secret; from bonuspro.adapters.postgres.ledger import Ledger; "
                 "dsn=secret('DATABASE_URL').rsplit('/',1)[0]+'/bonuspro_restore'; l=Ledger(dsn); "
                 "assert l.snapshot('"+tenant+"','"+wallet+"')['balance']==1000; "

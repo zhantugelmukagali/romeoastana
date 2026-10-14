@@ -37,7 +37,7 @@ class Streams:
         ceiling=(row["round_until"] or frontier) if rescan else frontier
         end=min(ceiling,row["cursor_at"]+timedelta(seconds=row["window_seconds"]))
         if end<row["cursor_at"]:return False
-        start=max(row["starts_at"],row["cursor_at"]-timedelta(minutes=2))
+        start=max(row["starts_at"],row["cursor_at"]-timedelta(seconds=min(120,row["window_seconds"]//2)))
         kind="customerorder" if rescan else row["stream"]
         field="created" if rescan else "updated"
         try:

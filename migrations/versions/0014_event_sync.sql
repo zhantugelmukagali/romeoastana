@@ -103,3 +103,5 @@ DROP TRIGGER job_no_delete ON bonuspro.jobs;
 CREATE TRIGGER job_no_delete BEFORE DELETE ON bonuspro.jobs
 FOR EACH ROW EXECUTE FUNCTION bonuspro.prune_terminal_job();
 GRANT DELETE ON bonuspro.jobs TO bonuspro_app;
+CREATE INDEX jobs_terminal_retention ON bonuspro.jobs(tenant_id,updated_at) WHERE state IN ('done','dead');
+CREATE INDEX inbox_terminal_retention ON bonuspro.webhook_inbox(tenant_id,completed_at) WHERE state IN ('done','discarded');
