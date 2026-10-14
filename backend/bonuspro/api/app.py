@@ -23,6 +23,7 @@ from bonuspro.adapters.postgres.checkout import Checkout
 from bonuspro.adapters.postgres.redemptions import Redemptions
 from bonuspro.adapters.postgres.automation import Automation
 from bonuspro.adapters.postgres.imports import Imports
+from bonuspro.adapters.postgres.activation import ActivationService
 from bonuspro.importing import ImportInvalid
 from bonuspro.adapters.moysklad.remap import RemapClient, RemapError, RetryLater, AccessDenied, EntityMissing
 from bonuspro.adapters.moysklad.order import read_order
@@ -78,6 +79,12 @@ class IssueDecision(BaseModel):
     def nonblank(cls,value):
         if not value.strip():raise ValueError("reason required")
         return value.strip()
+
+
+class ProgramActivation(IssueDecision):
+    request_id: UUID
+    balances_reviewed: Literal[True]
+    previous_program_disabled: Literal[True]
 
 
 class ImportPreview(BaseModel):
@@ -230,9 +237,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         try:
             with psycopg.connect(config.database_url,connect_timeout=3) as conn:
                 conn.execute("SET LOCAL statement_timeout='3s'")
-                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events'),to_regclass('bonuspro.import_batches'),to_regclass('bonuspro.opening_balances')").fetchone()
+                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events'),to_regclass('bonuspro.import_batches'),to_regclass('bonuspro.opening_balances'),to_regclass('bonuspro.activation_requests'),to_regclass('bonuspro.activation_completions')").fetchone()
                 revision = conn.execute("SELECT version_num FROM public.alembic_version").fetchall()
-                if not all(exists) or revision != [("0010",)]:
+                if not all(exists) or revision != [("0011",)]:
                     raise RuntimeError("missing schema")
             return {"status":"ready"}
         except (psycopg.Error,RuntimeError):
@@ -335,6 +342,12 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     def document_client(identity):
         return remap_factory(repo.remap_token(identity.tenant_id),identity.tenant_id)
+
+    @app.post("/api/admin/activate")
+    def activate_program(body: ProgramActivation,request: Request):
+        same_origin(request);identity=widget_identity(request)
+        return ActivationService(repo).activate(identity.tenant_id,str(body.request_id),
+            identity.user_id,body.reason,provider)
 
     @app.get("/migration")
     def migration_page():

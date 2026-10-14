@@ -62,7 +62,7 @@ class Installations:
                 conn.execute("INSERT INTO bonuspro.tenants(id) VALUES (%s) ON CONFLICT DO NOTHING", (account,))
             state = "SettingsRequired" if active else ("Suspended" if cause == "Suspend" else "Uninstalled")
             # Configuration activation is deliberately separate from installing credentials.
-            # Until configuration is implemented, installation cannot report Activated.
+            # Explicit administrator activation confirms the remote status before enabling sales.
             cipher = self.config.encrypt(account, credential) if active else None
             conn.execute(
                 "INSERT INTO bonuspro.installations "

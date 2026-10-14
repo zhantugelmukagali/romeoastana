@@ -55,3 +55,16 @@ class VendorClient:
             if isinstance(exc, AuthenticationFailed):
                 raise
             raise ProviderUnavailable("invalid context response") from None
+
+    def activate(self,tenant: str):
+        account=str(UUID(tenant));app=str(UUID(self.secrets.app_id))
+        url=f"https://apps-api.moysklad.ru/api/vendor/1.0/apps/{app}/{account}/status"
+        try:
+            with httpx.Client(timeout=httpx.Timeout(8,connect=3),follow_redirects=False,
+                              trust_env=False,transport=self.transport) as client:
+                with client.stream("PUT",url,headers={"Authorization":"Bearer "+self.secrets.outbound_jwt(),
+                    "Accept":"application/json"},json={"status":"Activated"}) as response:
+                    if response.status_code!=200:
+                        raise ProviderUnavailable("activation status not confirmed")
+        except httpx.HTTPError:
+            raise ProviderUnavailable("activation status not confirmed") from None

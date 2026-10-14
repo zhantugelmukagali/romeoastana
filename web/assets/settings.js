@@ -138,3 +138,23 @@ $("configure-automation").onclick=async()=>{
     "Ответ задерживается. Нажмите «Проверить обработку»: повтор не изменит сохранённую дату.":e.message;}
   finally{busy(false);}
 };
+
+let activationRequest=null;
+$("activate-program").onclick=async()=>{
+  if(working)return;
+  const reason=$("activation-reason").value.trim();
+  if(!$("balances-reviewed").checked||!$("previous-disabled").checked||!reason){
+    $("activation-status").textContent="Подтвердите сверку остатков, отключение прежней программы и укажите основание.";return;
+  }
+  if(activationRequest&&activationRequest.reason!==reason){
+    $("activation-status").textContent="Для повтора оставьте прежнее основание или обновите страницу и проверьте статус.";return;
+  }
+  activationRequest??={request_id:crypto.randomUUID(),reason,balances_reviewed:true,previous_program_disabled:true};
+  busy(true);$("activate-program").disabled=true;
+  try{
+    const result=await api("/api/admin/activate",{method:"POST",body:JSON.stringify(activationRequest)});
+    $("activation-status").textContent="Программа запущена. Начало начислений: "+new Date(result.starts_at).toLocaleString("ru-RU")+". Проверьте работу обработчика ниже.";
+    await automationStatus();
+  }catch(e){$("activation-status").textContent="Запуск не подтверждён. Проверьте статус подключения и повторите с тем же основанием. "+e.message;}
+  finally{busy(false);$("activate-program").disabled=false;}
+};
