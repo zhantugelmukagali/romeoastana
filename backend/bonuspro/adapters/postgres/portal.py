@@ -20,11 +20,13 @@ class Portal:
                 (SELECT state FROM bonuspro.installations WHERE tenant_id=%(tenant)s) AS state,
                 (SELECT json_build_object('earn_bps',earn_bps,'spend_bps',spend_bps,'version',version)
                  FROM bonuspro.rule_versions WHERE tenant_id=%(tenant)s ORDER BY version DESC LIMIT 1) AS rules,
+                (SELECT json_build_object('heartbeat_at',heartbeat_at,'last_error',last_error)
+                 FROM bonuspro.sync_state WHERE tenant_id=%(tenant)s) AS processing,
                 clock_timestamp() AS generated_at
             """,{"tenant":tenant}).fetchone()
             result={key:str(int(row[key])) for key in ("balance","reserved","credited","redeemed")}
             result.update(customers=int(row["customers"]),attention=int(row["attention"]))
-            result.update(state=row["state"],rules=row["rules"],generated_at=row["generated_at"].isoformat())
+            result.update(state=row["state"],rules=row["rules"],processing=row["processing"],generated_at=row["generated_at"].isoformat())
             return result
 
     def balances(self,tenant,customers):

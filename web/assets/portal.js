@@ -43,9 +43,13 @@ function activityRows(target,items,append=false){
 async function overview(){
   const result=await api("/api/admin/overview");summary=result;
   for(const [id,key] of Object.entries({"total-balance":"balance","total-customers":"customers","total-credited":"credited","total-redeemed":"redeemed","total-reserved":"reserved"}))$(id).textContent=number(result[key]);
-  $("program-state").textContent=result.state==="Activated"?"Программа запущена":"Требуется настройка";
+  $("program-state").textContent=result.state==="Activated"?"Программа активна":"Требуется настройка";
   $("program-state").classList.toggle("success",result.state==="Activated");
   $("setup-callout").hidden=result.state==="Activated";
+  const heartbeat=result.processing?.heartbeat_at;
+  const processingHealthy=heartbeat && Number.isFinite(Date.parse(heartbeat)) &&
+    Date.now()-Date.parse(heartbeat)<600000 && !result.processing.last_error;
+  $("processing-callout").hidden=result.state!=="Activated"||Boolean(processingHealthy);
   $("rule-earn").textContent=result.rules?fmt.format(result.rules.earn_bps/100)+"%":"—";
   $("rule-spend").textContent=result.rules?fmt.format(result.rules.spend_bps/100)+"%":"—";
   $("attention-link").textContent=result.attention?number(result.attention)+" операций требуют проверки →":"Операций на проверке нет";
