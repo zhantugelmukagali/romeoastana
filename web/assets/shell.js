@@ -29,3 +29,11 @@ function active(){
  nav.querySelectorAll("a").forEach(a=>{if(a.dataset.nav===id)a.setAttribute("aria-current","page");else a.removeAttribute("aria-current");});
 }
 window.addEventListener("hashchange",active);active();
+
+const main=document.querySelector("main");
+if(main){
+ const content=document.createElement("div");content.className="app-content";
+ content.tabIndex=0;content.setAttribute("role","region");content.setAttribute("aria-label","Содержимое БонусПро");
+ main.before(content);content.append(main);
+ window.addEventListener("hashchange",()=>{content.scrollTop=0;});
+}

@@ -9,8 +9,8 @@ ROOT=Path(__file__).resolve().parents[2]
 CUSTOMER="11111111-1111-4111-8111-111111111111"
 TX="22222222-2222-4222-8222-222222222222"
 NAME="Алия <img src=x onerror=alert(1)>"
-HOST="""<!doctype html><meta charset="utf-8"><style>body{margin:0}iframe{border:0;width:100%;height:1100px}</style>
-<iframe title="БонусПро" src="https://widget.test/admin"></iframe><script>
+HOST="""<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%;overflow:hidden}iframe{border:0;width:100%;height:100vh}</style>
+<iframe scrolling="no" title="БонусПро" src="https://widget.test/admin"></iframe><script>
 addEventListener('message',e=>{if(e.data?.name==='UserContextRequest')
 e.source.postMessage({name:'UserContextResponse',correlationId:e.data.messageId,token:'synthetic'},'https://widget.test')});
 </script>"""
@@ -56,8 +56,6 @@ class PortalBrowserTests(unittest.TestCase):
     def shot(self,name):
         if os.environ.get("GITHUB_ACTIONS")=="true":
             path=ROOT/"test-results";path.mkdir(exist_ok=True)
-            height=self.page.frames[1].evaluate("document.documentElement.scrollHeight")
-            self.page.locator("iframe").evaluate("(frame,height)=>frame.style.height=height+'px'",height)
             self.page.evaluate("window.scrollTo(0,0)")
             self.page.frames[1].evaluate("window.scrollTo(0,0)")
             self.page.screenshot(path=str(path/name),full_page=True)
@@ -142,5 +140,36 @@ class PortalBrowserTests(unittest.TestCase):
         self.assertFalse(self.frame.locator("#workspace").is_visible())
         self.assertNotIn("/api/admin/overview",self.calls)
         self.assertNotIn("/api/admin/customers",self.calls)
+
+
+    def assert_embedded_scroll(self,width,height):
+        self.page.set_viewport_size({"width":width,"height":height});self.open()
+        content=self.frame.get_by_role("region",name="Содержимое БонусПро",exact=True)
+        metrics=content.evaluate("(el)=>({height:el.clientHeight,full:el.scrollHeight,top:el.scrollTop})")
+        self.assertGreater(metrics["full"],metrics["height"])
+        self.assertEqual(metrics["top"],0)
+        content.hover()
+        self.page.mouse.wheel(0,2000)
+        self.page.wait_for_function("document.querySelector('iframe').contentWindow !== null")
+        self.page.wait_for_timeout(250)
+        self.assertGreater(content.evaluate("(el)=>el.scrollTop"),0)
+        content.focus();self.page.keyboard.press("Control+End")
+        self.page.wait_for_timeout(150)
+        self.assertTrue(self.frame.get_by_role("button",name="Как пользоваться",exact=True).is_visible())
+        self.assertLessEqual(content.evaluate("(el)=>el.scrollHeight-el.clientHeight-el.scrollTop"),2)
+        self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+        # The host page itself never moves, including with scrolling=no.
+        self.assertEqual(self.page.evaluate("scrollY"),0)
+        self.frame.get_by_role("button",name="Как пользоваться",exact=True).click()
+        self.frame.get_by_role("heading",name="Бонусы в заказе покупателя",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Закрыть инструкцию",exact=True).click()
+        self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+        self.assertEqual(content.evaluate("(el)=>el.scrollTop"),0)
+
+    def test_scroll_inside_height_limited_host_with_wheel_and_keyboard(self):
+        self.assert_embedded_scroll(1440,480)
+
+    def test_scroll_inside_narrow_height_limited_host(self):
+        self.assert_embedded_scroll(390,600)
 
 if __name__=="__main__":unittest.main()
