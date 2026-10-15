@@ -1,6 +1,7 @@
 """Chromium cabinet UX with synthetic host and API, never live financial acceptance."""
 import base64,json,os,unittest
 from pathlib import Path
+from datetime import datetime,timezone
 from urllib.parse import urlsplit,parse_qs
 from playwright.sync_api import sync_playwright
 
@@ -19,7 +20,7 @@ class PortalBrowserTests(unittest.TestCase):
         self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1440,"height":1050})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
-        self.sessions=0;self.role="admin";self.state="Activated";self.empty=False;self.balance="184500";self.calls=[]
+        self.sessions=0;self.role="admin";self.state="Activated";self.empty=False;self.balance="184500";self.processing=True;self.calls=[]
     def tearDown(self):
         self.context.close();self.browser.close();self.runtime.stop()
     def route(self,route):
@@ -36,7 +37,8 @@ class PortalBrowserTests(unittest.TestCase):
                 "customers":0 if self.empty else 124,"balance":"0" if self.empty else self.balance,
                 "reserved":"0" if self.empty else "1200","credited":"0" if self.empty else "296700",
                 "redeemed":"0" if self.empty else "112200","attention":0,"state":self.state,
-                "rules":{"earn_bps":500,"spend_bps":3000,"version":1},"generated_at":"2026-10-15T05:00:00Z"})
+                "rules":{"earn_bps":500,"spend_bps":3000,"version":1},
+                "processing":{"heartbeat_at":datetime.now(timezone.utc).isoformat(),"last_error":None} if self.processing else None,"generated_at":"2026-10-15T05:00:00Z"})
             if path=="/api/admin/customers":return route.fulfill(json={"items":[] if self.empty else [
                 {"id":CUSTOMER,"name":NAME,"phone":"+7 700 111 22 33","balance":1500,"available":1200,"reserved":300,"enrolled":True}],"next_offset":None})
             if path=="/api/admin/customers/"+CUSTOMER:return route.fulfill(json={
@@ -50,7 +52,7 @@ class PortalBrowserTests(unittest.TestCase):
     def open(self):
         self.page.goto("https://online.moysklad.ru/test-host")
         self.frame=self.page.frame_locator("iframe")
-        self.frame.get_by_text("Программа запущена",exact=True).wait_for() if self.state=="Activated" else self.frame.get_by_text("Требуется настройка",exact=True).wait_for()
+        self.frame.get_by_text("Программа активна",exact=True).wait_for() if self.state=="Activated" else self.frame.get_by_text("Требуется настройка",exact=True).wait_for()
     def shot(self,name):
         if os.environ.get("GITHUB_ACTIONS")=="true":
             path=ROOT/"test-results";path.mkdir(exist_ok=True)
@@ -103,6 +105,11 @@ class PortalBrowserTests(unittest.TestCase):
         self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
         self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)
         self.shot("bonuspro-overview-mobile.png")
+    def test_activation_without_worker_does_not_claim_automated_processing(self):
+        self.processing=False;self.open()
+        self.frame.get_by_text("Проверьте автоматическое начисление",exact=True).wait_for()
+        self.assertTrue(self.frame.get_by_role("link",name="Проверить обработку",exact=True).is_visible())
+
     def test_large_summary_totals_keep_decimal_precision(self):
         self.balance="9007199254740993";self.open()
         actual="".join(self.frame.locator("#total-balance").inner_text().split())
@@ -126,7 +133,7 @@ class PortalBrowserTests(unittest.TestCase):
         self.assertEqual(self.frame.locator("#recent-activity").inner_text(),"")
         self.assertEqual(len(attempts),2)
         self.route(attempts[-1])
-        self.frame.get_by_text("Программа запущена",exact=True).wait_for()
+        self.frame.get_by_text("Программа активна",exact=True).wait_for()
 
     def test_worker_role_cannot_load_customer_directory_or_metrics(self):
         self.role="worker"

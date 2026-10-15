@@ -42,7 +42,7 @@ class PortalAPITests(unittest.TestCase):
         result=self.client.get("/api/admin/overview",headers=self.headers)
         self.assertEqual(result.status_code,200,result.text);data=result.json()
         self.assertEqual((data["customers"],data["balance"],data["reserved"],data["credited"],data["redeemed"]),(1,"300","50","1000","700"))
-        self.assertEqual(data["state"],"SettingsRequired");self.assertIsNone(data["rules"])
+        self.assertEqual(data["state"],"SettingsRequired");self.assertIsNone(data["rules"]);self.assertIsNone(data["processing"])
         self.assertEqual(data["attention"],0)
         customer=self.client.get("/api/admin/customers/"+self.customer,headers=self.headers).json()
         self.assertEqual((customer["balance"],customer["available"],customer["reserved"]),(300,250,50))
