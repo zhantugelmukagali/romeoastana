@@ -16,3 +16,18 @@ dialog{border:1px solid var(--border);border-radius:16px;box-shadow:0 24px 90px 
 @media(max-width:1050px){.with-shell{padding-left:196px}.app-sidebar{width:196px;padding:20px 10px}.app-topbar{left:196px;padding:0 24px}.app-navigation a{gap:9px;font-size:12px;padding:11px 9px}main{padding:26px 24px}}
 @media(max-width:700px){.with-shell{padding:0}.app-sidebar{position:static;width:100%;padding:14px 14px 0;border-right:0;border-bottom:1px solid var(--border)}.app-brand{font-size:18px}.nav-caption,.sidebar-footer,.app-topbar{display:none}.app-navigation{flex-direction:row;flex-wrap:nowrap;overflow:auto;margin-top:14px;padding-bottom:9px;gap:3px}.app-navigation a{padding:8px 10px;flex-shrink:0;font-size:12px}.app-navigation svg{width:16px;height:16px}.app-brand .brand-mark{width:29px;height:30px;font-size:19px;border-radius:8px}main{padding:24px 16px}h1{font-size:25px}header{gap:12px;margin-bottom:22px}.case{padding:18px}.actions{flex-wrap:wrap}.actions button{flex:1}dialog{padding:20px}#workspace>section:not([data-screen]){padding:18px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+
+/* Scroll inside the embedded application even when the host disables iframe scrolling. */
+html:has(body.with-shell){height:100%;overflow:hidden}
+body.with-shell{height:100vh;height:100dvh;overflow:hidden}
+.app-content{position:fixed;inset:58px 0 0 228px;overflow:auto;overscroll-behavior-y:contain;scrollbar-gutter:stable;-webkit-overflow-scrolling:touch}
+.app-content:focus-visible{outline:2px solid #bfd4ff;outline-offset:-2px}
+.app-content>main{width:100%;min-height:100%}
+.app-sidebar{overflow-y:auto}
+dialog{overflow:auto;overscroll-behavior:contain}
+@media(max-width:1050px){.app-content{left:196px}}
+@media(max-width:700px){
+ body.with-shell{display:flex;flex-direction:column}
+ .app-sidebar{flex:none;max-height:45dvh}
+ .app-content{position:relative;inset:auto;flex:1;min-height:0;width:100%}
+}
