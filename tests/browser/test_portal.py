@@ -19,7 +19,7 @@ class PortalBrowserTests(unittest.TestCase):
         self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1440,"height":1050})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
-        self.sessions=0;self.role="admin";self.state="Activated";self.empty=False;self.calls=[]
+        self.sessions=0;self.role="admin";self.state="Activated";self.empty=False;self.balance="184500";self.calls=[]
     def tearDown(self):
         self.context.close();self.browser.close();self.runtime.stop()
     def route(self,route):
@@ -33,7 +33,7 @@ class PortalBrowserTests(unittest.TestCase):
                 self.sessions+=1;return route.fulfill(json={"token":"synthetic-session"})
             if path=="/api/me":return route.fulfill(json={"role":self.role})
             if path=="/api/admin/overview":return route.fulfill(json={
-                "customers":0 if self.empty else 124,"balance":"0" if self.empty else "184500",
+                "customers":0 if self.empty else 124,"balance":"0" if self.empty else self.balance,
                 "reserved":"0" if self.empty else "1200","credited":"0" if self.empty else "296700",
                 "redeemed":"0" if self.empty else "112200","attention":0,"state":self.state,
                 "rules":{"earn_bps":500,"spend_bps":3000,"version":1},"generated_at":"2026-10-15T05:00:00Z"})
@@ -54,10 +54,13 @@ class PortalBrowserTests(unittest.TestCase):
     def shot(self,name):
         if os.environ.get("GITHUB_ACTIONS")=="true":
             path=ROOT/"test-results";path.mkdir(exist_ok=True)
-            body=self.page.frames[1].locator("body")
-            body.screenshot(path=str(path/name))
+            height=self.page.frames[1].evaluate("document.documentElement.scrollHeight")
+            self.page.locator("iframe").evaluate("(frame,height)=>frame.style.height=height+'px'",height)
+            self.page.evaluate("window.scrollTo(0,0)")
+            self.page.frames[1].evaluate("window.scrollTo(0,0)")
+            self.page.screenshot(path=str(path/name),full_page=True)
             label="MOBILE" if "mobile" in name else "DESKTOP"
-            print("BP_VISUAL_"+label+"="+base64.b64encode(body.screenshot(type="jpeg",quality=60)).decode(),flush=True)
+            print("BP_VISUAL_"+label+"="+base64.b64encode(self.page.screenshot(type="jpeg",quality=60,full_page=True)).decode(),flush=True)
     def test_real_numbers_navigation_and_desktop_screenshot(self):
         self.open()
         self.assertEqual(self.frame.locator("#total-balance").inner_text().replace("\u00a0","").replace("\u202f",""),"184500")
@@ -100,6 +103,27 @@ class PortalBrowserTests(unittest.TestCase):
         self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
         self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)
         self.shot("bonuspro-overview-mobile.png")
+    def test_large_summary_totals_keep_decimal_precision(self):
+        self.balance="9007199254740993";self.open()
+        actual=self.frame.locator("#total-balance").inner_text().replace("\\u00a0","").replace("\\u202f","")
+        self.assertEqual(actual,self.balance)
+
+    def test_reconnection_clears_previous_financial_values_before_new_response(self):
+        self.open()
+        self.frame.get_by_text("Начисление",exact=True).wait_for()
+        attempts=[]
+        def renewed(route):
+            attempts.append(route)
+            if len(attempts)==1:return route.fulfill(status=401,json={"error":"expired"})
+            # Keep the replacement overview pending to inspect its loading state.
+        self.context.route("**/api/admin/overview",renewed)
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.get_by_role("button",name="Повторить подключение",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Повторить подключение",exact=True).click()
+        self.frame.locator("#workspace").wait_for(state="visible")
+        self.assertEqual(self.frame.locator("#total-balance").inner_text(),"—")
+        self.assertEqual(self.frame.locator("#recent-activity").inner_text(),"")
+
     def test_worker_role_cannot_load_customer_directory_or_metrics(self):
         self.role="worker"
         self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
