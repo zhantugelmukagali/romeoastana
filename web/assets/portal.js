@@ -162,7 +162,8 @@ showScreen();void connect();
 function findCustomer(){
  if(!session)return;
  location.hash="customers";
- requestAnimationFrame(()=>$("customer-search").focus({preventScroll:true}));
+ showScreen();
+ $("customer-search").focus({preventScroll:true});
 }
 $("open-customers").onclick=findCustomer;
 window.addEventListener("keydown",event=>{
