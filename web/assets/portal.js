@@ -4,21 +4,25 @@ const fmt=new Intl.NumberFormat("ru-KZ");
 const number=value=>fmt.format(BigInt(value));
 const date=value=>new Date(value).toLocaleString("ru-RU",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
 const labels={credit:"Начисление",opening:"Перенос остатков",redemption:"Списание",reversal:"Отмена начисления",refund:"Возврат бонусов",settlement:"Пересчёт",adjustment:"Корректировка"};
-let session=null,connecting=false,summary=null,screen="overview";
+let session=null,connecting=false,summary=null,screen="overview",connectionEpoch=0;
 let customerOffset=null,activityCursor=null,customerQuery="",customersBusy=false,activityBusy=false;
 let customersLoaded=false,activityLoaded=false,searchEpoch=0,profileEpoch=0,profileId=null,profileCursor=null,profileBusy=false;
 const node=(tag,text,cls)=>{const n=document.createElement(tag);n.textContent=text;if(cls)n.className=cls;return n;};
 function status(text,error=false){$("status").textContent=text;$("status").classList.toggle("error",error);}
 async function api(path,options={}){
+  const generation=connectionEpoch;
   let response;
   try{response=await fetch(path,{...options,credentials:"omit",cache:"no-store",signal:AbortSignal.timeout(15000),
     headers:{"Content-Type":"application/json",...(session?{Authorization:"Bearer "+session}:{})}});}
   catch{throw new Error("Нет ответа сервера. Повторите загрузку.");}
-  if(response.status===401){session=null;$("workspace").hidden=true;$("retry").hidden=false;throw new Error("Сеанс завершён. Подключитесь снова.");}
+  if(generation!==connectionEpoch)throw new Error("Подключение обновилось. Повторите загрузку.");
+  if(response.status===401){connectionEpoch++;session=null;$("workspace").hidden=true;$("retry").hidden=false;throw new Error("Сеанс завершён. Подключитесь снова.");}
   if(response.status===403)throw new Error("Кабинет доступен администратору. Проверьте права и доступ к МойСклад.");
   if(response.status===404)throw new Error("Клиент или страница истории больше не доступны. Обновите данные.");
   if(!response.ok)throw new Error("Не удалось загрузить данные. Повторите попытку.");
-  return response.json();
+  const data=await response.json();
+  if(generation!==connectionEpoch)throw new Error("Подключение обновилось. Повторите загрузку.");
+  return data;
 }
 function empty(target,title,description){
   const box=node("div","","empty-state");box.append(node("span","↗","empty-symbol"),node("h3",title),node("p",description));target.replaceChildren(box);
@@ -79,7 +83,7 @@ async function customers(append=false){
     $("more-customers").hidden=customerOffset===null;customersLoaded=true;
     $("customer-status").textContent=query?"Результаты поиска: "+query:"Клиенты вашего аккаунта МойСклад";
   }catch(e){if(generation===searchEpoch)$("customer-status").textContent=e.message;}
-  finally{customersBusy=false;$("more-customers").disabled=false;if(generation!==searchEpoch)void customers();}
+  finally{customersBusy=false;$("more-customers").disabled=false;if(generation!==searchEpoch&&session)void customers();}
 }
 async function activity(append=false){
   if(activityBusy)return;activityBusy=true;$("more-activity").disabled=true;$("activity-status").textContent="Загружаем историю…";
@@ -125,7 +129,12 @@ async function refresh(){
   finally{$("refresh").disabled=false;}
 }
 async function connect(){
-  if(connecting)return;connecting=true;session=null;$("retry").hidden=true;$("workspace").hidden=true;$("refresh").hidden=true;
+  if(connecting)return;connecting=true;connectionEpoch++;searchEpoch++;profileEpoch++;session=null;summary=null;customerQuery="";customerOffset=null;activityCursor=null;$("customer-search").value="";
+  for(const id of ["total-balance","total-customers","total-credited","total-redeemed","total-reserved","rule-earn","rule-spend","customer-available"])$(id).textContent="—";
+  for(const id of ["customers","activity","recent-activity","customer-history"])$(id).replaceChildren();
+  $("program-state").textContent="Подключение";$("program-state").classList.remove("success");
+  if($("customer-dialog").open)$("customer-dialog").close();
+  $("retry").hidden=true;$("workspace").hidden=true;$("refresh").hidden=true;
   status("Подключаемся к МойСклад…");
   try{
     const token=await requestContext();
@@ -142,5 +151,5 @@ $("close-customer").onclick=()=>{$("customer-dialog").close();profileEpoch++;};
 $("customer-dialog").addEventListener("close",()=>{profileEpoch++;});
 $("widget-help").onclick=()=>$("help-dialog").showModal();$("close-help").onclick=()=>$("help-dialog").close();
 $("refresh").onclick=()=>void refresh();$("retry").onclick=()=>void connect();
-window.addEventListener("hashchange",showScreen);window.addEventListener("pagehide",()=>{session=null;profileEpoch++;});
+window.addEventListener("hashchange",showScreen);window.addEventListener("pagehide",()=>{session=null;profileEpoch++;connectionEpoch++;});
 showScreen();void connect();
