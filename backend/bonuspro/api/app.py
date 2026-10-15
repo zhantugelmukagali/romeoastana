@@ -23,7 +23,7 @@ from bonuspro.adapters.postgres.returns import Returns
 from bonuspro.adapters.postgres.checkout import Checkout
 from bonuspro.adapters.postgres.portal import Portal
 from bonuspro.adapters.postgres.readiness import Readiness
-from bonuspro.adapters.postgres.redemptions import Redemptions
+from bonuspro.adapters.postgres.redemptions import Redemptions,SetupInProgress
 from bonuspro.adapters.postgres.automation import Automation
 from bonuspro.adapters.postgres.imports import Imports
 from bonuspro.adapters.postgres.activation import ActivationService
@@ -489,9 +489,21 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     def widget_setup(request: Request):
         same_origin(request)
         identity=admin_identity(request)
-        marker=document_client(identity).marker_attribute(create=True)
-        repo.authenticate(bearer(request))
-        redemptions.bind(identity.tenant_id,marker,identity.user_id)
+        try:
+            redemptions.configure_marker(identity.tenant_id,identity.user_id,document_client(identity),
+                                         authorize=lambda:admin_identity(request))
+        except SetupInProgress:
+            return JSONResponse({"error":"widget_setup_in_progress"},status_code=409)
+        except AccessDenied as error:
+            code="moysklad_token_rejected" if error.status_code==401 else "moysklad_permissions_required"
+            return JSONResponse({"error":code},status_code=403)
+        except RetryLater as error:
+            return JSONResponse({"error":"widget_metadata_temporarily_unavailable"},status_code=503,
+                                headers={"Retry-After":str(error.delay_seconds)})
+        except RemapError:
+            return JSONResponse({"error":"widget_metadata_invalid"},status_code=422)
+        except Conflict:
+            return JSONResponse({"error":"widget_binding_changed"},status_code=409)
         return {"configured":True}
 
     @app.get("/api/widget/orders/{order_id}")

@@ -24,7 +24,9 @@ class RemapError(RuntimeError):
 
 
 class AccessDenied(RemapError):
-    pass
+    def __init__(self,message="MoySklad access denied",*,status_code=None):
+        self.status_code=status_code
+        super().__init__(message)
 
 
 class EntityMissing(RemapError):
@@ -116,7 +118,7 @@ class RemapClient:
                 with client.stream(method,BASE+path,params=params,headers=headers,json=body) as response:
                     status=response.status_code
                     if status in (401,403):
-                        raise AccessDenied("MoySklad access denied")
+                        raise AccessDenied("MoySklad access denied",status_code=status)
                     if status==404:
                         raise EntityMissing("MoySklad entity is missing")
                     if status==429:
@@ -142,6 +144,10 @@ class RemapClient:
                                            object_pairs_hook=_unique_object)
                     except (ValueError,UnicodeError,RecursionError):
                         raise InvalidDocument("invalid provider JSON") from None
+                    if method=="POST" and path=="/entity/customerorder/metadata/attributes" and isinstance(payload,list):
+                        if len(payload)!=1 or not isinstance(payload[0],dict):
+                            raise InvalidDocument("one created marker required")
+                        payload=payload[0]
                     if not isinstance(payload,dict):
                         raise InvalidDocument("provider object required")
                     return payload
@@ -157,24 +163,29 @@ class RemapClient:
         path="/entity/customerorder/metadata/attributes"
         # Token scope must include useOwnAttributeMetadata. No generic caller-controlled writes.
         page=self._get(path,{"limit":1000})
-        rows=page.get("rows")
-        size=page.get("meta",{}).get("size")
-        if not isinstance(rows,list) or type(size) is not int or size!=len(rows) or size>1000:
+        rows=page.get("rows");collection=page.get("meta")
+        if not isinstance(collection,dict) or not isinstance(rows,list) or len(rows)>1000 or any(not isinstance(row,dict) for row in rows):
+            raise InvalidDocument("invalid attribute metadata")
+        # Full attribute collections are documented without size/offset/limit.
+        size=collection.get("size")
+        if "size" in collection and (type(size) is not int or size!=len(rows)):
             raise InvalidDocument("incomplete attribute metadata")
-        matches=[x for x in rows if x.get("name")=="БонусПро: операция списания"]
-        if len(matches)>1:
-            raise InvalidDocument("ambiguous redemption attribute")
+        if collection.get("nextHref") or ("offset" in collection and (type(collection["offset"]) is not int or collection["offset"]!=0)):
+            raise InvalidDocument("incomplete attribute metadata")
+        if "href" in collection and collection["href"]!=BASE+path:
+            raise InvalidDocument("untrusted attribute collection")
+        matches=[row for row in rows if row.get("name")=="БонусПро: операция списания"]
+        if len(matches)>1:raise InvalidDocument("ambiguous redemption attribute")
         if not matches:
-            if not create:
-                raise InvalidDocument("widget setup required")
-            row=self._request("POST",path,body={"name":"БонусПро: операция списания","type":"string",
-                                              "required":False})
-        else:
-            row=matches[0]
-        identity=uuid(row.get("id"))
-        meta=row.get("meta",{})
-        if row.get("type")!="string" or meta.get("type")!="attributemetadata" or meta.get("href")!=BASE+path+"/"+identity:
+            if not create:raise InvalidDocument("widget setup required")
+            row=self._request("POST",path,body=[{"name":"БонусПро: операция списания","type":"string","required":False}])
+        else:row=matches[0]
+        identity=uuid(row.get("id"));meta=row.get("meta")
+        if (row.get("name")!="БонусПро: операция списания" or row.get("type")!="string" or row.get("required") is True
+            or not isinstance(meta,dict) or meta.get("type")!="attributemetadata" or meta.get("href")!=BASE+path+"/"+identity):
             raise InvalidDocument("invalid redemption attribute")
+        if "accountId" in row and uuid(row["accountId"])!=self.tenant:
+            raise InvalidDocument("marker belongs to another account")
         return identity
 
     def order_ids_between(self,start,end):

@@ -1,5 +1,7 @@
 """Durable plans for host-side discounts. Browser acknowledgements are never proof."""
 from uuid import uuid4
+from contextlib import closing
+import psycopg
 from psycopg.types.json import Jsonb
 from bonuspro.adapters.postgres.ledger import (
     Ledger, Conflict, NotFound, VerifiedDiscount, uuid_value, fingerprint, digest_value,
@@ -8,9 +10,25 @@ from bonuspro.domain.finance import Rules, natural, spend_limit
 from bonuspro.adapters.moysklad.order import SavedOrder
 
 
+class SetupInProgress(Conflict):pass
+
 class Redemptions:
     def __init__(self,ledger: Ledger):
         self.ledger=ledger
+
+    def configure_marker(self,tenant,actor,provider,*,authorize):
+        tenant,actor=map(uuid_value,(tenant,actor))
+        # Serialize remote provisioning without holding a financial transaction.
+        with closing(psycopg.connect(self.ledger.dsn,autocommit=True,connect_timeout=5)) as guard:
+            guard.execute("SET statement_timeout='5s'")
+            if not guard.execute("SELECT pg_try_advisory_lock(hashtextextended(%s,0))",
+                                 ("widget/provision/"+tenant,)).fetchone()[0]:
+                raise SetupInProgress("widget setup already running")
+            existing=self.binding(tenant)
+            marker=provider.marker_attribute(create=existing is None)
+            authorize()
+            self.bind(tenant,marker,actor)
+            return marker
 
     def binding(self,tenant):
         with self.ledger.transaction(tenant) as conn:

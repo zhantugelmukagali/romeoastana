@@ -16,7 +16,7 @@ class SettingsBrowserTests(unittest.TestCase):
         self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1280,"height":1200})
         self.page=self.context.new_page()
-        self.widget_configured=False;self.automation_config=None;self.activations=[]
+        self.setup_error=None;self.widget_configured=False;self.automation_config=None;self.activations=[]
         self.current=None;self.saved=[];self.drop_first=False;self.conflict=False
         self.context.route("**/*",self.route)
 
@@ -30,6 +30,7 @@ class SettingsBrowserTests(unittest.TestCase):
         path=url.split("https://widget.test",1)[1]
         if path=="/api/session":return route.fulfill(json={"token":"synthetic-session"})
         if path=="/api/admin/widget/setup":
+            if self.setup_error:return route.fulfill(status=self.setup_error[0],json={"error":self.setup_error[1]})
             self.widget_configured=True
             return route.fulfill(json={"configured":True})
         if path=="/api/admin/automation":
@@ -155,5 +156,29 @@ class SettingsBrowserTests(unittest.TestCase):
                 self.page.frames[1].evaluate("document.querySelector('.app-content').scrollTop=0")
                 self.page.screenshot(path=str(directory/("bonuspro-rules-"+label.lower()+".png")))
                 print("BP_VISUAL_RULES_"+label+"="+base64.b64encode(self.page.screenshot(type="jpeg",quality=65)).decode(),flush=True)
+
+
+    def test_widget_setup_errors_explain_the_actual_failure_and_allow_retry(self):
+        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
+        button=self.frame.get_by_role("button",name="Подготовить виджет",exact=True)
+        cases=[(403,"moysklad_permissions_required","BP-WIDGET-ACCESS"),
+               (403,"moysklad_token_rejected","BP-WIDGET-TOKEN"),
+               (422,"widget_metadata_invalid","BP-WIDGET-METADATA"),
+               (409,"widget_binding_changed","BP-WIDGET-BINDING"),
+               (503,"widget_metadata_temporarily_unavailable","МойСклад временно не отвечает")]
+        for status,code,text in cases:
+            self.setup_error=(status,code);button.click()
+            self.frame.locator("#setup-status").get_by_text(text,exact=False).wait_for()
+            self.assertTrue(button.is_enabled())
+        self.setup_error=None;button.click()
+        self.frame.get_by_text("Виджет подготовлен. Это не включает рабочие списания.",exact=True).wait_for()
+
+    def test_widget_setup_expired_session_shows_reconnect_instead_of_hidden_error(self):
+        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
+        self.setup_error=(401,"authentication required")
+        self.frame.get_by_role("button",name="Подготовить виджет",exact=True).click()
+        self.frame.get_by_text("Сеанс завершён. Подключитесь снова и повторите настройку виджета.",exact=True).wait_for()
+        self.assertFalse(self.frame.locator("#workspace").is_visible())
+        self.assertTrue(self.frame.get_by_role("button",name="Повторить подключение",exact=True).is_visible())
 
 if __name__=="__main__":unittest.main()
