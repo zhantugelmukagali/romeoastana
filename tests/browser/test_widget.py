@@ -24,7 +24,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1000,"height":800})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
-        self.quote_overrides={};self.order_error=None;self.session_count=0;self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False;self.reject_prepare=None;self.save_during_prepare=False;self.host_error=False
+        self.total_minor=1200000;self.eligible_minor=1000000;self.quote_overrides={};self.order_error=None;self.session_count=0;self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False;self.reject_prepare=None;self.save_during_prepare=False;self.host_error=False
     def tearDown(self):
         self.context.close();self.browser.close();self.runtime.stop()
     def route(self,route):
@@ -62,7 +62,7 @@ class WidgetBrowserTests(unittest.TestCase):
             if self.order_error:return route.fulfill(status=self.order_error,json={"error":"unavailable"})
             if self.prepared and path.endswith(ORDER):
                 return route.fulfill(json={"redemption":{"id":"attempt","order_id":ORDER,"points":1000,"state":"verifying"}})
-            return route.fulfill(json={"name":"0001","saved_source_hash":"a"*64,"eligible_minor":1000000,"total_minor":1200000,
+            return route.fulfill(json={"name":"0001","saved_source_hash":"a"*64,"eligible_minor":self.eligible_minor,"total_minor":self.total_minor,
                 "can_prepare":self.quote_overrides.get("can_prepare",True),"quote":{"balance":5000,"max_spend_points":3000,"blocked_reason":None,**self.quote_overrides.get("quote",{})}})
         file=ROOT/"web"/("widget.html" if path=="/widget" else path.lstrip("/"))
         if file.is_file():
@@ -294,5 +294,19 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertEqual(request.value.headers.get("authorization"),"Bearer synthetic-session-2")
         self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
         self.assertEqual(self.session_count,2)
+
+
+    def test_large_order_preview_keeps_minor_units_and_fits_narrow_widget(self):
+        self.page.set_viewport_size({"width":390,"height":844})
+        self.total_minor=8999999999999999;self.eligible_minor=self.total_minor
+        self.quote_overrides={"quote":{"balance":9000000000000000,"max_spend_points":26999999999999}}
+        self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
+        self.frame.get_by_text("9000000000000000 бонусов",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Максимум",exact=True).click()
+        actual="".join(self.frame.locator("#payable").inner_text().split())
+        self.assertIn("63000000000000,99₸",actual)
+        self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+        self.assertLessEqual(self.page.frames[1].evaluate("document.body.getBoundingClientRect().height"),560)
+        self.assertEqual(self.prepares,[])
 
 if __name__=="__main__":unittest.main()

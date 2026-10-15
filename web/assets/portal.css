@@ -38,3 +38,11 @@
 dialog{scrollbar-gutter:stable}
 @media(max-width:700px){.portal header{margin-bottom:14px}.header-actions{flex-wrap:wrap}.pill{font-size:10px}.portal header .connection-status{font-size:10px!important}.metric{padding:13px}.metric>strong{font-size:25px}.panel{padding:16px}}
 @media(prefers-reduced-motion:reduce){.customer-row{transition:none}}
+
+.metric>p,.panel-heading p,.operation-info span,.customer-identity .muted,.rule-numbers span{font-size:11px}
+.operation-info strong,.customer-row{font-size:13px}
+.empty-state p,.rule-list,.widget-callout p{font-size:12px}
+.rule-list li{margin:8px 0}.rule-numbers{margin:17px 0}
+.panel-heading>a,.attention-link{font-size:12px}
+.metric-label{color:#475467}.metric>p,.panel-heading p,.empty-state{color:#667085}
+@media(max-width:480px){.metric>p{font-size:10px}.operation-info strong,.customer-row{font-size:12px}.customer-identity .muted{font-size:10px}}

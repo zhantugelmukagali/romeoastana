@@ -13,7 +13,7 @@ const mark=document.createElement("span");mark.className="brand-mark";mark.textC
 const word=document.createElement("strong");word.textContent="БонусПро";brand.append(mark,word);aside.append(brand);
 const caption=document.createElement("p");caption.className="nav-caption";caption.textContent="УПРАВЛЕНИЕ БОНУСАМИ";aside.append(caption);
 const nav=document.createElement("nav");nav.className="app-navigation";nav.setAttribute("aria-label","Основная навигация");
-for(const [id,label,href] of [["overview","Обзор","/admin"],["customers","Клиенты","/admin#customers"],["activity","Операции","/admin#activity"],["review","Возвраты и сверка","/reconciliation"],["settings","Настройки программы","/settings"],["staff","Сотрудники","/staff"],["migration","Перенос остатков","/migration"]]){
+for(const [id,label,href] of [["overview","Обзор","/admin"],["customers","Клиенты","/admin#customers"],["activity","Операции","/admin#activity"],["review","Возвраты и сверка","/reconciliation"],["settings","Настройки","/settings"],["staff","Сотрудники","/staff"],["migration","Перенос остатков","/migration"]]){
  const a=document.createElement("a");a.href=href;a.dataset.nav=id;a.append(icon(id));const text=document.createElement("span");text.textContent=label;a.append(text);nav.append(a);
 }
 aside.append(nav);
@@ -43,7 +43,7 @@ toggle.addEventListener("click",()=>{
  toggle.textContent=collapsed?"›":"‹";toggle.setAttribute("aria-expanded",String(!collapsed));
  toggle.setAttribute("aria-label",collapsed?"Развернуть меню":"Свернуть меню");
 });
-nav.querySelectorAll("a").forEach(a=>{a.title=a.textContent;});
+nav.querySelectorAll("a").forEach(a=>{a.title=a.textContent;a.setAttribute("aria-label",a.textContent);});
 
 if(location.pathname==="/settings"){
  const form=document.querySelector("#rules-form");
