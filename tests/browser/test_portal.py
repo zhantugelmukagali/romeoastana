@@ -105,7 +105,7 @@ class PortalBrowserTests(unittest.TestCase):
         self.shot("bonuspro-overview-mobile.png")
     def test_large_summary_totals_keep_decimal_precision(self):
         self.balance="9007199254740993";self.open()
-        actual=self.frame.locator("#total-balance").inner_text().replace("\\u00a0","").replace("\\u202f","")
+        actual="".join(self.frame.locator("#total-balance").inner_text().split())
         self.assertEqual(actual,self.balance)
 
     def test_reconnection_clears_previous_financial_values_before_new_response(self):
@@ -119,10 +119,14 @@ class PortalBrowserTests(unittest.TestCase):
         self.context.route("**/api/admin/overview",renewed)
         self.frame.get_by_role("button",name="Обновить",exact=True).click()
         self.frame.get_by_role("button",name="Повторить подключение",exact=True).wait_for()
-        self.frame.get_by_role("button",name="Повторить подключение",exact=True).click()
+        with self.page.expect_request("**/api/admin/overview"):
+            self.frame.get_by_role("button",name="Повторить подключение",exact=True).click()
         self.frame.locator("#workspace").wait_for(state="visible")
         self.assertEqual(self.frame.locator("#total-balance").inner_text(),"—")
         self.assertEqual(self.frame.locator("#recent-activity").inner_text(),"")
+        self.assertEqual(len(attempts),2)
+        self.route(attempts[-1])
+        self.frame.get_by_text("Программа запущена",exact=True).wait_for()
 
     def test_worker_role_cannot_load_customer_directory_or_metrics(self):
         self.role="worker"
