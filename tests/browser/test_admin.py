@@ -32,6 +32,10 @@ class BrowserTests(unittest.TestCase):
 
     def route(self,route):
         url=route.request.url
+        if url=="https://online.moysklad.ru/host-sender":
+            return route.fulfill(content_type="text/html",body="""<script>
+            window.deliver=(target,message)=>target.postMessage(message,'https://widget.test');
+            </script>""")
         if url.startswith("https://online.moysklad.ru/"):
             return route.fulfill(content_type="text/html",body=self.host)
         if not url.startswith("https://widget.test/"):
@@ -83,6 +87,30 @@ class BrowserTests(unittest.TestCase):
         self.assertTrue(frame.evaluate("document.documentElement.scrollWidth <= window.innerWidth"))
         self.assertEqual(frame.evaluate("localStorage.length"),0)
         self.assertEqual(frame.evaluate("sessionStorage.length"),0)
+
+    def test_gwt_sibling_frame_can_deliver_verified_origin_context(self):
+        self.context.add_init_script("""if(location.hostname==='widget.test'){
+          window.addEventListener('message',event=>{
+            if(event.data?.name==='UserContextResponse')window.hostSender={
+              direct:event.source===parent,sibling:event.source.parent===parent};
+          });
+        }""")
+        self.host="""<!doctype html><script>
+        let ready;const relayReady=new Promise(resolve=>ready=resolve);
+        window.addEventListener('message',async e=>{
+          if(e.data?.name!=='UserContextRequest')return;
+          await relayReady;
+          document.querySelector('#gwt').contentWindow.deliver(e.source,{
+            name:'UserContextResponse',correlationId:e.data.messageId,token:'synthetic-context'});
+        });
+        </script>
+        <iframe title="БонусПро" src="https://widget.test/admin" style="width:100%;height:850px"></iframe>
+        <iframe id="gwt" hidden src="https://online.moysklad.ru/host-sender" onload="ready()"></iframe>"""
+        self.page.goto("https://online.moysklad.ru/test-host")
+        frame=self.page.frame_locator('iframe[src="https://widget.test/admin"]')
+        frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).wait_for()
+        self.assertEqual(self.page.frames[1].evaluate("window.hostSender"),{"direct":False,"sibling":True})
+        self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)
 
     def test_direct_open_requires_moysklad(self):
         self.page.goto("https://widget.test/admin")
