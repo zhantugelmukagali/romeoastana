@@ -151,6 +151,12 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertEqual(self.prepares,[])
     def test_gwt_sibling_open_context_update_and_save_complete_the_saved_readback_flow(self):
         self.open()
+        self.page.frames[1].evaluate("""()=>{
+          window.addEventListener('message',event=>{
+            if(event.data?.name==='UserContextResponse')window.hostSender={
+              direct:event.source===parent,sibling:event.source.parent===parent};
+          });
+        }""")
         self.page.evaluate("""async()=>{
           const iframe=document.createElement('iframe');iframe.id='gwt';iframe.hidden=true;
           iframe.src='https://online.moysklad.ru/host-sender';
@@ -170,15 +176,22 @@ class WidgetBrowserTests(unittest.TestCase):
         self.frame.get_by_text("Списано 1000 бонусов.",exact=True).wait_for()
         self.assertEqual(len(self.prepares),1)
         self.assertEqual(self.verifies,1)
+        self.assertEqual(self.page.frames[1].evaluate("window.hostSender"),{"direct":False,"sibling":True})
 
     def test_same_origin_unrelated_popup_cannot_replace_the_host_document(self):
         self.open()
+        self.page.frames[1].evaluate("""()=>{
+          window.addEventListener('message',event=>{
+            if(event.data?.name==='Open'&&event.data.messageId===999)window.unrelatedSeen=true;
+          });
+        }""")
         self.page.evaluate("""async()=>{
           const popup=window.open('https://online.moysklad.ru/host-sender','unrelated-host-window');
           await new Promise(resolve=>popup.onload=resolve);
           popup.deliver(document.querySelector('iframe').contentWindow,{
             name:'Open',messageId:999,extensionPoint:'document.customerorder.create',objectId:null});
         }""")
+        self.page.frames[1].wait_for_function("window.unrelatedSeen===true")
         self.assertTrue(self.frame.get_by_text("5000 бонусов",exact=True).is_visible())
         self.assertEqual(self.prepares,[])
 

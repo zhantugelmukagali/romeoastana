@@ -89,6 +89,12 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(frame.evaluate("sessionStorage.length"),0)
 
     def test_gwt_sibling_frame_can_deliver_verified_origin_context(self):
+        self.context.add_init_script("""if(location.hostname==='widget.test'){
+          window.addEventListener('message',event=>{
+            if(event.data?.name==='UserContextResponse')window.hostSender={
+              direct:event.source===parent,sibling:event.source.parent===parent};
+          });
+        }""")
         self.host="""<!doctype html><script>
         let ready;const relayReady=new Promise(resolve=>ready=resolve);
         window.addEventListener('message',async e=>{
@@ -103,6 +109,7 @@ class BrowserTests(unittest.TestCase):
         self.page.goto("https://online.moysklad.ru/test-host")
         frame=self.page.frame_locator('iframe[title="БонусПро"]')
         frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).wait_for()
+        self.assertEqual(self.page.frames[1].evaluate("window.hostSender"),{"direct":False,"sibling":True})
         self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)
 
     def test_direct_open_requires_moysklad(self):
