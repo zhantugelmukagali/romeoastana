@@ -8,7 +8,7 @@ ROOT=Path(__file__).resolve().parents[2]
 CASE={"id":"11111111-1111-4111-8111-111111111111","return_id":"22222222-2222-4222-8222-222222222222",
       "wallet_id":"33333333-3333-4333-8333-333333333333","points":1000,"balance":300,"available":300,
       "state":"pending","resolution_reason":None}
-HOST="""<!doctype html><iframe title="БонусПро" src="https://widget.test/admin" style="width:100%;height:850px"></iframe>
+HOST="""<!doctype html><iframe title="БонусПро" src="https://widget.test/returns" style="width:100%;height:850px"></iframe>
 <script>window.addEventListener('message', e => {if(e.data.name==='UserContextRequest') {
 e.source.postMessage({name:'UserContextResponse',correlationId:e.data.messageId,token:'synthetic-context'},'https://widget.test');
 }});</script>"""
@@ -51,7 +51,7 @@ class BrowserTests(unittest.TestCase):
                 self.pending=[]
                 return route.fulfill(json={"state":"waived"})
             return route.fulfill(json={"items":self.pending,"next_cursor":None})
-        file=ROOT/"web"/("index.html" if path=="/admin" else path.lstrip("/"))
+        file=ROOT/"web"/("returns.html" if path=="/returns" else path.lstrip("/"))
         if file.is_file():
             mime="text/html" if file.suffix==".html" else ("text/css" if file.suffix==".css" else "text/javascript")
             return route.fulfill(content_type=mime,body=file.read_text())
@@ -104,16 +104,16 @@ class BrowserTests(unittest.TestCase):
             name:'UserContextResponse',correlationId:e.data.messageId,token:'synthetic-context'});
         });
         </script>
-        <iframe title="БонусПро" src="https://widget.test/admin" style="width:100%;height:850px"></iframe>
+        <iframe title="БонусПро" src="https://widget.test/returns" style="width:100%;height:850px"></iframe>
         <iframe id="gwt" hidden src="https://online.moysklad.ru/host-sender" onload="ready()"></iframe>"""
         self.page.goto("https://online.moysklad.ru/test-host")
-        frame=self.page.frame_locator('iframe[src="https://widget.test/admin"]')
+        frame=self.page.frame_locator('iframe[src="https://widget.test/returns"]')
         frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).wait_for()
         self.assertEqual(self.page.frames[1].evaluate("window.hostSender"),{"direct":False,"sibling":True})
         self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)
 
     def test_direct_open_requires_moysklad(self):
-        self.page.goto("https://widget.test/admin")
+        self.page.goto("https://widget.test/returns")
         self.page.get_by_text("Откройте БонусПро из МойСклад.",exact=True).wait_for()
         self.assertFalse(self.page.get_by_role("button",name="Обновить",exact=True).is_visible())
 
@@ -125,7 +125,7 @@ class BrowserTests(unittest.TestCase):
             e.source.postMessage({name:'UserContextResponse',
               correlationId:e.data.messageId,token:'synthetic-context'},'https://widget.test');
         });
-        </script><iframe title="БонусПро" src="https://widget.test/admin"
+        </script><iframe title="БонусПро" src="https://widget.test/returns"
           onload="ready=true;this.contentWindow.postMessage({name:'Open',messageId:90},'https://widget.test')"
           style="width:100%;height:850px"></iframe>"""
         self.open()
@@ -139,7 +139,7 @@ class BrowserTests(unittest.TestCase):
               invalidMessage:{name:e.data.name,messageId:e.data.messageId},
               errors:[{code:1004,error:'private-token-value-do-not-echo'}]},'https://widget.test');
         });
-        </script><iframe title="БонусПро" src="https://widget.test/admin"
+        </script><iframe title="БонусПро" src="https://widget.test/returns"
           style="width:100%;height:850px"></iframe>"""
         self.page.goto("https://online.moysklad.ru/test-host")
         frame=self.page.frame_locator("iframe")
@@ -154,7 +154,7 @@ class BrowserTests(unittest.TestCase):
             e.source.postMessage({name:'UnrelatedMessage',correlationId:e.data.messageId+1,
               token:'private-token-value-do-not-echo'},'https://widget.test');
         });
-        </script><iframe title="БонусПро" src="https://widget.test/admin"
+        </script><iframe title="БонусПро" src="https://widget.test/returns"
           style="width:100%;height:850px"></iframe>"""
         self.context.add_init_script("""if(location.hostname==='widget.test'){
           const timer=window.setTimeout.bind(window);

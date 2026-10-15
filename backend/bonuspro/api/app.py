@@ -21,6 +21,7 @@ from bonuspro.adapters.postgres.installations import Installations
 from bonuspro.adapters.postgres.ledger import Ledger, Conflict, NotFound
 from bonuspro.adapters.postgres.returns import Returns
 from bonuspro.adapters.postgres.checkout import Checkout
+from bonuspro.adapters.postgres.portal import Portal
 from bonuspro.adapters.postgres.redemptions import Redemptions
 from bonuspro.adapters.postgres.automation import Automation
 from bonuspro.adapters.postgres.imports import Imports
@@ -558,6 +559,42 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         saved=read_order(document_client(identity),str(order_id),marker_id=marker)
         operator_identity(request)
         return redemptions.confirm_saved(identity.tenant_id,saved,authorize=lambda conn:operators.check_in(conn,identity))
+
+    @app.get("/api/admin/overview")
+    def loyalty_overview(request: Request):
+        identity=admin_identity(request)
+        return Portal(Ledger(config.database_url)).summary(identity.tenant_id)
+
+    @app.get("/api/admin/activity")
+    def loyalty_activity(request: Request,customer: UUID | None=None,before: UUID | None=None):
+        identity=admin_identity(request)
+        return Portal(Ledger(config.database_url)).activity(identity.tenant_id,
+            customer=str(customer) if customer else None,before=str(before) if before else None)
+
+    @app.get("/api/admin/customers")
+    def loyalty_customers(request: Request,q: str="",offset: int=0):
+        identity=admin_identity(request)
+        if len(q)>100 or (q and len(q.strip())<2) or not 0<=offset<=100000:
+            raise HTTPException(422,"invalid customer search")
+        result=document_client(identity).counterparties(q,offset)
+        admin_identity(request)
+        values=Portal(Ledger(config.database_url)).balances(identity.tenant_id,[row["id"] for row in result["items"]])
+        return dict(items=[{**row,**values.get(row["id"],dict(enrolled=False,balance=0,reserved=0,available=0))}
+                           for row in result["items"]],next_offset=result["next_offset"])
+
+    @app.get("/api/admin/customers/{customer_id}")
+    def loyalty_customer(customer_id: UUID,request: Request):
+        identity=admin_identity(request)
+        row=document_client(identity).entity("counterparty",str(customer_id))
+        admin_identity(request)
+        values=Portal(Ledger(config.database_url)).balances(identity.tenant_id,[str(customer_id)])
+        return dict(id=str(customer_id),name=str(row.get("name",""))[:256],phone=str(row.get("phone",""))[:100],
+                    archived=row.get("archived") is True,**values.get(str(customer_id),dict(enrolled=False,balance=0,reserved=0,available=0)))
+
+    @app.get("/returns")
+    def previous_returns_page():
+        return FileResponse(web / "returns.html")
+
 
     @app.get("/widget")
     def widget_page():

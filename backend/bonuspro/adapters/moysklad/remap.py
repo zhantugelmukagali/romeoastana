@@ -286,6 +286,28 @@ class RemapClient:
                 completed+=1
         return completed
 
+    def counterparties(self,search="",offset=0):
+        if not isinstance(search,str) or len(search)>100 or (search and len(search.strip())<2):
+            raise InvalidDocument("invalid customer search")
+        if type(offset) is not int or not 0<=offset<=100000:
+            raise InvalidDocument("invalid customer page")
+        params={"limit":25,"offset":offset,"order":"name,asc"}
+        if search.strip():params["search"]=search.strip()
+        page=self._get("/entity/counterparty",params)
+        rows=page.get("rows");size=page.get("meta",{}).get("size")
+        if not isinstance(rows,list) or len(rows)>25 or type(size) is not int or size<0:
+            raise InvalidDocument("invalid customer collection")
+        items=[];seen=set()
+        for row in rows:
+            if not isinstance(row,dict):raise InvalidDocument("invalid customer")
+            identity=uuid(row.get("id"))
+            if identity in seen or uuid(row.get("accountId"))!=self.tenant or row.get("meta",{}).get("type")!="counterparty":
+                raise InvalidDocument("untrusted customer collection")
+            seen.add(identity)
+            items.append(dict(id=identity,name=str(row.get("name",""))[:256],
+                              phone=str(row.get("phone",""))[:100],archived=row.get("archived") is True))
+        return dict(items=items,next_offset=offset+len(rows) if rows and offset+len(rows)<size else None)
+
     def entity(self,kind,identity):
         if kind not in ENTITIES:
             raise InvalidDocument("unsupported entity")
