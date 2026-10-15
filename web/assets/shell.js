@@ -8,12 +8,12 @@ const icons={
  staff:"M12 3 3 7v6c0 5 9 8 9 8s9-3 9-8V7ZM8 12l3 3 5-5"};
 function icon(key){const svg=document.createElementNS("http://www.w3.org/2000/svg","svg");svg.setAttribute("viewBox","0 0 24 24");svg.setAttribute("aria-hidden","true");const path=document.createElementNS(svg.namespaceURI,"path");path.setAttribute("d",icons[key]);svg.append(path);return svg;}
 const aside=document.createElement("aside");aside.className="app-sidebar";
-const brand=document.createElement("a");brand.className="app-brand";brand.href="/admin";
+const brand=document.createElement("a");brand.className="app-brand";brand.href="/admin#overview";
 const mark=document.createElement("span");mark.className="brand-mark";mark.textContent="Б";
 const word=document.createElement("strong");word.textContent="БонусПро";brand.append(mark,word);aside.append(brand);
 const caption=document.createElement("p");caption.className="nav-caption";caption.textContent="УПРАВЛЕНИЕ БОНУСАМИ";aside.append(caption);
 const nav=document.createElement("nav");nav.className="app-navigation";nav.setAttribute("aria-label","Основная навигация");
-for(const [id,label,href] of [["overview","Обзор","/admin"],["customers","Клиенты","/admin#customers"],["activity","Операции","/admin#activity"],["review","Возвраты и сверка","/reconciliation"],["settings","Настройки","/settings"],["staff","Сотрудники","/staff"],["migration","Перенос остатков","/migration"]]){
+for(const [id,label,href] of [["overview","Обзор","/admin#overview"],["customers","Клиенты","/admin#customers"],["activity","Операции","/admin#activity"],["review","Возвраты и сверка","/reconciliation"],["settings","Настройки","/settings"],["staff","Сотрудники","/staff"],["migration","Перенос остатков","/migration"]]){
  const a=document.createElement("a");a.href=href;a.dataset.nav=id;a.append(icon(id));const text=document.createElement("span");text.textContent=label;a.append(text);nav.append(a);
 }
 aside.append(nav);

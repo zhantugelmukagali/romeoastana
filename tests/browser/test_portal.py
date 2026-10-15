@@ -195,6 +195,7 @@ class PortalBrowserTests(unittest.TestCase):
         field.fill("Алия");field.press("/")
         self.assertEqual(field.input_value(),"Алия/")
         self.frame.get_by_role("link",name="Обзор",exact=True).click()
+        self.frame.get_by_role("heading",name="Обзор программы",exact=True).wait_for()
         self.frame.get_by_role("region",name="Содержимое БонусПро",exact=True).focus()
         self.page.keyboard.press("/")
         self.page.frames[1].wait_for_function("document.activeElement.id==='customer-search'")
