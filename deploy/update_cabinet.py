@@ -61,6 +61,14 @@ def switch(root,source,image,*,verify=verify_public):
             except Exception:raise UpdateFailed("UPDATE_FAILED: old configuration restored; application rollback needs inspection") from None
         raise UpdateFailed("UPDATE_FAILED: previous configuration restored") from None
 
+def source_revision(source):
+    source=Path(source).resolve()
+    git=["git","-c","safe.directory="+str(source),"-C",str(source)]
+    run(git+["diff","--exit-code","HEAD"])
+    sha=run(git+["rev-parse","HEAD"],capture=True)
+    if not re.fullmatch("[0-9a-f]{40}",sha):raise UpdateFailed("invalid source revision")
+    return sha
+
 def main():
     parser=argparse.ArgumentParser();parser.add_argument("--root",type=Path,default=Path("/home/ubuntu/bonuspro-release"));args=parser.parse_args()
     if os.geteuid()!=0:raise SystemExit("Run update_cabinet.py with sudo")
@@ -69,9 +77,7 @@ def main():
         schema=run(["docker","exec","bonuspro-release-db-1","psql","-U","postgres","-d","bonuspro","-At","-c","SELECT version_num FROM public.alembic_version"],capture=True)
         if schema!="0013" or 'revision != [("0013",)]' not in (source/"backend/bonuspro/api/app.py").read_text():
             raise UpdateFailed("Schema 0013 and its compatible source branch are required; no migration was attempted")
-        run(["git","-c","safe.directory="+str(source),"-C",str(source),"diff","--exit-code","HEAD"])
-        sha=run(["git","-C",str(source),"rev-parse","HEAD"],capture=True)
-        if not re.fullmatch("[0-9a-f]{40}",sha):raise UpdateFailed("invalid source revision")
+        sha=source_revision(source)
         image="bonuspro:"+sha[:12]
         run(["docker","build","--pull","-t",image,str(source)])
         run(["docker","run","--rm","--network","none","--read-only","--cap-drop","ALL",

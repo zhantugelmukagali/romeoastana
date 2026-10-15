@@ -1,4 +1,4 @@
-import importlib.util,os,tempfile,unittest
+import importlib.util,os,tempfile,unittest,subprocess
 from pathlib import Path
 from unittest.mock import patch
 ROOT=Path(__file__).resolve().parents[2]
@@ -40,5 +40,16 @@ class CabinetUpdateTests(unittest.TestCase):
                     else:update.switch(root,root,"bonuspro:"+"b"*12,verify=lambda _:None)
                 self.assertEqual(sum("up" in args for args in calls),0 if failed else 1)
                 self.assertEqual(env.read_text(),old if failed else "BONUSPRO_IMAGE=bonuspro:"+"b"*12+"\n")
+
+
+    def test_revision_reads_work_when_deploying_another_owners_checkout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            subprocess.run(["git","init","--quiet",str(root)],check=True)
+            subprocess.run(["git","-C",str(root),"-c","user.name=CI","-c","user.email=ci@example.test",
+                            "commit","--quiet","--allow-empty","-m","isolated fixture"],check=True)
+            with patch.dict(os.environ,{"GIT_TEST_ASSUME_DIFFERENT_OWNER":"1"}):
+                revision=update.source_revision(root)
+            self.assertRegex(revision,r"^[0-9a-f]{40}$")
 
 if __name__=="__main__":unittest.main()
