@@ -6,7 +6,7 @@ FILES=(
  "react/r1738-1/index.js",
  "react/r1738-1/initial.js",
 )
-MARKERS=("UserContextRequest","UserContextResponse","context/user","requestUserContext","userContextToken")
+MARKERS=tuple("function "+name+"(" for name in ("EfN","IfN","EbN","vbN","idN","FfN","BfN","kdN","JbN","JfN"))
 def main():
     for path in FILES:
         request=urllib.request.Request(BASE+path,headers={"User-Agent":"BonusPro-public-protocol-audit/1.0"})
@@ -19,6 +19,6 @@ def main():
         for marker in MARKERS:
             matches=list(re.finditer(re.escape(marker),value))
             print("MARKER",marker,"count",len(matches),flush=True)
-            for match in matches[:12]:
-                print("EXCERPT",repr(value[max(0,match.start()-900):match.end()+1300]),flush=True)
+            for match in matches[:1]:
+                print("EXCERPT",repr(value[max(0,match.start()):match.end()+2200]),flush=True)
 if __name__=="__main__":main()
