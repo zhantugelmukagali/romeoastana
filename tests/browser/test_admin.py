@@ -107,7 +107,7 @@ class BrowserTests(unittest.TestCase):
         <iframe title="БонусПро" src="https://widget.test/admin" style="width:100%;height:850px"></iframe>
         <iframe id="gwt" hidden src="https://online.moysklad.ru/host-sender" onload="ready()"></iframe>"""
         self.page.goto("https://online.moysklad.ru/test-host")
-        frame=self.page.frame_locator('iframe[title="БонусПро"]')
+        frame=self.page.frame_locator('iframe[src="https://widget.test/admin"]')
         frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).wait_for()
         self.assertEqual(self.page.frames[1].evaluate("window.hostSender"),{"direct":False,"sibling":True})
         self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)

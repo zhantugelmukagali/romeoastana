@@ -161,13 +161,13 @@ class WidgetBrowserTests(unittest.TestCase):
           const iframe=document.createElement('iframe');iframe.id='gwt';iframe.hidden=true;
           iframe.src='https://online.moysklad.ru/host-sender';
           await new Promise(resolve=>{iframe.onload=resolve;document.body.append(iframe)});
-          window.send=m=>iframe.contentWindow.deliver(document.querySelector('iframe[title="БонусПро"]').contentWindow,m);
+          window.send=m=>iframe.contentWindow.deliver(document.querySelector('iframe[src="https://widget.test/widget"]').contentWindow,m);
           window.gwtOpened=false;
           window.addEventListener('message',e=>{if(e.data?.name==='OpenFeedback')window.gwtOpened=true});
           openOrder('11111111-1111-4111-8111-111111111111');
         }""")
         self.page.wait_for_function("window.gwtOpened===true")
-        self.frame=self.page.frame_locator('iframe[title="БонусПро"]')
+        self.frame=self.page.frame_locator('iframe[src="https://widget.test/widget"]')
         self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
         self.apply()
         self.frame.get_by_text("Зарезервировано 1000 бонусов. Итоговое списание ещё не подтверждено.",exact=True).wait_for()
