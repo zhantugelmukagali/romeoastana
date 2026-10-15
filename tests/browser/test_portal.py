@@ -61,6 +61,7 @@ class PortalBrowserTests(unittest.TestCase):
         self.assertEqual(self.frame.locator("#rule-earn").inner_text(),"5%")
         self.assertEqual(self.frame.get_by_role("navigation",name="Основная навигация").count(),1)
         self.frame.get_by_text("Начисление",exact=True).wait_for()
+        self.assertTrue(self.page.frames[1].evaluate("getComputedStyle(document.querySelector(\'.panel\')).backgroundColor===\'rgb(255, 255, 255)\'"))
         self.shot("bonuspro-overview-desktop.png")
         self.frame.get_by_role("link",name="Клиенты",exact=True).click()
         self.frame.get_by_role("heading",name="Клиенты и бонусы",exact=True).wait_for()

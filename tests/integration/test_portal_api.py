@@ -30,6 +30,12 @@ class PortalAPITests(unittest.TestCase):
         self.addCleanup(self.client.close);self.headers=self.fx.headers()
 
     def test_overview_balances_and_reservations_are_real_without_moving_money(self):
+        # The fixture has a pending return. Resolve it through the real API
+        # before reserving; the production guard must remain enforced.
+        self.assertEqual(self.client.get("/api/admin/overview",headers=self.headers).json()["attention"],1)
+        resolution=self.client.post("/api/admin/returns/"+self.fx.case["id"]+"/resolve",
+            headers=self.headers,json={"decision":"waive","reason":"Reviewed fixture return"})
+        self.assertEqual(resolution.status_code,200,resolution.text)
         self.fx.ledger.reserve(self.fx.tenant,self.fx.wallet,order_id=str(uuid4()),points=50,eligible_minor=1000000,
             rules=Rules(),quote_hash="a"*64,key="portal-held",actor_id=self.fx.user)
         before=self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)
@@ -37,7 +43,7 @@ class PortalAPITests(unittest.TestCase):
         self.assertEqual(result.status_code,200,result.text);data=result.json()
         self.assertEqual((data["customers"],data["balance"],data["reserved"],data["credited"],data["redeemed"]),(1,"300","50","1000","700"))
         self.assertEqual(data["state"],"SettingsRequired");self.assertIsNone(data["rules"])
-        self.assertEqual(data["attention"],1)
+        self.assertEqual(data["attention"],0)
         customer=self.client.get("/api/admin/customers/"+self.customer,headers=self.headers).json()
         self.assertEqual((customer["balance"],customer["available"],customer["reserved"]),(300,250,50))
         self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),before)

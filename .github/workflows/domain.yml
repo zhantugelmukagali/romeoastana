@@ -79,6 +79,14 @@ jobs:
           .browser/bin/playwright install --with-deps chromium
       - name: Test administrative return UX
         run: .browser/bin/python -m unittest discover -s tests/browser -v
+      - name: Save cabinet screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bonuspro-interface
+          path: test-results/*.png
+          if-no-files-found: ignore
+          retention-days: 14
 
   container:
     runs-on: ubuntu-24.04
