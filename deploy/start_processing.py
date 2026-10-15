@@ -36,6 +36,8 @@ def main():
         rows=json.loads(run(["docker","exec","bonuspro-release-db-1","psql","-U","postgres","-d","bonuspro","-At","-c",
             "SELECT COALESCE(json_agg(json_build_object('tenant_id',tenant_id,'state',state)),'[]'::json)::text FROM bonuspro.installations WHERE state IN ('SettingsRequired','Activated')"],capture=True))
         tenant=select_tenant(rows,args.tenant)
+        if run(["docker","inspect","bonuspro-release-app-1","--format","{{.State.Health.Status}}"],capture=True)!="healthy":
+            raise ProcessingFailed("Application health must be confirmed before worker startup")
         image=run(["docker","inspect","bonuspro-release-app-1","--format","{{.Config.Image}}"],capture=True)
         config=json.loads(run(compose(root,"--profile","automation","config","--format","json"),capture=True))
         check_image(config,image)
@@ -62,7 +64,7 @@ def main():
         print(json.dumps(report,ensure_ascii=False,indent=2))
         if report["ready"]:print("PROCESSING_READY: automatic order processing has reported a recent successful cycle")
         else:print("PROCESSING_STARTED: finish the incomplete steps in BonusPro settings; processing is not yet confirmed")
-        print("No keys, balances, activation dates or database schema were changed by this helper.")
+        print("No migrations, key regeneration or program activation were performed. Active programs can now process orders.")
     except ProcessingFailed as error:raise SystemExit(str(error))
     except Exception:raise SystemExit("PROCESSING_NOT_CONFIRMED: inspect app/worker health; no successful processing was claimed") from None
 
