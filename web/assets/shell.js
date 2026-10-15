@@ -49,7 +49,7 @@ if(location.pathname==="/settings"){
  const form=document.querySelector("#rules-form");
  if(form){
   const heading=document.createElement("h2");heading.textContent="Правила начисления и списания";form.prepend(heading);
-  const blocks=[form,...document.querySelectorAll("#workspace>section")];
+  const blocks=[form,...document.querySelectorAll("#workspace>section:not(.readiness-card)")];
   blocks.forEach((block,index)=>{
    const heading=block.querySelector("h2");if(!heading)return;
    const step=document.createElement("span");step.className="setup-step";step.textContent=String(index+1);
