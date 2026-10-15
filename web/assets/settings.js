@@ -104,8 +104,26 @@ $("setup-widget").onclick=async()=>{
   if(working)return;busy(true);$("setup-status").textContent="Проверяем подключение…";
   try{
     const response=await fetch("/api/admin/widget/setup",{method:"POST",credentials:"omit",cache:"no-store",
-      headers:{"Content-Type":"application/json",Authorization:"Bearer "+session},signal:AbortSignal.timeout(15000)});
-    if(!response.ok)throw new Error(response.status===403?"Нужны права администратора и доступ решения к своим дополнительным полям.":"Не удалось подготовить виджет. Проверьте подключение и повторите.");
+      headers:{"Content-Type":"application/json",Authorization:"Bearer "+session},signal:AbortSignal.timeout(35000)});
+    if(!response.ok){
+      let data={};try{data=await response.json();}catch{}
+      if(response.status===401){
+        session=null;$("workspace").hidden=true;$("retry").hidden=false;
+        status("Сеанс завершён. Подключитесь снова и повторите настройку виджета.",true);
+        throw new Error("Сеанс завершён. Подключитесь снова и повторите настройку виджета.");
+      }
+      const messages={
+        moysklad_token_rejected:"МойСклад отклонил доступ решения. Обновите установленное решение и подключитесь снова. Код BP-WIDGET-TOKEN.",
+        moysklad_permissions_required:"Решению не выдан доступ к своим дополнительным полям. Обновите дескриптор с useOwnAttributeMetadata и установленное решение. Код BP-WIDGET-ACCESS.",
+        widget_setup_in_progress:"Подключение уже выполняется в другом окне. Подождите и повторите проверку.",
+        widget_metadata_temporarily_unavailable:"МойСклад временно не отвечает или ограничил запросы. Подождите и повторите; уже созданное поле будет найдено.",
+        widget_metadata_invalid:"МойСклад вернул неподходящее или неоднозначное служебное поле. Требуется проверка настройки. Код BP-WIDGET-METADATA.",
+        widget_binding_changed:"Служебное поле отличается от ранее подключённого. Не удаляйте поля и не повторяйте списания; нужна проверка администратора. Код BP-WIDGET-BINDING."
+      };
+      throw new Error(messages[data.error]||(response.status===403?
+        "Нужны права администратора и доступ решения к своим дополнительным полям. Код BP-WIDGET-ACCESS.":
+        "Не удалось подключить виджет. Код BP-WIDGET-HTTP-"+response.status+". Повторите проверку."));
+    }
     $("setup-status").textContent="Виджет подготовлен. Это не включает рабочие списания.";
     await updateReadiness();
   }catch(error){$("setup-status").textContent=error.name==="TimeoutError"?"Ответ задерживается. Повторная проверка найдёт уже созданное поле.":error.message;}

@@ -32,3 +32,39 @@ class MarkerTests(unittest.TestCase):
         with self.assertRaises(InvalidDocument):self.client().marker_attribute()
 
 if __name__=="__main__":unittest.main()
+
+class DocumentedMarkerContractTests(unittest.TestCase):
+    def setUp(self):
+        self.tenant=str(uuid4());self.marker=str(uuid4());self.calls=[]
+        self.path="/entity/customerorder/metadata/attributes"
+        self.row=dict(id=self.marker,name="БонусПро: операция списания",type="string",required=False,
+            meta=dict(type="attributemetadata",href=BASE+self.path+"/"+self.marker))
+    def client(self,page,created=None):
+        def transport(request):
+            self.calls.append(request)
+            return httpx.Response(200,json=page if request.method=="GET" else (created if created is not None else [self.row]))
+        return RemapClient("synthetic",self.tenant,transport=httpx.MockTransport(transport))
+    def test_documented_full_metadata_without_size_is_not_rejected(self):
+        page=dict(meta=dict(href=BASE+self.path,mediaType="application/json"),rows=[self.row])
+        self.assertEqual(self.client(page).marker_attribute(create=True),self.marker)
+        self.assertEqual(len(self.calls),1)
+    def test_documented_array_creation_posts_only_one_optional_string_field(self):
+        import json
+        page=dict(meta=dict(href=BASE+self.path,mediaType="application/json"),rows=[])
+        self.assertEqual(self.client(page).marker_attribute(create=True),self.marker)
+        sent=json.loads(self.calls[-1].content)
+        self.assertEqual(sent,[dict(name="БонусПро: операция списания",type="string",required=False)])
+    def test_invalid_or_partial_collections_never_create_a_field(self):
+        pages=[dict(meta={},rows=[None]),dict(meta={"size":2},rows=[]),
+            dict(meta={"offset":1},rows=[]),dict(meta={"nextHref":"https://evil.test"},rows=[]),
+            dict(meta={"href":"https://evil.test"},rows=[]),dict(meta={},rows=[self.row,self.row])]
+        for page in pages:
+            self.calls=[]
+            with self.assertRaises(InvalidDocument):self.client(page).marker_attribute(create=True)
+            self.assertEqual([x.method for x in self.calls],["GET"])
+    def test_wrong_creation_response_and_cross_account_fields_are_rejected(self):
+        page=dict(meta={},rows=[])
+        for response in ([],[self.row,self.row],{"id":self.marker,"type":"text"}):
+            with self.assertRaises(InvalidDocument):self.client(page,response).marker_attribute(create=True)
+        foreign={**self.row,"accountId":str(uuid4())}
+        with self.assertRaises(InvalidDocument):self.client(dict(meta={},rows=[foreign])).marker_attribute(create=True)
