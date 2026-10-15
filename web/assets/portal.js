@@ -25,7 +25,7 @@ async function api(path,options={}){
   return data;
 }
 function empty(target,title,description){
-  const box=node("div","","empty-state");box.append(node("span","↗","empty-symbol"),node("h3",title),node("p",description));target.replaceChildren(box);
+  const box=node("div","","empty-state");box.append(node("h3",title),node("p",description));target.replaceChildren(box);
 }
 function activityRows(target,items,append=false){
   if(!append)target.replaceChildren();
@@ -69,7 +69,10 @@ function customerRows(items,append=false){
     const row=node("div","","customer-row");
     const identity=node("div","","customer-identity"),avatar=node("span",(item.name||"К").slice(0,1).toUpperCase(),"avatar"),text=node("div");
     text.append(node("strong",item.name||"Клиент без имени"),node("span",item.phone||(item.enrolled?"Участник программы":"Пока без бонусного счёта"),"muted"));
-    identity.append(avatar,text);row.append(identity,node("strong",number(item.balance)),node("span",number(item.available),"available"));
+    identity.append(text);
+    const balance=node("strong",number(item.balance),"customer-value");balance.dataset.label="Баланс";
+    const available=node("span",number(item.available),"customer-value available");available.dataset.label="Доступно";
+    row.append(identity,balance,available);
     const b=node("button","Открыть","small-button");b.onclick=()=>void openCustomer(item.id);row.append(b);target.append(row);
   }
   if(!target.childElementCount)empty(target,"Клиенты не найдены","Попробуйте другое имя или телефон. Новые клиенты создаются в МойСклад.");

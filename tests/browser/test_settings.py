@@ -68,12 +68,12 @@ class SettingsBrowserTests(unittest.TestCase):
         self.frame.get_by_text("Сохраните первоначальные правила.",exact=True).wait_for()
 
     def test_widget_setup_does_not_claim_sales_are_active(self):
-        self.open()
+        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
         self.frame.get_by_role("button",name="Подготовить виджет",exact=True).click()
         self.frame.get_by_text("Виджет подготовлен. Это не включает рабочие списания.",exact=True).wait_for()
 
     def test_operational_checklist_has_one_activation_path_and_real_processing_state(self):
-        self.open()
+        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
         self.assertEqual(self.frame.locator("#configure-automation").count(),0)
         self.assertEqual(self.frame.locator("#readiness-list li").count(),4)
         self.frame.get_by_text("Настройка виджета сохранена — требуется действие",exact=True).wait_for()
@@ -84,7 +84,7 @@ class SettingsBrowserTests(unittest.TestCase):
         self.frame.get_by_text("Начало программы ещё не зафиксировано.",exact=True).wait_for()
 
     def test_activation_requires_explicit_cutover_confirmation(self):
-        self.open();button=self.frame.get_by_role("button",name="Запустить программу",exact=True)
+        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click();button=self.frame.get_by_role("button",name="Запустить программу",exact=True)
         button.click()
         self.frame.get_by_text("Подтвердите сверку остатков, отключение прежней программы и укажите основание.",exact=True).wait_for()
         self.assertEqual(self.activations,[])
@@ -99,7 +99,7 @@ class SettingsBrowserTests(unittest.TestCase):
 
     def test_initial_rules_and_goods_only_message(self):
         self.open()
-        self.frame.get_by_text("Участвуют только товары. Доставка не входит в сумму начисления и списания.",exact=True).wait_for()
+        self.frame.get_by_text("Только товары, без доставки",exact=True).wait_for()
         self.frame.get_by_label("Начисление, %",exact=True).fill("7.25")
         self.frame.get_by_role("button",name="Сохранить правила",exact=True).click()
         self.frame.get_by_text("Правила сохранены. Версия 1.",exact=True).wait_for()
@@ -123,5 +123,21 @@ class SettingsBrowserTests(unittest.TestCase):
         self.assertEqual(len(self.saved),1)
         self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth <= innerWidth"))
         self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)
+
+
+    def test_rules_are_short_and_example_recalculates_without_saving(self):
+        self.open()
+        self.assertTrue(self.frame.get_by_role("tabpanel",name="Правила",exact=True).is_visible())
+        self.assertFalse(self.frame.get_by_role("button",name="Запустить программу",exact=True).is_visible())
+        self.frame.get_by_label("Покупка на сумму, ₸",exact=True).fill("20000")
+        self.assertEqual("".join(self.frame.locator("#example-earn").inner_text().split()),"1000")
+        self.assertEqual("".join(self.frame.locator("#example-spend").inner_text().split()),"6000")
+        self.frame.get_by_label("Начисление, %",exact=True).fill("7.25")
+        self.assertEqual("".join(self.frame.locator("#example-earn").inner_text().split()),"1450")
+        self.assertEqual(self.saved,[])
+        self.frame.get_by_role("tab",name="История изменений",exact=True).click()
+        self.assertTrue(self.frame.get_by_role("tabpanel",name="История изменений",exact=True).is_visible())
+        self.frame.get_by_role("tab",name="История изменений",exact=True).press("Home")
+        self.assertTrue(self.frame.get_by_role("tabpanel",name="Правила",exact=True).is_visible())
 
 if __name__=="__main__":unittest.main()
