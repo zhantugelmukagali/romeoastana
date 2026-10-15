@@ -81,3 +81,11 @@ class WidgetSetupContractTests(unittest.TestCase):
             finally:self.release.set()
             self.assertEqual(first.result(timeout=10).status_code,200)
         self.assertEqual(self.posts,1)
+
+    def test_anonymous_operator_and_foreign_origin_never_reach_metadata_provider(self):
+        self.assertEqual(self.client.post(self.path,headers={"Origin":"https://testserver"}).status_code,401)
+        self.assertEqual(self.client.post(self.path,headers=self.fx.headers("worker")).status_code,403)
+        headers={**self.headers,"Origin":"https://evil.test"}
+        self.assertEqual(self.client.post(self.path,headers=headers).status_code,403)
+        self.assertEqual(self.calls,[])
+        self.assertIsNone(self.adapter.binding(self.fx.tenant))
