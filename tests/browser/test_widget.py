@@ -24,17 +24,25 @@ class WidgetBrowserTests(unittest.TestCase):
         self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1000,"height":800})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
-        self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False
+        self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False;self.reject_prepare=None;self.save_during_prepare=False;self.host_error=False
     def tearDown(self):
         self.context.close();self.browser.close();self.runtime.stop()
     def route(self,route):
         url=route.request.url
-        if url.startswith("https://online.moysklad.ru/"):return route.fulfill(content_type="text/html",body=HOST)
+        if url.startswith("https://online.moysklad.ru/"):return route.fulfill(content_type="text/html",body=HOST.replace(
+            "send({name:'UpdateResponse',correlationId:e.data.messageId});",
+            "send({name:'InvalidMessageError',correlationId:null,invalidMessage:{messageId:e.data.messageId},errors:[{code:1002}]});"
+            if self.host_error else "send({name:'UpdateResponse',correlationId:e.data.messageId});"))
         if not url.startswith("https://widget.test/"):return route.abort()
         path=url.split("https://widget.test",1)[1]
         if path=="/api/session":return route.fulfill(json={"token":"synthetic-session"})
         if path.endswith("/prepare"):
-            self.prepares.append(route.request.post_data_json);self.prepared=True
+            self.prepares.append(route.request.post_data_json)
+            if self.reject_prepare:return route.fulfill(status=self.reject_prepare,json={"error":"operation rejected"})
+            self.prepared=True
+            if self.save_during_prepare:
+                self.saved=True
+                self.page.evaluate("send({name:'Save',messageId:131,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
             if self.lose:return route.abort()
             if self.delay_change:
                 self.page.evaluate("send({name:'Change',messageId:120,objectState:{}})")
@@ -95,6 +103,35 @@ class WidgetBrowserTests(unittest.TestCase):
         self.frame.get_by_text("Данные изменились или запрос уже выполнялся. Проверьте сохранение; резерв сохранён.",exact=True).wait_for()
         self.assertEqual(self.page.evaluate("updates.length"),0)
         self.assertEqual(len(self.prepares),1)
+
+    def test_explicit_rejection_does_not_invent_reservation_and_requires_fresh_quote(self):
+        self.open()
+        for code in (403,409,422):
+            with self.subTest(status=code):
+                self.reject_prepare=code
+                self.apply()
+                self.frame.locator("#status[data-error='true']").wait_for()
+                self.assertFalse(self.frame.locator("#pending").is_visible())
+                self.assertTrue(self.frame.get_by_role("button",name="Применить к заказу",exact=True).is_disabled())
+                self.assertEqual(self.page.evaluate("updates.length"),0)
+                self.frame.get_by_role("button",name="Обновить",exact=True).click()
+                self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.assertEqual(len(self.prepares),3)
+
+    def test_save_during_prepare_is_verified_after_response_without_host_mutation(self):
+        self.save_during_prepare=True;self.open();self.apply()
+        self.frame.get_by_text("Списано 1000 бонусов.",exact=True).wait_for()
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.verifies,1)
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+
+    def test_host_rejection_keeps_real_reservation_and_reports_without_waiting_for_timeout(self):
+        self.host_error=True;self.open();self.apply()
+        self.frame.locator("#status[data-error='true']").wait_for(timeout=5000)
+        self.frame.get_by_text("Зарезервировано 1000 бонусов. Итоговое списание ещё не подтверждено.",exact=True).wait_for()
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+        self.assertEqual(self.verifies,0)
 
     def test_create_page_does_not_send_unsupported_feedback(self):
         self.open()

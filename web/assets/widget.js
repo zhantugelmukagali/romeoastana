@@ -3,7 +3,7 @@
 const HOST="https://online.moysklad.ru";
 const $=id=>document.getElementById(id);
 let sequence=0,epoch=0,openMessage=null,orderId=null,token=null,quote=null;
-let dirty=false,busy=false,attempt=null,requestId=null,draftRevision=0;
+let dirty=false,busy=false,attempt=null,requestId=null,draftRevision=0,savedWhileBusy=false;
 const waiting=new Map();
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const money=value=>new Intl.NumberFormat("ru-KZ",{style:"currency",currency:"KZT"}).format(value/100);
@@ -81,13 +81,23 @@ async function refresh(){
       updatePayable();
     }
   }catch(error){if(generation===epoch)status(explain(error),true);}
-  finally{if(generation===epoch){busy=false;controls();}}
+  finally{finishBusy(generation);}
 }
 function updatePayable(){
   const raw=$("points").value;
   const points=/^[0-9]+$/.test(raw)?Number(raw):NaN;
   $("payable").textContent=quote&&Number.isSafeInteger(points)&&points<=quote.quote.max_spend_points
     ?"После списания: "+money(quote.total_minor-points*100):"";
+}
+function finishBusy(generation){
+  if(generation!==epoch)return;
+  busy=false;controls();
+  if(savedWhileBusy){
+    savedWhileBusy=false;
+    // Save can race the prepare/UpdateResponse or a provider read. Verify the
+    // saved document after the in-flight operation, never treat Save as proof.
+    queueMicrotask(()=>{if(generation===epoch){if(attempt)void verify();else void refresh();}});
+  }
 }
 async function apply(event){
   event.preventDefault();
@@ -112,11 +122,21 @@ async function apply(event){
     dirty=true;showPending(result);
   }catch(error){
     if(generation===epoch){
-      // A lost prepare response may already have reserved points. Never generate another request.
-      attempt=attempt||{state:"verifying",points};
-      showPending(attempt);status(explain(error),true);
+      const rejected=!attempt && [400,401,403,404,409,422].includes(error.status);
+      if(rejected){
+        // An explicit rejection is different from an ambiguous network failure.
+        // Require a fresh quote, without inventing a successful reservation.
+        quote=null;requestId=null;
+        $("summary").hidden=true;$("pending").hidden=true;
+      }else{
+        // A lost prepare response may already have reserved points.
+        // Preserve uncertainty and never dispatch a second mutation blindly.
+        attempt=attempt||{state:"verifying",points};
+        showPending(attempt);
+      }
+      status(explain(error),true);
     }
-  }finally{if(generation===epoch){busy=false;controls();}}
+  }finally{finishBusy(generation);}
 }
 async function verify(){
   if(busy||!orderId||!attempt)return;
@@ -129,14 +149,16 @@ async function verify(){
     showPending(result);
     if(!result.verified)status("Сохранённый заказ не совпадает с рассчитанной скидкой. Резерв сохранён; нужна проверка.",true);
   }catch(error){if(generation===epoch)status(explain(error),true);}
-  finally{if(generation===epoch){busy=false;controls();}}
+  finally{finishBusy(generation);}
 }
 window.addEventListener("message",event=>{
   if(event.source!==parent||event.origin!==HOST||!event.data||typeof event.data!=="object")return;
   const message=event.data;
-  const request=waiting.get(message.correlationId);
+  const correlation=message.correlationId ??
+    (message.name==="InvalidMessageError"?message.invalidMessage?.messageId:undefined);
+  const request=waiting.get(correlation);
   if(request){
-    waiting.delete(message.correlationId);clearTimeout(request.timer);
+    waiting.delete(correlation);clearTimeout(request.timer);
     if(request.epoch!==epoch||message.name!==request.responseName)request.reject(new Error("host_rejected"));
     else request.resolve(message);
     return;
@@ -144,12 +166,12 @@ window.addEventListener("message",event=>{
   if(message.name==="Open"&&Number.isSafeInteger(message.messageId)){
     if(openMessage===message.messageId)return;
     epoch++;openMessage=message.messageId;orderId=null;token=null;quote=null;attempt=null;requestId=null;
-    dirty=false;busy=false;draftRevision=0;
+    dirty=false;busy=false;draftRevision=0;savedWhileBusy=false;
     for(const pending of waiting.values()){clearTimeout(pending.timer);pending.reject(new Error("document_changed"));}
     waiting.clear();$("summary").hidden=true;$("pending").hidden=true;$("points").value="";
     status("Загружаем бонусы заказа…");controls();
     if(message.extensionPoint==="document.customerorder.edit")
-      parent.postMessage({name:"OpenFeedback",correlationId:message.messageId},HOST);
+      parent.postMessage({name:"OpenFeedback",correlationId:message.messageId,messageId:++sequence},HOST);
     if(message.extensionPoint!=="document.customerorder.edit"||!uuid.test(message.objectId||"")){
       status("Сначала сохраните заказ с выбранным покупателем в МойСклад.");return;
     }
@@ -159,7 +181,8 @@ window.addEventListener("message",event=>{
     if(!attempt)status("В заказе есть изменения. Сначала сохраните его в МойСклад.");
   }else if(message.name==="Save"&&message.objectId===orderId&&message.extensionPoint==="document.customerorder.edit"){
     dirty=false;draftRevision++;
-    if(!busy){if(attempt)void verify();else void refresh();}
+    if(busy)savedWhileBusy=true;
+    else if(attempt)void verify();else void refresh();
   }
 });
 $("refresh").addEventListener("click",refresh);
