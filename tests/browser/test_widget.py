@@ -29,6 +29,10 @@ class WidgetBrowserTests(unittest.TestCase):
         self.context.close();self.browser.close();self.runtime.stop()
     def route(self,route):
         url=route.request.url
+        if url=="https://online.moysklad.ru/host-sender":
+            return route.fulfill(content_type="text/html",body="""<script>
+            window.deliver=(target,message)=>target.postMessage(message,'https://widget.test');
+            </script>""")
         if url.startswith("https://online.moysklad.ru/"):return route.fulfill(content_type="text/html",body=HOST.replace(
             "send({name:'UpdateResponse',correlationId:e.data.messageId});",
             "send({name:'InvalidMessageError',correlationId:null,invalidMessage:{messageId:e.data.messageId},errors:[{code:1002}]});"
@@ -145,6 +149,39 @@ class WidgetBrowserTests(unittest.TestCase):
         self.page.frames[1].evaluate("window.postMessage({name:'Open',messageId:999,extensionPoint:'document.customerorder.create'},'*')")
         self.assertTrue(self.frame.get_by_text("5000 бонусов",exact=True).is_visible())
         self.assertEqual(self.prepares,[])
+    def test_gwt_sibling_open_context_update_and_save_complete_the_saved_readback_flow(self):
+        self.open()
+        self.page.evaluate("""async()=>{
+          const iframe=document.createElement('iframe');iframe.id='gwt';iframe.hidden=true;
+          iframe.src='https://online.moysklad.ru/host-sender';
+          await new Promise(resolve=>{iframe.onload=resolve;document.body.append(iframe)});
+          window.send=m=>iframe.contentWindow.deliver(document.querySelector('iframe[title="БонусПро"]').contentWindow,m);
+          window.gwtOpened=false;
+          window.addEventListener('message',e=>{if(e.data?.name==='OpenFeedback')window.gwtOpened=true});
+          openOrder('11111111-1111-4111-8111-111111111111');
+        }""")
+        self.page.wait_for_function("window.gwtOpened===true")
+        self.frame=self.page.frame_locator('iframe[title="БонусПро"]')
+        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.apply()
+        self.frame.get_by_text("Зарезервировано 1000 бонусов. Итоговое списание ещё не подтверждено.",exact=True).wait_for()
+        self.saved=True
+        self.page.evaluate("send({name:'Save',messageId:140,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.get_by_text("Списано 1000 бонусов.",exact=True).wait_for()
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.verifies,1)
+
+    def test_same_origin_unrelated_popup_cannot_replace_the_host_document(self):
+        self.open()
+        self.page.evaluate("""async()=>{
+          const popup=window.open('https://online.moysklad.ru/host-sender','unrelated-host-window');
+          await new Promise(resolve=>popup.onload=resolve);
+          popup.deliver(document.querySelector('iframe').contentWindow,{
+            name:'Open',messageId:999,extensionPoint:'document.customerorder.create',objectId:null});
+        }""")
+        self.assertTrue(self.frame.get_by_text("5000 бонусов",exact=True).is_visible())
+        self.assertEqual(self.prepares,[])
+
     def test_compact_width_and_maximum_preview(self):
         self.page.set_viewport_size({"width":390,"height":844});self.open()
         self.frame.get_by_role("button",name="Максимум",exact=True).click()

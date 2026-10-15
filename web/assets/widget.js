@@ -1,6 +1,6 @@
 // MoySklad v2: Open/Change/Save/UpdateRequest and one-use UserContextRequest.
 // Host events provide UI context only. The backend rereads all financial evidence.
-const HOST="https://online.moysklad.ru";
+import {HOST,isHostMessage} from "./host.js";
 const $=id=>document.getElementById(id);
 let sequence=0,epoch=0,openMessage=null,orderId=null,token=null,quote=null;
 let dirty=false,busy=false,attempt=null,requestId=null,draftRevision=0,savedWhileBusy=false;
@@ -152,7 +152,7 @@ async function verify(){
   finally{finishBusy(generation);}
 }
 window.addEventListener("message",event=>{
-  if(event.source!==parent||event.origin!==HOST||!event.data||typeof event.data!=="object")return;
+  if(!isHostMessage(event)||!event.data||typeof event.data!=="object")return;
   const message=event.data;
   const correlation=message.correlationId ??
     (message.name==="InvalidMessageError"?message.invalidMessage?.messageId:undefined);

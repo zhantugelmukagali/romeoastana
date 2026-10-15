@@ -1,12 +1,11 @@
 // MoySklad user-context transport. Secrets stay in memory and never enter diagnostics.
-const HOST = "https://online.moysklad.ru";
+import {HOST,isHostWindow,isHostMessage} from "./host.js";
 let sequence = 0;
 let opened = false;
 window.addEventListener("message", event => {
-  if (event.source !== parent || event.origin !== HOST) return;
+  if (!isHostMessage(event)) return;
   if (event.data?.name === "Open" && Number.isSafeInteger(event.data.messageId)) {
     opened = true;
-    parent.postMessage({name:"OpenFeedback",correlationId:event.data.messageId,messageId:++sequence}, HOST);
   }
 });
 export function requestContext() {
@@ -26,7 +25,7 @@ export function requestContext() {
       error ? reject(error) : resolve(token);
     };
     const listener=event => {
-      if(event.source!==parent)return;
+      if(!isHostWindow(event.source))return;
       seen.parent=true;
       if(event.origin!==HOST)return;
       seen.host=true;
