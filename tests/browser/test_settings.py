@@ -177,7 +177,7 @@ class SettingsBrowserTests(unittest.TestCase):
         self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
         self.setup_error=(401,"authentication required")
         self.frame.get_by_role("button",name="Подготовить виджет",exact=True).click()
-        self.frame.get_by_text("Сеанс завершён. Подключитесь снова и повторите настройку виджета.",exact=True).wait_for()
+        self.frame.locator("#status").get_by_text("Сеанс завершён. Подключитесь снова и повторите настройку виджета.",exact=True).wait_for()
         self.assertFalse(self.frame.locator("#workspace").is_visible())
         self.assertTrue(self.frame.get_by_role("button",name="Повторить подключение",exact=True).is_visible())
 
