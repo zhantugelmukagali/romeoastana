@@ -1,5 +1,5 @@
 """Real Chromium, synthetic MoySklad host. Not a live provider acceptance test."""
-import json,unittest
+import base64,json,os,unittest
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -200,5 +200,13 @@ class WidgetBrowserTests(unittest.TestCase):
         self.frame.get_by_role("button",name="Максимум",exact=True).click()
         self.assertEqual(self.frame.get_by_label("Списать бонусы",exact=True).input_value(),"3000")
         self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+        height=self.page.frames[1].evaluate("document.body.getBoundingClientRect().height")
+        self.assertLessEqual(height,560)
+        if os.environ.get("GITHUB_ACTIONS")=="true":
+            root=ROOT/"test-results";root.mkdir(exist_ok=True)
+            body=self.page.frames[1].locator("body")
+            body.screenshot(path=str(root/"bonuspro-order-widget.png"))
+            print("BP_VISUAL_WIDGET="+base64.b64encode(body.screenshot(type="jpeg",quality=65)).decode(),flush=True)
+
 
 if __name__=="__main__":unittest.main()
