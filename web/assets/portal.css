@@ -46,3 +46,11 @@ dialog{scrollbar-gutter:stable}
 .panel-heading>a,.attention-link{font-size:12px}
 .metric-label{color:#475467}.metric>p,.panel-heading p,.empty-state{color:#667085}
 @media(max-width:480px){.metric>p{font-size:10px}.operation-info strong,.customer-row{font-size:12px}.customer-identity .muted{font-size:10px}}
+
+@media(max-width:480px){
+ .header-actions{display:flex;flex-wrap:nowrap;gap:7px}
+ .header-actions .pill{font-size:10px;padding:5px 7px}
+ .header-actions #open-customers{margin-left:auto;padding:7px 9px;font-size:11px}
+ .header-actions #refresh{width:32px;min-width:32px;padding:0;font-size:0}
+ .header-actions #refresh::before{content:"↻";font-size:19px;font-weight:500}
+}
