@@ -126,7 +126,7 @@ function showScreen(){
   screen=["customers","activity"].includes(location.hash.slice(1))?location.hash.slice(1):"overview";
   document.querySelectorAll("[data-screen]").forEach(section=>section.hidden=section.dataset.screen!==screen);
   $("page-title").textContent={overview:"Обзор программы",customers:"Клиенты",activity:"Операции"}[screen];
-  $("page-description").textContent={overview:"Бонусы, клиенты и покупки — в одном месте.",customers:"Найдите клиента, проверьте баланс и историю бонусов.",activity:"Полная история подтверждённых движений бонусов."}[screen];
+  $("page-description").textContent={overview:"Балансы и операции клиентов.",customers:"Найдите клиента, проверьте баланс и историю бонусов.",activity:"Полная история подтверждённых движений бонусов."}[screen];
   $("open-customers").hidden=!session||screen!=="overview";
   if(session){if(screen==="customers"&&!customersLoaded)void customers();if(screen==="activity"&&!activityLoaded)void activity();}
 }

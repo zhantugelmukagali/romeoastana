@@ -1,11 +1,11 @@
 """Settings UX exercised in Chromium with synthetic host/API transport."""
-import json
+import base64,json,os
 import unittest
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 ROOT=Path(__file__).resolve().parents[2]
-HOST="""<!doctype html><iframe title="БонусПро" src="https://widget.test/settings" style="width:100%;height:1100px"></iframe>
+HOST="""<!doctype html><style>html,body{margin:0;height:100%;overflow:hidden}iframe{border:0;width:100%;height:100vh}</style><iframe title="БонусПро" src="https://widget.test/settings"></iframe>
 <script>window.addEventListener('message',e=>{if(e.data.name==='UserContextRequest')
 e.source.postMessage({name:'UserContextResponse',correlationId:e.data.messageId,token:'synthetic'},'https://widget.test');});</script>"""
 
@@ -139,5 +139,14 @@ class SettingsBrowserTests(unittest.TestCase):
         self.assertTrue(self.frame.get_by_role("tabpanel",name="История изменений",exact=True).is_visible())
         self.frame.get_by_role("tab",name="История изменений",exact=True).press("Home")
         self.assertTrue(self.frame.get_by_role("tabpanel",name="Правила",exact=True).is_visible())
+
+
+        if os.environ.get("GITHUB_ACTIONS")=="true":
+            directory=ROOT/"test-results";directory.mkdir(exist_ok=True)
+            for label,width,height in (("DESKTOP",1280,800),("MOBILE",390,844)):
+                self.page.set_viewport_size({"width":width,"height":height})
+                self.page.frames[1].evaluate("document.querySelector('.app-content').scrollTop=0")
+                self.page.screenshot(path=str(directory/("bonuspro-rules-"+label.lower()+".png")))
+                print("BP_VISUAL_RULES_"+label+"="+base64.b64encode(self.page.screenshot(type="jpeg",quality=65)).decode(),flush=True)
 
 if __name__=="__main__":unittest.main()
