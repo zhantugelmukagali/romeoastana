@@ -12,3 +12,29 @@
 @media(max-width:480px){.portal header{gap:10px}.header-actions{width:100%;justify-content:space-between;padding:0}.kpi-grid{gap:10px}.metric{padding:14px}.metric-label{font-size:10px}.metric-symbol{width:21px;height:21px}.metric>strong{font-size:25px}.metric>p{font-size:10px}.panel{padding:16px}.panel-heading{gap:8px}.panel-heading>a{font-size:10px}.panel-heading h2{font-size:15px}.activity-row{gap:9px}.activity-row .order-link{display:none}.operation-info strong{font-size:11px}.operation-info span{font-size:9px}.operation-amount{font-size:12px}.text-button{font-size:9px;padding:3px}.widget-callout{padding:17px}.widget-callout p{font-size:11px}.widget-callout>button{margin:0;width:100%}.widget-mark{display:none}.setup-callout{padding:15px}.setup-callout>a{margin:0;width:100%}.callout-icon{display:none}.customer-row{grid-template-columns:minmax(100px,1fr) 65px 60px;font-size:11px}.customer-identity{gap:8px}.avatar{width:27px;height:27px;font-size:11px}.small-button{font-size:10px;padding:6px}.customer-dialog .activity-row .text-button{display:none}}
 
 .processing-callout{display:flex;align-items:center;justify-content:space-between;gap:16px;border:1px solid #fedf89;border-radius:10px;background:#fffcf5;color:#93370d;padding:16px 18px;margin-bottom:20px;font-size:12px}.processing-callout p{font-size:11px;color:#b54708;margin:4px 0 0}.processing-callout .button{font-size:11px;flex-shrink:0;background:#fff;border-color:#fedf89;color:#93370d}@media(max-width:600px){.processing-callout{flex-direction:column;align-items:stretch}}
+
+.portal header{position:relative;margin-bottom:16px;gap:10px}
+.portal header>div:first-child{min-width:190px}
+.portal header .subtitle{font-size:12px}
+.header-actions{padding:0;gap:8px}
+.header-actions button{font-size:12px;min-height:34px;padding:7px 11px}
+.portal header .connection-status{flex-basis:100%;margin:0!important;font-size:10px!important;line-height:1.4}
+.portal header .connection-status.error{padding:8px 11px;font-size:12px!important}
+.metric{padding:15px 16px}
+.metric>strong{font-size:28px;margin:9px 0 4px}
+.metric-label{font-size:11px}
+.kpi-grid{gap:12px;margin-bottom:16px}
+.setup-callout{padding:12px 15px;gap:11px;margin-bottom:16px}
+.setup-callout h2{font-size:12px}.setup-callout p{font-size:11px}
+.overview-grid{gap:16px}
+.panel{padding:18px}
+.empty-state{min-height:170px}
+.widget-callout{padding:15px 18px;margin-top:16px}
+#open-customers{white-space:nowrap}
+.customer-row{transition:background .12s}
+.customer-row:not(.table-heading):hover{background:#f8faff}
+.customer-row:focus-within{background:#f0f5ff}
+.dialog-heading{position:sticky;top:-26px;background:white;padding:8px 0;z-index:1}
+dialog{scrollbar-gutter:stable}
+@media(max-width:700px){.portal header{margin-bottom:14px}.header-actions{flex-wrap:wrap}.pill{font-size:10px}.portal header .connection-status{font-size:10px!important}.metric{padding:13px}.metric>strong{font-size:25px}.panel{padding:16px}}
+@media(prefers-reduced-motion:reduce){.customer-row{transition:none}}

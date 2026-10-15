@@ -24,7 +24,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1000,"height":800})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
-        self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False;self.reject_prepare=None;self.save_during_prepare=False;self.host_error=False
+        self.quote_overrides={};self.order_error=None;self.session_count=0;self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False;self.reject_prepare=None;self.save_during_prepare=False;self.host_error=False
     def tearDown(self):
         self.context.close();self.browser.close();self.runtime.stop()
     def route(self,route):
@@ -39,7 +39,9 @@ class WidgetBrowserTests(unittest.TestCase):
             if self.host_error else "send({name:'UpdateResponse',correlationId:e.data.messageId});"))
         if not url.startswith("https://widget.test/"):return route.abort()
         path=url.split("https://widget.test",1)[1]
-        if path=="/api/session":return route.fulfill(json={"token":"synthetic-session"})
+        if path=="/api/session":
+            self.session_count+=1
+            return route.fulfill(json={"token":"synthetic-session-"+str(self.session_count)})
         if path.endswith("/prepare"):
             self.prepares.append(route.request.post_data_json)
             if self.reject_prepare:return route.fulfill(status=self.reject_prepare,json={"error":"operation rejected"})
@@ -57,10 +59,11 @@ class WidgetBrowserTests(unittest.TestCase):
             return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":1000,
                 "state":"committed" if self.saved else "verifying","verified":self.saved})
         if path.startswith("/api/widget/orders/"):
+            if self.order_error:return route.fulfill(status=self.order_error,json={"error":"unavailable"})
             if self.prepared and path.endswith(ORDER):
                 return route.fulfill(json={"redemption":{"id":"attempt","order_id":ORDER,"points":1000,"state":"verifying"}})
             return route.fulfill(json={"name":"0001","saved_source_hash":"a"*64,"eligible_minor":1000000,"total_minor":1200000,
-                "can_prepare":True,"quote":{"balance":5000,"max_spend_points":3000,"blocked_reason":None}})
+                "can_prepare":self.quote_overrides.get("can_prepare",True),"quote":{"balance":5000,"max_spend_points":3000,"blocked_reason":None,**self.quote_overrides.get("quote",{})}})
         file=ROOT/"web"/("widget.html" if path=="/widget" else path.lstrip("/"))
         if file.is_file():
             return route.fulfill(content_type={".html":"text/html",".css":"text/css",".js":"text/javascript"}[file.suffix],body=file.read_text())
@@ -208,5 +211,88 @@ class WidgetBrowserTests(unittest.TestCase):
             body.screenshot(path=str(root/"bonuspro-order-widget.png"))
             print("BP_VISUAL_WIDGET="+base64.b64encode(body.screenshot(type="jpeg",quality=65)).decode(),flush=True)
 
+
+
+    def test_invalid_amounts_disable_apply_and_keep_financial_preview_accurate(self):
+        self.open();points=self.frame.get_by_label("Списать бонусы",exact=True)
+        button=self.frame.get_by_role("button",name="Применить к заказу",exact=True)
+        self.assertTrue(button.is_disabled())
+        for value in ("0","3001","1.5","9007199254740993"):
+            points.fill(value)
+            self.assertTrue(button.is_disabled())
+            self.assertEqual(points.get_attribute("aria-invalid"),"true")
+        points.fill("1000")
+        self.assertTrue(button.is_enabled())
+        self.assertEqual(points.get_attribute("aria-invalid"),"false")
+        actual="".join(self.frame.locator("#payable").inner_text().split())
+        self.assertIn("11000,00₸",actual)
+        self.assertEqual(self.prepares,[])
+
+    def test_enter_applies_only_once_and_success_requires_verified_saved_order(self):
+        self.open();points=self.frame.get_by_label("Списать бонусы",exact=True)
+        points.fill("1000");points.press("Enter")
+        self.frame.get_by_role("heading",name="Осталось сохранить заказ",exact=True).wait_for()
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.frame.locator("#pending").get_attribute("data-state"),"waiting")
+        self.frame.get_by_role("button",name="Проверить сохранение",exact=True).click()
+        self.frame.locator("#status[data-error=true]").wait_for()
+        self.assertNotEqual(self.frame.locator("#pending").get_attribute("data-state"),"done")
+        self.saved=True
+        self.page.evaluate("send({name:'Save',messageId:230,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.get_by_role("heading",name="Бонусы списаны",exact=True).wait_for()
+        self.assertEqual(len(self.prepares),1)
+
+    def test_failed_refresh_invalidates_old_quote_and_disables_all_spending(self):
+        self.open();self.frame.get_by_label("Списать бонусы",exact=True).fill("1000")
+        self.order_error=500
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.locator("#status[data-error=true]").wait_for()
+        self.assertFalse(self.frame.locator("#summary").is_visible())
+        self.assertTrue(self.frame.locator("#apply").is_disabled())
+        self.assertTrue(self.frame.locator("#maximum-button").is_disabled())
+        self.assertEqual(self.prepares,[])
+
+    def test_zero_balance_explains_how_to_earn_without_offering_spending(self):
+        self.quote_overrides={"quote":{"balance":0,"max_spend_points":0}}
+        self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
+        self.frame.get_by_text("У покупателя пока нет бонусов. Начисление — после полной оплаты и отгрузки.",exact=True).wait_for()
+        self.assertTrue(self.frame.locator("#points").is_disabled())
+        self.assertTrue(self.frame.locator("#apply").is_disabled())
+        self.assertEqual(self.prepares,[])
+
+    def test_admin_review_blocks_even_a_positive_quote_limit(self):
+        self.quote_overrides={"quote":{"blocked_reason":"return_review"}}
+        self.open()
+        self.frame.get_by_text("Операция требует проверки администратора.",exact=True).wait_for()
+        self.assertTrue(self.frame.locator("#points").is_disabled())
+        self.assertTrue(self.frame.locator("#maximum-button").is_disabled())
+        self.assertEqual(self.prepares,[])
+
+    def test_unconfigured_program_never_offers_a_spend(self):
+        self.quote_overrides={"can_prepare":False}
+        self.open()
+        self.frame.get_by_text("Списание пока выключено: настройка и проверка магазина не завершены.",exact=True).wait_for()
+        self.assertTrue(self.frame.locator("#points").is_disabled())
+        self.assertEqual(self.prepares,[])
+
+    def test_old_order_unauthorized_response_cannot_clear_new_order_session(self):
+        self.open();held=[]
+        def delayed(route):
+            if route.request.url.endswith(ORDER) and not held:
+                held.append(route);return
+            return self.route(route)
+        self.context.route("**/api/widget/orders/*",delayed)
+        with self.page.expect_request("**/api/widget/orders/"+ORDER):
+            self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.page.evaluate("openOrder('"+NEXT+"')")
+        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.assertEqual(self.session_count,2)
+        held[0].fulfill(status=401,json={"error":"expired old order"})
+        self.page.wait_for_timeout(100)
+        with self.page.expect_request("**/api/widget/orders/"+NEXT) as request:
+            self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.assertEqual(request.value.headers.get("authorization"),"Bearer synthetic-session-2")
+        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.assertEqual(self.session_count,2)
 
 if __name__=="__main__":unittest.main()

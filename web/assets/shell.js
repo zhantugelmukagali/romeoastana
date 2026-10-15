@@ -19,10 +19,7 @@ for(const [id,label,href] of [["overview","Обзор","/admin"],["customers","�
 aside.append(nav);
 const footer=document.createElement("div");footer.className="sidebar-footer";footer.textContent="Внутри вашего МойСклад";
 const dot=document.createElement("span");dot.className="connection-dot";footer.prepend(dot);aside.append(footer);
-const bar=document.createElement("div");bar.className="app-topbar";
-const context=document.createElement("span");context.textContent="Кабинет бонусной программы";
-const badge=document.createElement("span");badge.className="workspace-badge";badge.textContent="МойСклад";bar.append(context,badge);
-document.body.prepend(bar);document.body.prepend(aside);document.body.classList.add("with-shell");
+document.body.prepend(aside);document.body.classList.add("with-shell");
 function active(){
  let id=({"/settings":"settings","/staff":"staff","/migration":"migration","/reconciliation":"review","/returns":"review"})[location.pathname];
  if(!id)id=["customers","activity"].includes(location.hash.slice(1))?location.hash.slice(1):"overview";
@@ -36,4 +33,27 @@ if(main){
  content.tabIndex=0;content.setAttribute("role","region");content.setAttribute("aria-label","Содержимое БонусПро");
  main.before(content);content.append(main);
  window.addEventListener("hashchange",()=>{content.scrollTop=0;});
+}
+
+const toggle=document.createElement("button");toggle.type="button";toggle.className="sidebar-toggle";
+toggle.setAttribute("aria-label","Свернуть меню");toggle.setAttribute("aria-expanded","true");
+toggle.textContent="‹";aside.prepend(toggle);
+toggle.addEventListener("click",()=>{
+ const collapsed=document.body.classList.toggle("compact-menu");
+ toggle.textContent=collapsed?"›":"‹";toggle.setAttribute("aria-expanded",String(!collapsed));
+ toggle.setAttribute("aria-label",collapsed?"Развернуть меню":"Свернуть меню");
+});
+nav.querySelectorAll("a").forEach(a=>{a.title=a.textContent;});
+
+if(location.pathname==="/settings"){
+ const form=document.querySelector("#rules-form");
+ if(form){
+  const heading=document.createElement("h2");heading.textContent="Правила начисления и списания";form.prepend(heading);
+  const blocks=[form,...document.querySelectorAll("#workspace>section")];
+  blocks.forEach((block,index)=>{
+   const heading=block.querySelector("h2");if(!heading)return;
+   const step=document.createElement("span");step.className="setup-step";step.textContent=String(index+1);
+   step.setAttribute("aria-hidden","true");heading.prepend(step);
+  });
+ }
 }

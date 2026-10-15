@@ -6,12 +6,24 @@ let sequence=0,epoch=0,openMessage=null,orderId=null,token=null,quote=null;
 let dirty=false,busy=false,attempt=null,requestId=null,draftRevision=0,savedWhileBusy=false;
 const waiting=new Map();
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const money=value=>new Intl.NumberFormat("ru-KZ",{style:"currency",currency:"KZT"}).format(value/100);
+const amountFormat=new Intl.NumberFormat("ru-KZ");
+const money=value=>{
+ const minor=BigInt(value);return amountFormat.format(minor/100n)+","+String(minor%100n).padStart(2,"0")+" ₸";
+};
+function enteredPoints(){
+ const raw=$("points").value;
+ return /^[0-9]+$/.test(raw)&&Number.isSafeInteger(Number(raw))?Number(raw):null;
+}
+function canSpend(){return Boolean(quote?.can_prepare&&!quote.quote.blocked_reason&&quote.quote.max_spend_points>0);}
+function validAmount(){const value=enteredPoints();return value!==null&&value>0&&value<=quote?.quote.max_spend_points;}
 function status(text,error=false){$("status").textContent=text;$("status").dataset.error=String(error);}
 function controls(){
   $("refresh").disabled=busy||!orderId;
-  $("apply").disabled=busy||dirty||!quote?.can_prepare||Boolean(attempt);
-  $("points").disabled=busy||Boolean(attempt);
+  $("apply").disabled=busy||dirty||!canSpend()||!validAmount()||Boolean(attempt);
+  $("points").disabled=busy||dirty||!canSpend()||Boolean(attempt);
+  $("apply").textContent=busy&&!attempt?"Применяем…":"Применить к заказу";
+  $("refresh").setAttribute("aria-busy",String(busy));
+  $("spend-form").setAttribute("aria-busy",String(busy));
   $("maximum-button").disabled=$("points").disabled||!quote?.quote.max_spend_points;
   $("verify").disabled=busy||!attempt;
 }
@@ -24,16 +36,21 @@ function hostRequest(name,extra={},responseName){
   });
 }
 async function api(path,options={}){
-  const response=await fetch(path,{...options,headers:{"Content-Type":"application/json",
+  const generation=epoch;
+  const response=await fetch(path,{...options,credentials:"omit",cache:"no-store",headers:{"Content-Type":"application/json",
     ...(token?{Authorization:"Bearer "+token}:{}),...options.headers},signal:AbortSignal.timeout(15000)});
+  if(generation!==epoch)throw new Error("document_changed");
   if(!response.ok){
     const error=new Error("api_error");error.status=response.status;
     if(response.status===401)token=null;
     throw error;
   }
-  return response.json();
+  const value=await response.json();
+  if(generation!==epoch)throw new Error("document_changed");
+  return value;
 }
 function explain(error){
+  if(error.message==="host_rejected")return "МойСклад отклонил изменение формы. Резерв сохранён; не повторяйте списание, обратитесь к администратору.";
   if(error.status===401)return "Сессия истекла. Нажмите «Обновить» для повторного подключения.";
   if(error.status===403)return "Нет доступа к бонусным операциям. Попросите администратора открыть «Сотрудники» в настройках БонусПро и выдать вам доступ.";
   if(error.status===409)return "Заказ или баланс изменился. Обновите данные и проверьте состояние операции.";
@@ -50,7 +67,14 @@ async function authenticate(generation){
 }
 function showPending(value){
   attempt=value;$("summary").hidden=true;$("pending").hidden=false;
-  const done=value.state==="committed"&&value.verified!==false;
+  const done=value.state==="committed"&&value.verified===true;
+  $("pending").dataset.state=done?"done":"waiting";
+  $("pending-title").textContent=done?"Бонусы списаны":!value.id?"Проверьте состояние операции":
+    value.verified===false?"Проверьте сохранённый заказ":"Осталось сохранить заказ";
+  $("pending-note").textContent=done?"Сумма проверена по сохранённому заказу МойСклад.":
+    !value.id?"Нажмите «Обновить», чтобы найти операцию на сервере. Повторное списание заблокировано.":
+    value.verified===false?"Проверьте результат кнопкой ниже. При расхождении обратитесь к администратору; резерв не снимается автоматически.":
+    "Нажмите «Сохранить» в самом заказе. Виджет проверит сумму автоматически; при необходимости нажмите кнопку ниже.";
   $("pending-text").textContent=done?("Списано "+value.points+" бонусов."):
     (value.id?(value.state==="committed"?("Операция на "+value.points+" бонусов. Проверьте сохранённый заказ."):("Зарезервировано "+value.points+" бонусов. Итоговое списание ещё не подтверждено.")):"Статус резервирования неизвестен. Обновите данные заказа перед повторной попыткой.");
   // A stored committed state alone isn't fresh evidence that the order still matches.
@@ -59,7 +83,8 @@ function showPending(value){
 }
 async function refresh(){
   if(!orderId||busy)return;
-  const generation=epoch,id=orderId;busy=true;controls();
+  const generation=epoch,id=orderId;busy=true;quote=null;$("summary").hidden=true;
+  $("order-label").textContent="";status("Загружаем актуальные бонусы…");controls();
   try{
     await authenticate(generation);
     if(generation!==epoch)return;
@@ -70,13 +95,19 @@ async function refresh(){
       status("Для заказа уже есть операция. Проверьте её по сохранённым данным.");
     }else{
       quote=value;attempt=null;$("summary").hidden=false;$("pending").hidden=true;
+      $("order-label").textContent=value.name?"Заказ №"+value.name:"Заказ покупателя";
       $("balance").textContent=value.quote.balance+" бонусов";
+      $("available-note").textContent=Number.isSafeInteger(value.quote.available)&&value.quote.available!==value.quote.balance
+        ?"Свободно: "+amountFormat.format(value.quote.available)+" · Часть бонусов в резерве":"Бонусы покупателя";
       $("maximum").textContent=value.quote.max_spend_points+" бонусов";
       $("basis").textContent="Товары: "+money(value.eligible_minor)+". К оплате: "+money(value.total_minor)+".";
       $("points").max=String(value.quote.max_spend_points);
       status(dirty?"В заказе есть изменения. Сначала сохраните его в МойСклад.":
         (!value.can_prepare?"Списание пока выключено: настройка и проверка магазина не завершены.":
           value.quote.blocked_reason?"Операция требует проверки администратора.":
+            value.quote.max_spend_points===0?(value.eligible_minor===0?"В заказе нет товаров для списания. Доставка и услуги не участвуют.":
+              value.quote.balance===0?"У покупателя пока нет бонусов. Начисление — после полной оплаты и отгрузки.":
+              "Доступных для списания бонусов нет: проверьте резервы и лимит заказа."):
             "Укажите сумму бонусов и примените её к заказу."));
       updatePayable();
     }
@@ -84,10 +115,15 @@ async function refresh(){
   finally{finishBusy(generation);}
 }
 function updatePayable(){
-  const raw=$("points").value;
-  const points=/^[0-9]+$/.test(raw)?Number(raw):NaN;
-  $("payable").textContent=quote&&Number.isSafeInteger(points)&&points<=quote.quote.max_spend_points
-    ?"После списания: "+money(quote.total_minor-points*100):"";
+  const points=enteredPoints(),raw=$("points").value,valid=validAmount();
+  const invalid=raw!==""&&!valid;
+  $("points").setAttribute("aria-invalid",String(invalid));
+  $("amount-hint").textContent=invalid?"Введите целое число от 1 до "+(quote?.quote.max_spend_points??0)+".":
+    quote?"До "+amountFormat.format(quote.quote.max_spend_points)+" бонусов. 1 бонус = 1 ₸.":"";
+  $("amount-hint").dataset.error=String(invalid);
+  $("payable").textContent=quote&&valid?"К оплате после списания: "+money(quote.total_minor-points*100):
+    quote?"К оплате без списания: "+money(quote.total_minor):"";
+  controls();
 }
 function finishBusy(generation){
   if(generation!==epoch)return;
@@ -101,7 +137,7 @@ function finishBusy(generation){
 }
 async function apply(event){
   event.preventDefault();
-  if(busy||dirty||attempt||!quote?.can_prepare)return;
+  if(busy||dirty||attempt||!canSpend())return;
   const raw=$("points").value,points=Number(raw);
   if(!/^[0-9]+$/.test(raw)||!Number.isSafeInteger(points)||points<1||points>quote.quote.max_spend_points){
     status("Укажите целое число в пределах доступного списания.",true);return;
@@ -168,7 +204,7 @@ window.addEventListener("message",event=>{
     epoch++;openMessage=message.messageId;orderId=null;token=null;quote=null;attempt=null;requestId=null;
     dirty=false;busy=false;draftRevision=0;savedWhileBusy=false;
     for(const pending of waiting.values()){clearTimeout(pending.timer);pending.reject(new Error("document_changed"));}
-    waiting.clear();$("summary").hidden=true;$("pending").hidden=true;$("points").value="";
+    waiting.clear();$("summary").hidden=true;$("pending").hidden=true;$("points").value="";$("order-label").textContent="";$("amount-hint").textContent="";$("payable").textContent="";$("points").setAttribute("aria-invalid","false");
     status("Загружаем бонусы заказа…");controls();
     if(message.extensionPoint==="document.customerorder.edit")
       parent.postMessage({name:"OpenFeedback",correlationId:message.messageId,messageId:++sequence},HOST);
@@ -191,3 +227,9 @@ $("points").addEventListener("input",()=>{requestId=null;updatePayable();});
 $("maximum-button").addEventListener("click",()=>{$("points").value=String(quote.quote.max_spend_points);requestId=null;updatePayable();});
 $("verify").addEventListener("click",verify);
 controls();
+
+window.addEventListener("pagehide",()=>{
+ epoch++;token=null;quote=null;attempt=null;
+ for(const pending of waiting.values()){clearTimeout(pending.timer);pending.reject(new Error("page_closed"));}
+ waiting.clear();
+});

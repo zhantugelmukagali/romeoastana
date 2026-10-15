@@ -31,3 +31,39 @@ dialog{overflow:auto;overscroll-behavior:contain}
  .app-sidebar{flex:none;max-height:45dvh}
  .app-content{position:relative;inset:auto;flex:1;min-height:0;width:100%}
 }
+
+/* One compact application header: the surrounding MoySklad title already identifies the app. */
+.with-shell{padding-top:0;padding-left:196px}
+.app-topbar{display:none}
+.app-sidebar{width:196px;padding:18px 10px}
+.app-brand{font-size:18px;padding:0 7px}
+.app-brand .brand-mark{width:29px;height:30px;font-size:19px;border-radius:8px}
+.nav-caption{margin:24px 10px 10px;font-size:9px}
+.app-navigation a{min-height:40px;padding:10px 9px;font-size:12px;gap:9px}
+.app-content{inset:0 0 0 196px}
+.app-content>main{padding:20px 24px}
+h1{font-size:23px;letter-spacing:-.5px;margin:0 0 5px}
+header{margin-bottom:16px;gap:10px}
+.sidebar-toggle{position:absolute;right:7px;top:20px;border:0;min-height:24px;width:20px;padding:0;font-size:19px;color:#667085;background:transparent}
+.app-brand{margin-right:18px}.sidebar-footer{font-size:10px}
+.compact-menu .app-sidebar{width:64px;padding:18px 7px}
+.compact-menu .app-brand{padding:0 4px;margin:0}
+.compact-menu .app-brand strong,.compact-menu .nav-caption,.compact-menu .app-navigation span,.compact-menu .sidebar-footer{display:none}
+.compact-menu .sidebar-toggle{top:55px;right:21px}
+.compact-menu .app-navigation{margin-top:34px}
+.compact-menu .app-navigation a{justify-content:center;padding:11px}
+.compact-menu .app-content{left:64px}
+#status:empty{display:none}
+.with-shell header>a{display:none}
+@media(max-width:700px){
+ .with-shell{padding:0}
+ .app-sidebar,.compact-menu .app-sidebar{width:100%;padding:10px 12px 0}
+ .app-brand,.compact-menu .app-brand{padding:0 4px;margin:0}
+ .compact-menu .app-brand strong,.compact-menu .app-navigation span{display:initial}
+ .sidebar-toggle{display:none}
+ .app-navigation,.compact-menu .app-navigation{margin-top:9px;padding-bottom:7px}
+ .app-navigation a,.compact-menu .app-navigation a{padding:8px 9px}
+ .app-content,.compact-menu .app-content{inset:auto}
+ .app-content>main{padding:16px}
+ h1{font-size:22px}
+}
