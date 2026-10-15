@@ -309,4 +309,19 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertLessEqual(self.page.frames[1].evaluate("document.body.getBoundingClientRect().height"),560)
         self.assertEqual(self.prepares,[])
 
+
+    def test_widget_controls_stay_inside_narrow_document_columns(self):
+        self.open()
+        for width in (320,360,390,520,760):
+            with self.subTest(width=width):
+                self.page.set_viewport_size({"width":width,"height":720})
+                self.page.frames[1].evaluate("()=>new Promise(requestAnimationFrame)")
+                self.frame.get_by_role("button",name="Максимум",exact=True).click()
+                self.assertTrue(self.page.frames[1].evaluate("""()=>{
+                    const box=document.querySelector('main').getBoundingClientRect();
+                    return document.documentElement.scrollWidth<=innerWidth &&
+                      [...document.querySelectorAll('.controls>*')].every(el=>{const r=el.getBoundingClientRect();return r.left>=box.left&&r.right<=box.right;});
+                }"""))
+        self.assertEqual(self.prepares,[])
+
 if __name__=="__main__":unittest.main()

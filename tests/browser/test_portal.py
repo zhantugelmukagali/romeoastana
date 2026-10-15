@@ -201,4 +201,23 @@ class PortalBrowserTests(unittest.TestCase):
         self.page.frames[1].wait_for_function("document.activeElement.id==='customer-search'")
         self.assertEqual(self.sessions,1)
 
+
+    def test_layout_at_iframe_breakpoints_with_long_customer_data(self):
+        self.open()
+        for width in (320,360,390,700,701,768,950,1024,1440,1920):
+            with self.subTest(width=width):
+                self.page.set_viewport_size({"width":width,"height":720})
+                self.page.frames[1].evaluate("()=>new Promise(requestAnimationFrame)")
+                self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+                self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+                self.frame.get_by_text(NAME,exact=True).wait_for()
+                self.assertTrue(self.page.frames[1].evaluate("""()=>{
+                    const main=document.querySelector('main'),row=document.querySelector('.customer-row:not(.table-heading)');
+                    const box=main.getBoundingClientRect();
+                    return main.scrollWidth<=main.clientWidth &&
+                      [...row.children].every(el=>{const r=el.getBoundingClientRect();return r.left>=box.left&&r.right<=box.right;});
+                }"""))
+                self.frame.get_by_role("link",name="Обзор",exact=True).click()
+                self.frame.get_by_role("heading",name="Обзор программы",exact=True).wait_for()
+
 if __name__=="__main__":unittest.main()

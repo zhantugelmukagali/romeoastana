@@ -11,9 +11,16 @@ function bps(id) {
   return result;
 }
 function preview() {
-  try {const earn=bps("earn"),spend=bps("spend");
-    $("preview").textContent="Пример: за товары на 10 000 ₸ — "+(earn)+" бонусов после оплаты и отгрузки. Можно списать до "+(spend)+" бонусов при достаточном балансе.";
-  } catch {$("preview").textContent="";}
+  try{
+    const earn=bps("earn"),spend=bps("spend"),raw=$("example-total").value.trim();
+    if(!/^[0-9]{1,12}$/.test(raw)||BigInt(raw)<1n)throw new Error("Укажите сумму покупки целым числом.");
+    const total=BigInt(raw),fmt=new Intl.NumberFormat("ru-KZ");
+    $("example-earn").textContent=fmt.format(total*BigInt(earn)/10000n);
+    $("example-spend").textContent=fmt.format(total*BigInt(spend)/10000n);
+    $("preview").textContent="При достаточном балансе. Начисление — после оплаты и отгрузки.";
+  }catch(error){
+    $("example-earn").textContent="—";$("example-spend").textContent="—";$("preview").textContent=error.message;
+  }
 }
 function busy(value) {
   working=value;
@@ -205,3 +212,5 @@ $("refresh-readiness").onclick=async()=>{
   if(working)return;busy(true);
   try{await updateReadiness();}catch(e){status(e.message,true);}finally{busy(false);}
 };
+
+$("example-total").addEventListener("input",preview);

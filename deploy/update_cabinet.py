@@ -35,7 +35,7 @@ def verify_public(source):
     base="https://loyalty.addwise.kz"
     with urlopen(base+"/health/ready",timeout=15) as response:
         if response.status!=200 or json.loads(response.read(1024)).get("status")!="ready":raise UpdateFailed("readiness failed")
-    for name in ("portal.js","portal.css","shell.js","app.css","widget.js","widget.css","settings.js","settings.css","readiness.css"):
+    for name in ("portal.js","portal.css","shell.js","app.css","widget.js","widget.css","settings.js","settings.css","readiness.css","settings-tabs.js"):
         with urlopen(base+"/assets/"+name,timeout=15) as response:
             if response.status!=200 or response.read(262145)!=(source/"web/assets"/name).read_bytes():
                 raise UpdateFailed("public assets do not match the image source")

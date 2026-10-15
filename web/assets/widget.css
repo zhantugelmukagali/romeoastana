@@ -1,20 +1,20 @@
 :root{font-family:Inter,"Segoe UI",system-ui,sans-serif;color:#1d2939;background:#fff;font-size:13px;line-height:1.45;color-scheme:light}
 *{box-sizing:border-box}body{margin:0}main{padding:14px;max-width:920px;margin:auto}
 header{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.widget-heading{display:flex;align-items:center;gap:10px;min-width:0}.order-label{font-size:10px;color:#667085;overflow-wrap:anywhere}
+.widget-heading{display:flex;align-items:center;gap:10px;min-width:0}.order-label{font-size:11px;color:#647084;overflow-wrap:anywhere}
 h1{display:flex;align-items:center;gap:7px;font-size:14px;letter-spacing:-.25px;margin:0;font-weight:650;white-space:nowrap}
 h1:before{content:"Б";display:grid;place-items:center;width:24px;height:25px;border-radius:7px;background:#2563eb;color:#fff;font-size:16px}
-button,input{font:inherit;border:1px solid #d0d7e2;border-radius:8px;padding:8px 10px;min-height:36px}
+button,input{font:inherit;border:1px solid #d0d7e2;border-radius:5px;padding:8px 10px;min-height:36px}
 button{cursor:pointer;background:#fff;color:#344054;font-size:12px;font-weight:600}
 button:hover:not(:disabled){background:#f7f9fc;border-color:#aebdd3}
 button:disabled,input:disabled{opacity:.5;cursor:not-allowed}
 #refresh{min-height:28px;padding:4px 8px;font-size:10px}
-#apply{background:#2563eb;color:#fff;border-color:#2563eb;box-shadow:0 2px 4px #2563eb15}
+#apply{background:#2563eb;color:#fff;border-color:#2563eb;box-shadow:none}
 #apply:hover:not(:disabled){background:#1d4ed8}
-#status{padding:9px 10px;background:#f8fafc;color:#475467;border:1px solid #edf0f5;border-radius:8px;font-size:11px;margin:10px 0;overflow-wrap:anywhere}
+#status{padding:9px 10px;background:#f8fafc;color:#475467;border:1px solid #edf0f5;border-radius:5px;font-size:11px;margin:10px 0;overflow-wrap:anywhere}
 #status[data-error=true]{background:#fffaeb;border-color:#fedf89;color:#93370d}
 dl{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
-dl>div{padding:10px 12px;background:#fafbfe;border:1px solid #e9eef8;border-radius:9px}
+dl>div{padding:10px 12px;background:#fafbfe;border:1px solid #e9eef8;border-radius:5px}
 dt,.muted{color:#667085;font-size:11px}dd{margin:4px 0 2px;font-size:20px;font-weight:650;letter-spacing:-.4px;overflow-wrap:anywhere}
 dl small{display:block;font-size:9px;color:#667085}
 dl>div:last-child{background:#f2f7ff;border-color:#dfeafd}dl>div:last-child dd{color:#235bc9}
@@ -24,10 +24,10 @@ label{font-weight:600;font-size:12px}
 #basis{font-size:10px;margin:8px 0 12px}
 #amount-hint{margin:6px 0;font-size:10px;min-height:15px}
 #amount-hint[data-error=true]{color:#b42318}
-.payable{background:#f8faff;border:1px solid #e7eefc;border-radius:8px;padding:9px 11px;color:#235bc9;font-size:12px;font-weight:650;margin:8px 0 0;font-variant-numeric:tabular-nums}
+.payable{background:#f8faff;border:1px solid #e7eefc;border-radius:5px;padding:9px 11px;color:#235bc9;font-size:12px;font-weight:650;margin:8px 0 0;font-variant-numeric:tabular-nums}
 .muted{font-size:10px;line-height:1.55}
 .footnote{margin:10px 0 0;padding-top:9px;border-top:1px solid #f0f2f6;color:#667085;font-size:9px}
-#pending{padding:15px;background:#fffcf5;border:1px solid #fedf89;border-radius:10px;font-size:12px;margin-top:10px}
+#pending{padding:15px;background:#fffcf5;border:1px solid #fedf89;border-radius:6px;font-size:12px;margin-top:10px}
 #pending h2{font-size:14px;margin:6px 0}
 #pending[data-state=done]{background:#f0fdf4;border-color:#abefc6}
 .pending-mark{width:28px;height:28px;display:grid;place-items:center;background:#fef0c7;color:#b54708;border-radius:50%;font-size:17px}
@@ -38,3 +38,19 @@ button:focus-visible,input:focus-visible{outline:3px solid #bfd4ff;outline-offse
 [hidden]{display:none!important}
 @media(max-width:420px){main{padding:12px}.widget-heading{flex-wrap:wrap;gap:2px 9px}.order-label{font-size:9px}dl>div{padding:9px}dd{font-size:18px}#apply{width:100%}.controls input{flex:1;min-width:80px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+
+/* A document control, with emphasis on the amount rather than decorative cards. */
+:root{font-family:"Segoe UI",system-ui,sans-serif}
+h1:before{border-radius:4px}
+#status{padding:7px 0;border:0;background:none;color:#536175;font-size:12px}
+#status[data-error=true]{padding:9px 10px;border:1px solid #e8d5a9;background:#fffaf0}
+dl{gap:0;border-top:1px solid #e1e5eb;border-bottom:1px solid #e1e5eb;margin:12px 0}
+dl>div,dl>div:last-child{border:0;border-radius:0;background:none;padding:10px 0}
+dl>div+div{padding-left:14px;border-left:1px solid #e1e5eb}
+dl>div:last-child dd{color:#243044}
+dl small{font-size:11px;color:#647084}
+.payable{background:none;border:0;border-top:1px solid #e1e5eb;border-radius:0;padding:11px 0 0;color:#243044;font-size:14px;font-weight:600}
+#amount-hint,#basis,.footnote{font-size:11px;color:#647084}
+.pending-mark{display:none}
+#pending{border-radius:5px}
+@media(max-width:420px){.order-label{font-size:11px}dl>div,dl>div:last-child{padding:9px 0}dl>div+div{padding-left:12px}}

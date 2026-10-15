@@ -1,29 +1,34 @@
 <!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>БонусПро · Правила</title><link rel="stylesheet" href="/assets/app.css">
-<link rel="stylesheet" href="/assets/settings.css"><link rel="stylesheet" href="/assets/readiness.css"><script type="module" src="/assets/settings.js"></script><script type="module" src="/assets/shell.js"></script></head>
+<link rel="stylesheet" href="/assets/settings.css"><link rel="stylesheet" href="/assets/readiness.css"><script type="module" src="/assets/settings.js"></script><script type="module" src="/assets/shell.js"></script><script type="module" src="/assets/settings-tabs.js"></script></head>
 <body><main>
 <header><div><span class="brand">БонусПро</span><h1>Правила программы</h1></div><a href="/reconciliation">Возвраты и сверка</a><a href="/migration">Перенос остатков</a><a href="/staff">Сотрудники</a></header>
 <p id="status" role="status" aria-live="polite">Подключаемся к МойСклад…</p>
 <button id="retry" hidden>Повторить подключение</button>
 <section id="workspace" hidden>
-<section class="readiness-card" aria-label="Состояние подключения"><div class="readiness-heading"><h2>Подключение программы</h2><button id="refresh-readiness" type="button">Обновить статус</button></div><p id="readiness-state" role="status" aria-live="polite">Проверяем подключение…</p><ul id="readiness-list"></ul></section>
-<p class="hint">Изменения применяются к новым подключённым заказам. У ранее подключённых заказов сохраняются прежние правила.</p>
+<nav class="settings-tabs" role="tablist" aria-label="Разделы настроек">
+<button type="button" role="tab" id="tab-rules" aria-controls="rules-panel" aria-selected="true">Правила</button>
+<button type="button" role="tab" id="tab-connection" aria-controls="connection-panel" aria-selected="false" tabindex="-1">Подключение</button>
+<button type="button" role="tab" id="tab-history" aria-controls="history-panel" aria-selected="false" tabindex="-1">История изменений</button>
+</nav>
+<div id="rules-panel" class="settings-panel" role="tabpanel" aria-labelledby="tab-rules">
 <form id="rules-form">
 <div class="fields">
 <label for="earn">Начисление, %<input id="earn" type="number" min="0" max="100" step="0.01" value="5" required></label>
 <label for="spend">Максимальное списание, %<input id="spend" type="number" min="0" max="100" step="0.01" value="30" required></label>
 </div>
-<p>1 бонус = 1 ₸ · Бонусы бессрочные · Округление вниз</p>
-<p>Участвуют только товары. Доставка не входит в сумму начисления и списания.</p>
-<p>Начисление — после полной оплаты и полной отгрузки.</p>
-<label for="reason">Причина изменения<textarea id="reason" maxlength="500" rows="3" required></textarea></label>
-<p id="preview" class="hint"></p>
-<button id="save" class="primary" type="submit">Сохранить правила</button>
-<button id="reload" type="button">Загрузить актуальные правила</button>
-</form>
-<section id="widget-settings" aria-label="Подключение виджета"><h2>Виджет в заказе</h2>
-<p>Подготовка создаёт служебное поле для проверки списаний. Продажи включаются после завершения настройки магазина.</p>
+<div class="rule-facts"><span>Только товары, без доставки</span><span>1 бонус = 1 ₸</span><span>Без срока действия</span></div>
+<label for="reason">Причина изменения<textarea id="reason" maxlength="500" rows="2" required></textarea></label>
+<div class="rules-actions"><button id="save" class="primary" type="submit">Сохранить правила</button>
+<button id="reload" type="button">Загрузить актуальные правила</button></div>
+</form><p class="hint">Изменения действуют для новых заказов. У прежних сохраняются их правила.</p><section class="rule-example" aria-label="Расчёт по правилам">
+<label for="example-total">Покупка на сумму, ₸ <input id="example-total" type="text" inputmode="numeric" value="10000" autocomplete="off"></label>
+<dl class="example-results"><div><dt>Начислится бонусов</dt><dd id="example-earn">—</dd></div><div><dt>Лимит списания</dt><dd id="example-spend">—</dd></div></dl>
+<p id="preview">При достаточном балансе. Начисление — после оплаты и отгрузки.</p></section>
+</div>
+<div id="connection-panel" class="settings-panel" role="tabpanel" aria-labelledby="tab-connection" hidden><section class="readiness-card" aria-label="Состояние подключения"><div class="readiness-heading"><h2>Подключение программы</h2><button id="refresh-readiness" type="button">Обновить статус</button></div><p id="readiness-state" role="status" aria-live="polite">Проверяем подключение…</p><ul id="readiness-list"></ul></section><section id="widget-settings" aria-label="Подключение виджета"><h2>Виджет в заказе</h2>
+<p>Подключите виджет перед запуском программы.</p>
 <button id="setup-widget" type="button">Подготовить виджет</button><p id="setup-status" role="status" aria-live="polite"></p></section>
 <section aria-label="Уведомления МойСклад"><h2>Уведомления об изменениях</h2>
 <p>Ускоряют проверку оплат, отгрузок и возвратов. Если уведомление потеряется, изменения проверяются по API.</p>
@@ -36,10 +41,11 @@
 <label for="activation-reason">Основание запуска</label><textarea id="activation-reason" maxlength="500" rows="2"></textarea>
 <button id="activate-program" type="button">Запустить программу</button><p id="activation-status" role="status"></p></section>
 <section id="processing-settings" aria-label="Автоматическое начисление"><h2>Обработка заказов</h2>
-<p>Начало программы фиксируется один раз после подключения магазина. Покупки, созданные раньше, не получают новые начисления.</p>
+<p>Покупки до даты запуска не получают новые начисления.</p>
 <button id="refresh-automation" type="button">Проверить обработку</button>
 <p id="automation-status" role="status" aria-live="polite"></p>
 <div id="automation-details"></div></section>
-<section aria-label="История правил"><h2>История изменений</h2><div id="history"></div><button id="more" hidden>Показать ещё</button></section>
+</div>
+<div id="history-panel" class="settings-panel" role="tabpanel" aria-labelledby="tab-history" hidden><section aria-label="История правил"><h2>История изменений</h2><div id="history"></div><button id="more" hidden>Показать ещё</button></section></div>
 </section>
 </main></body></html>
