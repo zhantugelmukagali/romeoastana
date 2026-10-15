@@ -41,6 +41,12 @@ class Installations:
         digest = sha256(json.dumps({"cause":cause,"credential":credential},
                                   sort_keys=True,separators=(",",":")).encode()).hexdigest()
         with self.lifecycle() as conn:
+            # Expired signed callbacks cannot authenticate again. Remove only a
+            # bounded batch with a safety margin; active replay fences remain.
+            conn.execute("DELETE FROM bonuspro.vendor_replays r USING "
+                         "(SELECT jti FROM bonuspro.vendor_replays "
+                         "WHERE expires_at<clock_timestamp()-interval '10 minutes' "
+                         "LIMIT 100) expired WHERE r.jti=expired.jti")
             consumed = conn.execute(
                 "INSERT INTO bonuspro.vendor_replays(jti,expires_at) VALUES (%s,to_timestamp(%s)) "
                 "ON CONFLICT DO NOTHING RETURNING jti", (claims["jti"],claims["exp"])
@@ -87,6 +93,15 @@ class Installations:
                 "WHERE tenant_id=%s AND state IN ('SettingsRequired','Activated')", (tenant,)).fetchone()
             if row is None:
                 raise AuthenticationFailed("installation is inactive")
+            # Sessions are tenant-scoped, short-lived and stored as hashes.
+            # Bounded opportunistic cleanup prevents indefinite accumulation
+            # without granting a cross-tenant maintenance login.
+            conn.execute(
+                "DELETE FROM bonuspro.sessions s USING "
+                "(SELECT tenant_id,token_hash FROM bonuspro.sessions "
+                "WHERE tenant_id=%s AND expires_at<clock_timestamp() "
+                "ORDER BY expires_at,token_hash LIMIT 100) expired "
+                "WHERE s.tenant_id=expired.tenant_id AND s.token_hash=expired.token_hash", (tenant,))
             conn.execute("INSERT INTO bonuspro.known_operators(tenant_id,user_id,login) VALUES (%s,%s,%s) "
                          "ON CONFLICT (tenant_id,user_id) DO UPDATE SET login=EXCLUDED.login,last_seen=clock_timestamp()",
                          (tenant,user,context.login))

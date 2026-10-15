@@ -112,7 +112,7 @@ class WidgetBrowserTests(unittest.TestCase):
                 self.apply()
                 self.frame.locator("#status[data-error='true']").wait_for()
                 self.assertFalse(self.frame.locator("#pending").is_visible())
-                self.assertTrue(self.frame.get_by_role("button",name="Применить к заказу",exact=True).is_disabled())
+                self.assertTrue(self.frame.locator("#apply").is_disabled())
                 self.assertEqual(self.page.evaluate("updates.length"),0)
                 self.frame.get_by_role("button",name="Обновить",exact=True).click()
                 self.frame.get_by_text("5000 бонусов",exact=True).wait_for()

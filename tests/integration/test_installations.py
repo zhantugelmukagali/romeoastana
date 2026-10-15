@@ -84,6 +84,45 @@ class InstallationTests(unittest.TestCase):
         with self.assertRaises(AuthenticationFailed):
             self.repo.authenticate(session)
 
+    def test_session_cleanup_is_bounded_tenant_scoped_and_preserves_live_session(self):
+        self.install()
+        active=self.repo.create_session(self.identity)
+        other=str(uuid4())
+        self.repo.change(other,self.claims(),"Install","other-synthetic-token")
+        other_context=UserContext(other,str(uuid4()),"admin")
+        other_token=self.repo.create_session(other_context)
+        with psycopg.connect(os.environ["TEST_ADMIN_DSN"]) as conn:
+            generation=conn.execute("SELECT generation FROM bonuspro.installations WHERE tenant_id=%s",
+                                    (self.account,)).fetchone()[0]
+            for i in range(105):
+                conn.execute("INSERT INTO bonuspro.sessions(tenant_id,token_hash,generation,user_id,role,expires_at) "
+                    "VALUES (%s,%s,%s,%s,'admin',now()-interval '1 hour')",
+                    (self.account,sha256(("expired-"+str(i)).encode()).hexdigest(),generation,self.user))
+            conn.execute("UPDATE bonuspro.sessions SET expires_at=now()-interval '1 hour' WHERE tenant_id=%s",(other,))
+        self.repo.create_session(self.identity)
+        with psycopg.connect(os.environ["TEST_ADMIN_DSN"]) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM bonuspro.sessions WHERE tenant_id=%s AND expires_at<now()",
+                             (self.account,)).fetchone()[0],5)
+            self.assertEqual(conn.execute("SELECT count(*) FROM bonuspro.sessions WHERE tenant_id=%s",
+                             (other,)).fetchone()[0],1)
+        self.assertEqual(self.repo.authenticate(active),self.identity)
+        with self.assertRaises(AuthenticationFailed):self.repo.authenticate(other_token)
+
+    def test_replay_cleanup_keeps_unexpired_rejection_fences(self):
+        self.install()
+        live_jti=str(uuid4())
+        with self.repo.lifecycle() as conn:
+            for i in range(105):
+                conn.execute("INSERT INTO bonuspro.vendor_replays(jti,expires_at) VALUES (%s,now()-interval '1 hour')",
+                             (str(uuid4()),))
+            conn.execute("INSERT INTO bonuspro.vendor_replays(jti,expires_at) VALUES (%s,now()+interval '1 hour')",(live_jti,))
+        self.repo.change(self.account,self.claims(1),"Install","synthetic-remap-token")
+        with self.repo.lifecycle() as conn:
+            self.assertIsNotNone(conn.execute("SELECT jti FROM bonuspro.vendor_replays WHERE jti=%s",(live_jti,)).fetchone())
+        with self.assertRaises(AuthenticationFailed):
+            self.repo.change(self.account,{"jti":live_jti,"iat":self.stamp+2,"exp":int(time.time())+120},
+                             "Install","synthetic-remap-token")
+
     def test_logout_revokes_token(self):
         self.install()
         session=self.repo.create_session(self.identity)
