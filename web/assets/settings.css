@@ -4,7 +4,7 @@
 .settings-panel{max-width:940px}
 #rules-form{padding:0;background:transparent;border:0}
 #rules-form>h2{display:none}
-.fields{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:560px;margin-bottom:16px}
+.fields{display:grid;align-items:end;grid-template-columns:1fr 1fr;gap:20px;max-width:560px;margin-bottom:16px}
 .fields label{display:flex;flex-direction:column;gap:7px;margin:0;font-size:13px}
 .fields input{font-size:21px;font-weight:500;padding:10px 12px;width:100%;font-variant-numeric:tabular-nums}
 .rule-facts{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0 0 16px;color:#647084;font-size:12px}

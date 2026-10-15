@@ -157,6 +157,13 @@ class SettingsBrowserTests(unittest.TestCase):
         self.assertTrue(self.frame.get_by_role("tabpanel",name="Правила",exact=True).is_visible())
 
 
+        for width in (320,360,390,700,701,1024):
+            self.page.set_viewport_size({"width":width,"height":844})
+            self.page.frames[1].evaluate("()=>new Promise(requestAnimationFrame)")
+            earn=self.frame.get_by_label("Начисление, %",exact=True).bounding_box()
+            spend=self.frame.get_by_label("Максимальное списание, %",exact=True).bounding_box()
+            self.assertLessEqual(abs(earn["y"]-spend["y"]),1)
+            self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
         if os.environ.get("GITHUB_ACTIONS")=="true":
             directory=ROOT/"test-results";directory.mkdir(exist_ok=True)
             for label,width,height in (("DESKTOP",1280,800),("MOBILE",390,844)):
