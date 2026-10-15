@@ -16,7 +16,7 @@ class SettingsBrowserTests(unittest.TestCase):
         self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1280,"height":1200})
         self.page=self.context.new_page()
-        self.automation_config=None;self.activations=[];self.hooks_calls=0;self.hooks_drop=False
+        self.widget_configured=False;self.automation_config=None;self.activations=[];self.hooks_calls=0;self.hooks_drop=False
         self.current=None;self.saved=[];self.drop_first=False;self.conflict=False
         self.context.route("**/*",self.route)
 
@@ -33,7 +33,9 @@ class SettingsBrowserTests(unittest.TestCase):
             self.hooks_calls+=1
             if self.hooks_drop and self.hooks_calls==1:return route.abort()
             return route.fulfill(json={"configured":True,"hook_count":21})
-        if path=="/api/admin/widget/setup":return route.fulfill(json={"configured":True})
+        if path=="/api/admin/widget/setup":
+            self.widget_configured=True
+            return route.fulfill(json={"configured":True})
         if path=="/api/admin/automation":
             if route.request.method=="POST":
                 self.automation_config={"starts_at":"2026-10-14T00:00:00Z","heartbeat_at":None,"last_error":None}
@@ -43,6 +45,12 @@ class SettingsBrowserTests(unittest.TestCase):
             self.activations.append(route.request.post_data_json)
             self.automation_config={"starts_at":"2026-10-14T00:00:00Z","heartbeat_at":None,"last_error":None}
             return route.fulfill(json={"state":"Activated","starts_at":self.automation_config["starts_at"]})
+        if path=="/api/admin/readiness":
+            complete=[bool(self.current),self.widget_configured,bool(self.activations),False]
+            ids=["rules","widget","activation","processing"]
+            labels=["Правила бонусов сохранены","Виджет подключён","Программа запущена","Заказы обрабатываются автоматически"]
+            targets=["rules-form","widget-settings","launch-settings","processing-settings"]
+            return route.fulfill(json={"ready":False,"checks":[{"id":k,"label":label,"target":target,"complete":ok} for k,label,target,ok in zip(ids,labels,targets,complete)]})
         if path=="/api/me":return route.fulfill(json={"role":"admin"})
         if path.startswith("/api/admin/rules/history"):return route.fulfill(json={"items":[self.current] if self.current else [],"next_cursor":None})
         if path=="/api/admin/rules":
@@ -80,11 +88,16 @@ class SettingsBrowserTests(unittest.TestCase):
         self.frame.get_by_role("button",name="Подготовить виджет",exact=True).click()
         self.frame.get_by_text("Виджет подготовлен. Это не включает рабочие списания.",exact=True).wait_for()
 
-    def test_automation_configuration_does_not_claim_worker_has_run(self):
+    def test_operational_checklist_has_one_activation_path_and_real_processing_state(self):
         self.open()
-        self.frame.get_by_role("button",name="Зафиксировать начало программы",exact=True).click()
-        self.frame.get_by_text("Обработчик ещё не запускался.",exact=False).wait_for()
-        self.assertFalse(self.frame.get_by_role("button",name="Зафиксировать начало программы",exact=True).is_visible())
+        self.assertEqual(self.frame.locator("#configure-automation").count(),0)
+        self.assertEqual(self.frame.locator("#readiness-list li").count(),4)
+        self.frame.get_by_text("Виджет подключён — требуется действие",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Подготовить виджет",exact=True).click()
+        self.frame.get_by_text("Виджет подключён — выполнено",exact=True).wait_for()
+        self.frame.get_by_text("Заказы обрабатываются автоматически — требуется действие",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Проверить обработку",exact=True).click()
+        self.frame.get_by_text("Начало программы ещё не зафиксировано.",exact=True).wait_for()
 
     def test_activation_requires_explicit_cutover_confirmation(self):
         self.open();button=self.frame.get_by_role("button",name="Запустить программу",exact=True)

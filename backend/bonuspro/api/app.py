@@ -22,6 +22,7 @@ from bonuspro.adapters.postgres.ledger import Ledger, Conflict, NotFound
 from bonuspro.adapters.postgres.returns import Returns
 from bonuspro.adapters.postgres.checkout import Checkout
 from bonuspro.adapters.postgres.portal import Portal
+from bonuspro.adapters.postgres.readiness import Readiness
 from bonuspro.adapters.postgres.redemptions import Redemptions
 from bonuspro.adapters.postgres.automation import Automation
 from bonuspro.adapters.postgres.imports import Imports
@@ -559,6 +560,11 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         saved=read_order(document_client(identity),str(order_id),marker_id=marker)
         operator_identity(request)
         return redemptions.confirm_saved(identity.tenant_id,saved,authorize=lambda conn:operators.check_in(conn,identity))
+
+    @app.get("/api/admin/readiness")
+    def operational_readiness(request: Request):
+        identity=admin_identity(request)
+        return Readiness(Ledger(config.database_url)).report(identity.tenant_id)
 
     @app.get("/api/admin/overview")
     def loyalty_overview(request: Request):

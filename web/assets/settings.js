@@ -21,7 +21,6 @@ function busy(value) {
   $("more").disabled=value;
   $("setup-widget").disabled=value;
   $("setup-webhooks").disabled=value;
-  $("configure-automation").disabled=value;
   $("refresh-automation").disabled=value;
 }
 async function api(path,options={}) {
@@ -57,7 +56,7 @@ async function load() {
   await history();
 }
 async function connect(){
-  $("retry").hidden=true;$("workspace").hidden=true;session=null;pending=null;busy(true);
+  $("retry").hidden=true;$("workspace").hidden=true;session=null;pending=null;$("activation-status").textContent="";busy(true);
   status("Подключаемся к МойСклад…");
   try {
     const token=await requestContext();
@@ -67,7 +66,7 @@ async function connect(){
     session=(await response.json()).token;
     const user=await api("/api/me");
     if(user.role!=="admin")throw new Error("Этот раздел доступен администратору МойСклад.");
-    await load();$("workspace").hidden=false;
+    await load();await updateReadiness();$("workspace").hidden=false;
   } catch(error){status(error.message,true);$("retry").hidden=false;}
   finally {busy(false);}
 }
@@ -85,7 +84,7 @@ $("rules-form").addEventListener("submit",async event=>{
     const {current}=await api("/api/admin/rules",{method:"PUT",body:JSON.stringify({...payload,request_id:pending.id})});
     version=current.version;pending=null;$("reason").value="";
     status("Правила сохранены. Версия "+version+".");
-    try{await history();}catch{status("Правила сохранены. Историю не удалось обновить — загрузите актуальные правила.");}
+    try{await history();await updateReadiness();}catch{status("Правила сохранены. Историю не удалось обновить — загрузите актуальные правила.");}
   } catch(error){if(error.conflict)pending=null;status(error.message,true);}
   finally {busy(false);}
 });
@@ -101,6 +100,7 @@ $("setup-widget").onclick=async()=>{
       headers:{"Content-Type":"application/json",Authorization:"Bearer "+session},signal:AbortSignal.timeout(15000)});
     if(!response.ok)throw new Error(response.status===403?"Нужны права администратора и доступ решения к своим дополнительным полям.":"Не удалось подготовить виджет. Проверьте подключение и повторите.");
     $("setup-status").textContent="Виджет подготовлен. Это не включает рабочие списания.";
+    await updateReadiness();
   }catch(error){$("setup-status").textContent=error.name==="TimeoutError"?"Ответ задерживается. Повторная проверка найдёт уже созданное поле.":error.message;}
   finally{busy(false);}
 };
@@ -111,7 +111,6 @@ const outcomes={queued:"Ожидают проверки",waiting_payment:"Ожи
 async function automationStatus(){
   const data=await api("/api/admin/automation");
   const config=data.configuration;
-  $("configure-automation").hidden=Boolean(config);
   $("automation-status").textContent=!config?"Начало программы ещё не зафиксировано.":
     "Начало программы: "+new Date(config.starts_at).toLocaleString("ru-RU")+". "+
     (config.heartbeat_at?"Последняя обработка: "+new Date(config.heartbeat_at).toLocaleString("ru-RU")+".":"Обработчик ещё не запускался.")+
@@ -144,19 +143,6 @@ $("refresh-automation").onclick=async()=>{
   try{await automationStatus();}catch(e){$("automation-status").textContent=e.message;}
   finally{busy(false);}
 };
-$("configure-automation").onclick=async()=>{
-  if(working)return;busy(true);
-  try{
-    const response=await fetch("/api/admin/automation",{method:"POST",credentials:"omit",cache:"no-store",
-      headers:{Authorization:"Bearer "+session},signal:AbortSignal.timeout(15000)});
-    if(!response.ok)throw new Error(response.status===409?
-      "Сначала завершите подключение магазина и сохраните правила. Программа не запущена.":
-      "Не удалось зафиксировать начало программы. Проверьте доступ и повторите.");
-    await automationStatus();
-  }catch(e){$("automation-status").textContent=e.name==="TimeoutError"?
-    "Ответ задерживается. Нажмите «Проверить обработку»: повтор не изменит сохранённую дату.":e.message;}
-  finally{busy(false);}
-};
 
 let activationRequest=null;
 $("activate-program").onclick=async()=>{
@@ -173,7 +159,7 @@ $("activate-program").onclick=async()=>{
   try{
     const result=await api("/api/admin/activate",{method:"POST",body:JSON.stringify(activationRequest)});
     $("activation-status").textContent="Программа запущена. Начало начислений: "+new Date(result.starts_at).toLocaleString("ru-RU")+". Проверьте работу обработчика ниже.";
-    await automationStatus();
+    await automationStatus();await updateReadiness();
   }catch(e){$("activation-status").textContent="Запуск не подтверждён. Проверьте статус подключения и повторите с тем же основанием. "+e.message;}
   finally{busy(false);$("activate-program").disabled=false;}
 };
@@ -191,4 +177,31 @@ $("setup-webhooks").onclick=async()=>{
     "Ответ задерживается. Повторная проверка найдёт уже созданные уведомления.":
     (e instanceof TypeError?"Подключение не подтверждено. Нет ответа сервера; повторите проверку.":e.message);}
   finally{busy(false);}
+};
+
+async function updateReadiness(){
+  const message=$("readiness-state"),list=$("readiness-list");
+  message.textContent="Проверяем подключение…";
+  try{
+    const data=await api("/api/admin/readiness");list.replaceChildren();
+    for(const item of data.checks){
+      const li=document.createElement("li");li.dataset.complete=String(item.complete);
+      const link=document.createElement("a");link.href="#"+item.target;
+      const mark=document.createElement("span");mark.className="readiness-mark";mark.setAttribute("aria-hidden","true");mark.textContent=item.complete?"✓":"·";
+      const label=document.createElement("span");label.textContent=item.label+(item.complete?" — выполнено":" — требуется действие");
+      link.append(mark,label);li.append(link);list.append(li);
+    }
+    message.textContent=data.ready?"Все подключения выполнены. Автоматическая обработка отвечает.":
+      "Завершите отмеченные шаги. Статус отражает фактическое подключение.";
+    const active=data.checks.find(item=>item.id==="activation")?.complete;
+    $("activate-program").hidden=Boolean(active);
+    if(active&&!$("activation-status").textContent)$("activation-status").textContent="Программа уже запущена. Повторный запуск не требуется.";
+  }catch(error){
+    list.replaceChildren();message.textContent="Не удалось проверить подключение. Обновите статус.";
+    if(!session)throw error;
+  }
+}
+$("refresh-readiness").onclick=async()=>{
+  if(working)return;busy(true);
+  try{await updateReadiness();}catch(e){status(e.message,true);}finally{busy(false);}
 };

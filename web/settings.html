@@ -1,12 +1,13 @@
 <!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>БонусПро · Правила</title><link rel="stylesheet" href="/assets/app.css">
-<link rel="stylesheet" href="/assets/settings.css"><script type="module" src="/assets/settings.js"></script><script type="module" src="/assets/shell.js"></script></head>
+<link rel="stylesheet" href="/assets/settings.css"><link rel="stylesheet" href="/assets/readiness.css"><script type="module" src="/assets/settings.js"></script><script type="module" src="/assets/shell.js"></script></head>
 <body><main>
 <header><div><span class="brand">БонусПро</span><h1>Правила программы</h1></div><a href="/reconciliation">Возвраты и сверка</a><a href="/migration">Перенос остатков</a><a href="/staff">Сотрудники</a></header>
 <p id="status" role="status" aria-live="polite">Подключаемся к МойСклад…</p>
 <button id="retry" hidden>Повторить подключение</button>
 <section id="workspace" hidden>
+<section class="readiness-card" aria-label="Состояние подключения"><div class="readiness-heading"><h2>Подключение программы</h2><button id="refresh-readiness" type="button">Обновить статус</button></div><p id="readiness-state" role="status" aria-live="polite">Проверяем подключение…</p><ul id="readiness-list"></ul></section>
 <p class="hint">Изменения применяются к новым подключённым заказам. У ранее подключённых заказов сохраняются прежние правила.</p>
 <form id="rules-form">
 <div class="fields">
@@ -21,22 +22,21 @@
 <button id="save" class="primary" type="submit">Сохранить правила</button>
 <button id="reload" type="button">Загрузить актуальные правила</button>
 </form>
-<section aria-label="Подключение виджета"><h2>Виджет в заказе</h2>
+<section id="widget-settings" aria-label="Подключение виджета"><h2>Виджет в заказе</h2>
 <p>Подготовка создаёт служебное поле для проверки списаний. Продажи включаются после завершения настройки магазина.</p>
 <button id="setup-widget" type="button">Подготовить виджет</button><p id="setup-status" role="status" aria-live="polite"></p></section>
 <section aria-label="Уведомления МойСклад"><h2>Уведомления об изменениях</h2>
 <p>Ускоряют проверку оплат, отгрузок и возвратов. Если уведомление потеряется, изменения проверяются по API.</p>
 <button id="setup-webhooks" type="button">Подключить уведомления</button>
 <p id="webhook-status" role="status" aria-live="polite"></p></section>
-<section aria-label="Запуск программы"><h2>Запуск программы</h2>
+<section id="launch-settings" aria-label="Запуск программы"><h2>Запуск программы</h2>
 <p>Перед запуском сверьте остатки и отключите обработку новых покупок в прежней бонусной системе. Дата начала начислений сохраняется один раз.</p>
 <label><input id="balances-reviewed" type="checkbox"> Остатки сверены и перенесены либо начинаем без остатков</label>
 <label><input id="previous-disabled" type="checkbox"> Прежняя программа больше не обрабатывает новые покупки</label>
 <label for="activation-reason">Основание запуска</label><textarea id="activation-reason" maxlength="500" rows="2"></textarea>
 <button id="activate-program" type="button">Запустить программу</button><p id="activation-status" role="status"></p></section>
-<section aria-label="Автоматическое начисление"><h2>Обработка заказов</h2>
+<section id="processing-settings" aria-label="Автоматическое начисление"><h2>Обработка заказов</h2>
 <p>Начало программы фиксируется один раз после подключения магазина. Покупки, созданные раньше, не получают новые начисления.</p>
-<button id="configure-automation" type="button">Зафиксировать начало программы</button>
 <button id="refresh-automation" type="button">Проверить обработку</button>
 <p id="automation-status" role="status" aria-live="polite"></p>
 <div id="automation-details"></div></section>
