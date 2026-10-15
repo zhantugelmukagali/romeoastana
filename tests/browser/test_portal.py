@@ -57,7 +57,7 @@ class PortalBrowserTests(unittest.TestCase):
         if os.environ.get("GITHUB_ACTIONS")=="true":
             path=ROOT/"test-results";path.mkdir(exist_ok=True)
             self.page.evaluate("window.scrollTo(0,0)")
-            self.page.frames[1].evaluate("window.scrollTo(0,0)")
+            self.page.frames[1].evaluate("document.querySelector('.app-content').scrollTop=0")
             self.page.screenshot(path=str(path/name),full_page=True)
             label="MOBILE" if "mobile" in name else "DESKTOP"
             print("BP_VISUAL_"+label+"="+base64.b64encode(self.page.screenshot(type="jpeg",quality=60,full_page=True)).decode(),flush=True)
@@ -171,5 +171,33 @@ class PortalBrowserTests(unittest.TestCase):
 
     def test_scroll_inside_narrow_height_limited_host(self):
         self.assert_embedded_scroll(390,600)
+
+
+    def test_compact_header_shows_metrics_early_and_menu_can_free_workspace(self):
+        self.page.set_viewport_size({"width":1280,"height":650});self.open()
+        self.assertEqual(self.frame.locator(".app-topbar").count(),0)
+        self.assertLess(self.frame.locator(".kpi-grid").bounding_box()["y"],200)
+        region=self.frame.get_by_role("region",name="Содержимое БонусПро",exact=True)
+        before=region.bounding_box()["width"]
+        self.frame.get_by_role("button",name="Свернуть меню",exact=True).click()
+        self.assertGreater(region.bounding_box()["width"],before+100)
+        self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+        self.frame.get_by_role("heading",name="Клиенты и бонусы",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Развернуть меню",exact=True).click()
+        self.assertEqual(self.sessions,1)
+
+    def test_find_customer_action_and_keyboard_shortcut_focus_search(self):
+        self.open()
+        self.frame.get_by_role("button",name="Найти клиента",exact=True).click()
+        field=self.frame.get_by_label("Имя или телефон клиента")
+        self.frame.get_by_role("heading",name="Клиенты и бонусы",exact=True).wait_for()
+        self.page.frames[1].wait_for_function("document.activeElement.id==='customer-search'")
+        field.fill("Алия");field.press("/")
+        self.assertEqual(field.input_value(),"Алия/")
+        self.frame.get_by_role("link",name="Обзор",exact=True).click()
+        self.frame.get_by_role("region",name="Содержимое БонусПро",exact=True).focus()
+        self.page.keyboard.press("/")
+        self.page.frames[1].wait_for_function("document.activeElement.id==='customer-search'")
+        self.assertEqual(self.sessions,1)
 
 if __name__=="__main__":unittest.main()

@@ -124,6 +124,7 @@ function showScreen(){
   document.querySelectorAll("[data-screen]").forEach(section=>section.hidden=section.dataset.screen!==screen);
   $("page-title").textContent={overview:"Обзор программы",customers:"Клиенты",activity:"Операции"}[screen];
   $("page-description").textContent={overview:"Бонусы, клиенты и покупки — в одном месте.",customers:"Найдите клиента, проверьте баланс и историю бонусов.",activity:"Полная история подтверждённых движений бонусов."}[screen];
+  $("open-customers").hidden=!session||screen!=="overview";
   if(session){if(screen==="customers"&&!customersLoaded)void customers();if(screen==="activity"&&!activityLoaded)void activity();}
 }
 async function refresh(){
@@ -138,7 +139,7 @@ async function connect(){
   for(const id of ["customers","activity","recent-activity","customer-history"])$(id).replaceChildren();
   $("program-state").textContent="Подключение";$("program-state").classList.remove("success");
   if($("customer-dialog").open)$("customer-dialog").close();
-  $("retry").hidden=true;$("workspace").hidden=true;$("refresh").hidden=true;
+  $("retry").hidden=true;$("workspace").hidden=true;$("refresh").hidden=true;$("open-customers").hidden=true;
   status("Подключаемся к МойСклад…");
   try{
     const token=await requestContext();
@@ -157,3 +158,15 @@ $("widget-help").onclick=()=>$("help-dialog").showModal();$("close-help").onclic
 $("refresh").onclick=()=>void refresh();$("retry").onclick=()=>void connect();
 window.addEventListener("hashchange",showScreen);window.addEventListener("pagehide",()=>{session=null;profileEpoch++;connectionEpoch++;});
 showScreen();void connect();
+
+function findCustomer(){
+ if(!session)return;
+ location.hash="customers";
+ requestAnimationFrame(()=>$("customer-search").focus({preventScroll:true}));
+}
+$("open-customers").onclick=findCustomer;
+window.addEventListener("keydown",event=>{
+ if(event.key!=="/"||event.ctrlKey||event.metaKey||event.altKey||event.defaultPrevented||
+   document.querySelector("dialog[open]")||event.target.closest("input,textarea,select,[contenteditable=true]"))return;
+ event.preventDefault();findCustomer();
+});
