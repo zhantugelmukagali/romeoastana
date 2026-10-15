@@ -6,7 +6,7 @@ def evaluate(row):
     fresh=bool(heartbeat and 0<=(now-heartbeat).total_seconds()<600)
     checks=[
         dict(id="rules",label="Правила бонусов сохранены",complete=bool(row["has_rules"]),target="rules-form"),
-        dict(id="widget",label="Виджет подключён",complete=bool(row["has_widget"]),target="widget-settings"),
+        dict(id="widget",label="Настройка виджета сохранена",complete=bool(row["has_widget"]),target="widget-settings"),
         dict(id="activation",label="Программа запущена",complete=row["state"]=="Activated" and bool(row["has_cutoff"]),target="launch-settings"),
         dict(id="processing",label="Заказы обрабатываются автоматически",complete=fresh and not row["last_error"] and row["state"]=="Activated",target="processing-settings")]
     return dict(ready=all(x["complete"] for x in checks),checks=checks,checked_at=now.isoformat(),

@@ -48,7 +48,7 @@ class SettingsBrowserTests(unittest.TestCase):
         if path=="/api/admin/readiness":
             complete=[bool(self.current),self.widget_configured,bool(self.activations),False]
             ids=["rules","widget","activation","processing"]
-            labels=["Правила бонусов сохранены","Виджет подключён","Программа запущена","Заказы обрабатываются автоматически"]
+            labels=["Правила бонусов сохранены","Настройка виджета сохранена","Программа запущена","Заказы обрабатываются автоматически"]
             targets=["rules-form","widget-settings","launch-settings","processing-settings"]
             return route.fulfill(json={"ready":False,"checks":[{"id":k,"label":label,"target":target,"complete":ok} for k,label,target,ok in zip(ids,labels,targets,complete)]})
         if path=="/api/me":return route.fulfill(json={"role":"admin"})
@@ -92,9 +92,9 @@ class SettingsBrowserTests(unittest.TestCase):
         self.open()
         self.assertEqual(self.frame.locator("#configure-automation").count(),0)
         self.assertEqual(self.frame.locator("#readiness-list li").count(),4)
-        self.frame.get_by_text("Виджет подключён — требуется действие",exact=True).wait_for()
+        self.frame.get_by_text("Настройка виджета сохранена — требуется действие",exact=True).wait_for()
         self.frame.get_by_role("button",name="Подготовить виджет",exact=True).click()
-        self.frame.get_by_text("Виджет подключён — выполнено",exact=True).wait_for()
+        self.frame.get_by_text("Настройка виджета сохранена — выполнено",exact=True).wait_for()
         self.frame.get_by_text("Заказы обрабатываются автоматически — требуется действие",exact=True).wait_for()
         self.frame.get_by_role("button",name="Проверить обработку",exact=True).click()
         self.frame.get_by_text("Начало программы ещё не зафиксировано.",exact=True).wait_for()
