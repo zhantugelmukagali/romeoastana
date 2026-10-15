@@ -86,7 +86,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Build non-root application image
-        run: docker build --pull -t bonuspro:ci .
+        run: |
+          python3 scripts/ci_restrict_build_context.py
+          docker build --pull -t bonuspro:ci .
       - name: Test real deployment roles, migrations and HTTP readiness
         run: python3 scripts/ci_container_smoke.py
   dependencies:

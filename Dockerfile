@@ -10,6 +10,11 @@ COPY web ./web
 COPY migrations ./migrations
 COPY alembic.ini ./
 COPY deploy ./deploy
+# Git honors a restrictive host umask. COPY keeps those modes but defaults to
+# root ownership; normalize public application files before dropping privileges.
+# Secret files are excluded by .dockerignore and mounted separately at runtime.
+RUN chmod -R u=rwX,go=rX backend web migrations deploy \
+    && chmod 0644 alembic.ini requirements-server.lock
 USER 10001:10001
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD ["python","deploy/healthcheck.py"]
