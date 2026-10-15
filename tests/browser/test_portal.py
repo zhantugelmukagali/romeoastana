@@ -164,7 +164,7 @@ class PortalBrowserTests(unittest.TestCase):
         self.frame.get_by_role("heading",name="Бонусы в заказе покупателя",exact=True).wait_for()
         self.frame.get_by_role("button",name="Закрыть инструкцию",exact=True).click()
         self.frame.get_by_role("link",name="Клиенты",exact=True).click()
-        self.assertEqual(content.evaluate("(el)=>el.scrollTop"),0)
+        self.page.frames[1].wait_for_function("document.querySelector('.app-content').scrollTop===0")
 
     def test_scroll_inside_height_limited_host_with_wheel_and_keyboard(self):
         self.assert_embedded_scroll(1440,480)

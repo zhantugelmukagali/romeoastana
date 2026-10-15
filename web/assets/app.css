@@ -20,7 +20,7 @@ dialog{border:1px solid var(--border);border-radius:16px;box-shadow:0 24px 90px 
 /* Scroll inside the embedded application even when the host disables iframe scrolling. */
 html:has(body.with-shell){height:100%;overflow:hidden}
 body.with-shell{height:100vh;height:100dvh;overflow:hidden}
-.app-content{position:fixed;inset:58px 0 0 228px;overflow:auto;overscroll-behavior-y:contain;scrollbar-gutter:stable;-webkit-overflow-scrolling:touch}
+.app-content{position:fixed;inset:58px 0 0 228px;overflow:auto;overscroll-behavior-y:contain;scrollbar-gutter:stable;overflow-anchor:none;-webkit-overflow-scrolling:touch}
 .app-content:focus-visible{outline:2px solid #bfd4ff;outline-offset:-2px}
 .app-content>main{width:100%;min-height:100%}
 .app-sidebar{overflow-y:auto}
