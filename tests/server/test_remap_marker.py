@@ -68,3 +68,50 @@ class DocumentedMarkerContractTests(unittest.TestCase):
             with self.assertRaises(InvalidDocument):self.client(page,response).marker_attribute(create=True)
         foreign={**self.row,"accountId":str(uuid4())}
         with self.assertRaises(InvalidDocument):self.client(dict(meta={},rows=[foreign])).marker_attribute(create=True)
+
+    def test_collection_href_may_echo_only_the_requested_first_page_parameters(self):
+        suffixes=("", "?limit=1000", "?offset=0", "?limit=1000&offset=0",
+                  "?offset=0&limit=1000", "/?limit=1000")
+        for suffix in suffixes:
+            with self.subTest(suffix=suffix):
+                self.calls=[]
+                page=dict(meta=dict(href=BASE+self.path+suffix),rows=[self.row])
+                self.assertEqual(self.client(page).marker_attribute(create=True),self.marker)
+                self.assertEqual([request.method for request in self.calls],["GET"])
+
+    def test_untrusted_filtered_or_partial_href_never_causes_a_write_or_followup(self):
+        values=(
+            "https://evil.test"+self.path+"?limit=1000",
+            BASE.replace("https:","http:")+self.path,
+            BASE.replace("api.moysklad.ru","api.moysklad.ru.evil.test")+self.path,
+            BASE.replace("api.moysklad.ru","user@api.moysklad.ru")+self.path,
+            BASE+self.path+"/other",
+            BASE+self.path+"//",
+            BASE+self.path+"?offset=1000",
+            BASE+self.path+"?limit=1",
+            BASE+self.path+"?limit=1000&limit=1000",
+            BASE+self.path+"?filter=name",
+            BASE+self.path+"?limit=1000&offset=0&extra=x",
+            BASE+self.path+"?limit=",
+            BASE+self.path+"?limit",
+            BASE+self.path+"#fragment",
+            BASE+self.path+"\n",
+            None, 1,
+        )
+        for href in values:
+            with self.subTest(href=href):
+                self.calls=[]
+                with self.assertRaises(InvalidDocument):
+                    self.client(dict(meta=dict(href=href),rows=[])).marker_attribute(create=True)
+                self.assertEqual([request.method for request in self.calls],["GET"])
+
+    def test_pagination_href_does_not_override_incomplete_collection_guard(self):
+        for meta in (
+            dict(href=BASE+self.path+"?limit=1000",size=2),
+            dict(href=BASE+self.path+"?limit=1000",offset=1000),
+            dict(href=BASE+self.path+"?limit=1000",nextHref=BASE+self.path+"?offset=1000"),
+        ):
+            self.calls=[]
+            with self.assertRaises(InvalidDocument):
+                self.client(dict(meta=meta,rows=[])).marker_attribute(create=True)
+            self.assertEqual([request.method for request in self.calls],["GET"])

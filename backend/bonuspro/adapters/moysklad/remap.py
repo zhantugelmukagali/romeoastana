@@ -9,6 +9,7 @@ from decimal import Decimal
 import json
 import time
 from uuid import UUID
+from urllib.parse import urlsplit, parse_qsl
 
 import httpx
 
@@ -50,6 +51,34 @@ def uuid(value):
     except (ValueError,TypeError,AttributeError):
         raise InvalidDocument("invalid entity identity") from None
 
+
+
+def attribute_collection_href(value):
+    """Validate a collection URL as data; never follow a returned destination.
+
+    REMAP may echo the pagination query from our fixed request in meta.href.
+    Accept only the complete first page of this exact metadata collection.
+    """
+    if not isinstance(value,str) or len(value)>2048 or any(ord(c)<=32 for c in value):
+        return False
+    try:
+        parsed=urlsplit(value)
+        expected=urlsplit(BASE+"/entity/customerorder/metadata/attributes")
+        if (parsed.scheme,parsed.netloc,parsed.path.rstrip("/")) != (
+                expected.scheme,expected.netloc,expected.path) or parsed.fragment:
+            return False
+        # Only a single optional trailing slash is a resource equivalent.
+        if parsed.path not in (expected.path,expected.path+"/"):
+            return False
+        pairs=parse_qsl(parsed.query,keep_blank_values=True,strict_parsing=True,max_num_fields=2)
+    except ValueError:
+        return False
+    seen=set()
+    for name,number in pairs:
+        if name in seen or (name,number) not in (("limit","1000"),("offset","0")):
+            return False
+        seen.add(name)
+    return True
 
 def reference(meta, allowed):
     if not isinstance(meta,dict):
@@ -172,7 +201,7 @@ class RemapClient:
             raise InvalidDocument("incomplete attribute metadata")
         if collection.get("nextHref") or ("offset" in collection and (type(collection["offset"]) is not int or collection["offset"]!=0)):
             raise InvalidDocument("incomplete attribute metadata")
-        if "href" in collection and collection["href"]!=BASE+path:
+        if "href" in collection and not attribute_collection_href(collection["href"]):
             raise InvalidDocument("untrusted attribute collection")
         matches=[row for row in rows if row.get("name")=="БонусПро: операция списания"]
         if len(matches)>1:raise InvalidDocument("ambiguous redemption attribute")
