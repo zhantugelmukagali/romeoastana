@@ -31,8 +31,9 @@ class Worker:
         self.client_factory=client_factory
 
     def client(self):
+        # Draft solutions have 11 requests / 3 s; leave room for interactive reads.
         return self.client_factory(self.installations.remap_token(self.tenant),self.tenant,
-                                   budget_seconds=90,minimum_interval=0.15)
+                                   budget_seconds=90,minimum_interval=0.35)
 
     def fail_job(self,job,code,*,permanent=False,delay=0):
         try:
