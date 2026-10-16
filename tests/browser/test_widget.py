@@ -318,6 +318,7 @@ class WidgetBrowserTests(unittest.TestCase):
         for width in (320,360,390,520,760):
             with self.subTest(width=width):
                 self.page.set_viewport_size({"width":width,"height":720})
+                self.page.evaluate("document.querySelector(\'iframe\').style.height=\'380px\'")
                 self.page.frames[1].evaluate("()=>new Promise(requestAnimationFrame)")
                 self.frame.get_by_role("button",name="Максимум",exact=True).click()
                 self.assertTrue(self.page.frames[1].evaluate("""()=>{
@@ -325,6 +326,7 @@ class WidgetBrowserTests(unittest.TestCase):
                     return document.documentElement.scrollWidth<=innerWidth &&
                       [...document.querySelectorAll('.controls>*')].every(el=>{const r=el.getBoundingClientRect();return r.left>=box.left&&r.right<=box.right;});
                 }"""))
+        self.assertLessEqual(self.page.frames[1].evaluate("document.body.getBoundingClientRect().height"),380)
         self.assertEqual(self.prepares,[])
 
     def test_slow_order_read_does_not_fail_at_the_old_fifteen_second_timeout(self):
@@ -345,6 +347,7 @@ class WidgetBrowserTests(unittest.TestCase):
 
     def test_zero_balance_is_compact_and_shows_the_server_earning_estimate(self):
         self.quote_overrides={"quote":{"balance":0,"available":0,"max_spend_points":0,"potential_earn_points":5000}}
+        self.total_minor=10000000;self.eligible_minor=10000000
         self.page.set_viewport_size({"width":390,"height":700})
         self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
         self.frame.get_by_text("Бонусов пока нет",exact=True).wait_for()
