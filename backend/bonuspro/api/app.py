@@ -438,7 +438,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     def release_cancelled(operation_id: UUID,body: IssueDecision,request: Request):
         same_origin(request);identity=admin_identity(request)
         service=Voids(automation.ledger);operation=service.lookup(identity.tenant_id,str(operation_id))
-        client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.15) if remap_factory is RemapClient else document_client(identity)
+        client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.35) if remap_factory is RemapClient else document_client(identity)
         proof=FulfillmentReader(client).read(str(operation["order_id"]),marker_id=redemptions.binding(identity.tenant_id))
         repo.authenticate(bearer(request))
         return service.release(identity.tenant_id,str(operation_id),proof,actor=identity.user_id,reason=body.reason)
@@ -461,7 +461,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     @app.post("/api/admin/imports/preview")
     def import_preview(body: ImportPreview,request: Request):
         same_origin(request);identity=admin_identity(request)
-        client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.15) if remap_factory is RemapClient else document_client(identity)
+        client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.35) if remap_factory is RemapClient else document_client(identity)
         result=imports.preview(identity.tenant_id,body.csv_text,identity.user_id,client)
         repo.authenticate(bearer(request))
         return result
@@ -485,7 +485,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
             if case["decision"]==body.decision and case["reason"]==body.reason and str(case["actor_id"])==identity.user_id:
                 return {"state":case["state"]}
             raise Conflict("case already resolved")
-        client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.15) if remap_factory is RemapClient else document_client(identity)
+        client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.35) if remap_factory is RemapClient else document_client(identity)
         proof=FulfillmentReader(client).read(str(case["order_id"]),marker_id=redemptions.binding(identity.tenant_id))
         repo.authenticate(bearer(request))
         return automation.resolve_settlement(identity.tenant_id,str(case_id),proof,
@@ -498,7 +498,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
             issue=conn.execute("SELECT order_id FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND id=%s",
                               (identity.tenant_id,str(issue_id))).fetchone()
             if not issue:raise NotFound("issue missing")
-        client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.15) if remap_factory is RemapClient else document_client(identity)
+        client=RemapClient(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=90,minimum_interval=0.35) if remap_factory is RemapClient else document_client(identity)
         proof=FulfillmentReader(client).read(str(issue["order_id"]),marker_id=redemptions.binding(identity.tenant_id))
         repo.authenticate(bearer(request))
         return automation.resolve_issue(identity.tenant_id,str(issue_id),proof,actor=identity.user_id,reason=body.reason)
@@ -551,7 +551,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         generation=signals.generation(identity.tenant_id)
         tag=signature(config.credentials.encryption_key,config.credentials.app_id,identity.tenant_id,generation)
         url=config.origin+"/hooks/remap/"+config.credentials.app_id+"/"+identity.tenant_id+"/"+generation+"/"+tag
-        client=remap_factory(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=30,minimum_interval=0.15)
+        client=remap_factory(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=30,minimum_interval=0.35)
         count=client.ensure_webhooks(url)
         admin_identity(request)
         signals.record_setup(identity.tenant_id,generation,count)
