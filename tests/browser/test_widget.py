@@ -424,7 +424,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.open()
         self.page.evaluate("document.querySelector('iframe').style.height='380px'")
         self.apply()
-        self.frame.get_by_text(re.compile(r"1\\s?000 бонусов в резерве")).wait_for()
+        self.frame.get_by_text(re.compile(r"1\s?000 бонусов в резерве")).wait_for()
         self.page.frames[1].evaluate("scrollTo(0,0)")
         bounds=self.frame.locator("#verify").bounding_box()
         frame_bounds=self.page.locator("iframe").bounding_box()

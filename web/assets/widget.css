@@ -44,8 +44,8 @@ main[data-view=empty] .earning strong{display:block;font-size:19px;letter-spacin
 main[data-view=empty] .earning span:not(.earn-icon){display:block;font-size:11px;margin-top:1px}
 main[data-view=empty] .earning{margin-top:12px;padding:11px 12px;gap:11px}
 main[data-view=empty] .earn-icon svg{width:25px;height:25px}
-details{margin-top:8px;padding-top:6px;border-top:1px solid #edf0f5;color:#63728a;font-size:11px}
-summary{display:flex;align-items:center;gap:4px;cursor:pointer;width:fit-content;list-style:none}
+details{margin-top:6px;padding-top:0;border-top:1px solid #edf0f5;color:#63728a;font-size:11px}
+summary{display:flex;min-height:24px;align-items:center;gap:4px;cursor:pointer;width:fit-content;list-style:none}
 summary svg{width:14px;height:14px;transition:transform .15s}details[open] summary svg{transform:rotate(180deg)}
 summary::-webkit-details-marker{display:none}.conditions-body{padding-top:4px;line-height:1.5}.conditions-body p{margin:5px 0}
 #pending{display:grid;grid-template-columns:34px minmax(0,1fr);column-gap:10px;border-radius:9px;background:#fff8e9;border:1px solid #f2e4c4;padding:14px}
