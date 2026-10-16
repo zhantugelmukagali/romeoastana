@@ -110,7 +110,7 @@ class RemapClient:
         if wait>0:
             time.sleep(min(wait,1))
         self.last_request=time.monotonic()
-        headers={"Authorization":"Bearer "+self._token,"Accept":"application/json",
+        headers={"Authorization":"Bearer "+self._token,"Accept":"application/json;charset=utf-8",
                  "Accept-Encoding":"gzip","X-Lognex-Accept-Region":"kz"}
         try:
             with httpx.Client(timeout=httpx.Timeout(10,connect=3),follow_redirects=False,
