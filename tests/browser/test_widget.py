@@ -255,7 +255,7 @@ class WidgetBrowserTests(unittest.TestCase):
     def test_zero_balance_explains_how_to_earn_without_offering_spending(self):
         self.quote_overrides={"quote":{"balance":0,"max_spend_points":0}}
         self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
-        self.frame.get_by_text("0 бонусов",exact=True).wait_for()
+        self.frame.locator("#balance").filter(has_text=re.compile("^0 бонусов$")).wait_for()
         self.assertFalse(self.frame.locator("#spend-form").is_visible())
         self.assertFalse(self.frame.locator("#apply").is_visible())
         self.assertTrue(self.frame.locator("#balances").is_visible())
@@ -355,7 +355,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.total_minor=10000000;self.eligible_minor=10000000
         self.page.set_viewport_size({"width":390,"height":700})
         self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
-        self.frame.get_by_text("0 бонусов",exact=True).wait_for()
+        self.frame.locator("#balance").filter(has_text=re.compile("^0 бонусов$")).wait_for()
         self.frame.get_by_text(re.compile(r"\+5\s?000 бонусов")).wait_for()
         self.assertFalse(self.frame.locator("#spend-form").is_visible())
         self.assertFalse(self.frame.locator("#apply").is_visible())
@@ -377,13 +377,17 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertEqual(self.prepares,[])
 
     def test_existing_saved_operation_is_verified_automatically_without_another_prepare(self):
-        self.open();self.apply()
+        self.open()
+        reference=self.frame.locator("#order-label").inner_text()
+        self.assertEqual(reference,"Заказ №0001")
+        self.apply()
         self.frame.get_by_text(re.compile(r"1\s?000 бонусов в резерве")).wait_for()
         self.saved=True
         self.frame.get_by_role("button",name="Обновить",exact=True).click()
         self.frame.locator("#pending[data-state=done]").wait_for()
         self.assertEqual(len(self.prepares),1)
         self.assertEqual(self.verifies,1)
+        self.assertEqual(self.frame.locator("#order-label").inner_text(),reference)
         self.assertFalse(self.frame.locator("#verify").is_visible())
         if os.environ.get("GITHUB_ACTIONS")=="true":
             body=self.page.frames[1].locator("body")
