@@ -397,6 +397,8 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
             expected_version=body.expected_version,request_id=str(body.request_id),actor=identity.user_id,reason=body.reason)
 
     def document_client(identity):
+        if remap_factory is RemapClient:
+            return remap_factory(repo.remap_token(identity.tenant_id),identity.tenant_id,budget_seconds=40)
         return remap_factory(repo.remap_token(identity.tenant_id),identity.tenant_id)
 
     @app.post("/api/admin/redemptions/{operation_id}/release")
@@ -569,7 +571,11 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         marker=redemptions.binding(identity.tenant_id)
         if not marker:
             raise Conflict("widget setup required")
-        saved=read_order(document_client(identity),str(order_id),marker_id=marker)
+        existing=redemptions.existing(identity.tenant_id,str(order_id))
+        # A completed debit remains verifiable after later payment/shipment.
+        # New debits still require an unpaid, unshipped document without links.
+        completed=bool(existing and existing["state"]=="committed")
+        saved=read_order(document_client(identity),str(order_id),marker_id=marker,allow_fulfilled=completed)
         operator_identity(request)
         return redemptions.confirm_saved(identity.tenant_id,saved,authorize=lambda conn:operators.check_in(conn,identity))
 

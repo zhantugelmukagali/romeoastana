@@ -38,7 +38,7 @@ function hostRequest(name,extra={},responseName){
 async function api(path,options={}){
   const generation=epoch;
   const response=await fetch(path,{...options,credentials:"omit",cache:"no-store",headers:{"Content-Type":"application/json",
-    ...(token?{Authorization:"Bearer "+token}:{}),...options.headers},signal:AbortSignal.timeout(15000)});
+    ...(token?{Authorization:"Bearer "+token}:{}),...options.headers},signal:AbortSignal.timeout(55000)});
   if(generation!==epoch)throw new Error("document_changed");
   if(!response.ok){
     const error=new Error("api_error");error.status=response.status;

@@ -324,4 +324,19 @@ class WidgetBrowserTests(unittest.TestCase):
                 }"""))
         self.assertEqual(self.prepares,[])
 
+    def test_slow_order_read_does_not_fail_at_the_old_fifteen_second_timeout(self):
+        self.open()
+        self.page.clock.install()
+        held=[]
+        self.context.route("**/api/widget/orders/*",lambda route:held.append(route))
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.get_by_text("Загружаем актуальные бонусы…",exact=True).wait_for()
+        self.page.clock.run_for(16000)
+        self.assertEqual(len(held),1)
+        self.assertTrue(self.frame.get_by_role("button",name="Обновить",exact=True).is_disabled())
+        self.frame.get_by_text("Загружаем актуальные бонусы…",exact=True).wait_for()
+        self.route(held[0])
+        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.assertFalse(self.frame.get_by_role("button",name="Обновить",exact=True).is_disabled())
+
 if __name__=="__main__":unittest.main()

@@ -121,4 +121,22 @@ class RedemptionTests(unittest.TestCase):
         prepared=self.prepare()
         with self.assertRaises(Conflict):self.ledger.release_unapplied(self.tenant,prepared["id"])
 
+
+    def test_committed_discount_remains_verified_after_payment_and_shipment(self):
+        prepared=self.prepare();saved=self.persisted(prepared)
+        original=self.redemptions.confirm_saved(self.tenant,saved)
+        fulfilled=replace(saved,snapshot=replace(saved.snapshot,paid_minor=1100000,shipped_minor=1100000))
+        repeated=self.redemptions.confirm_saved(self.tenant,fulfilled)
+        self.assertTrue(repeated["verified"])
+        self.assertEqual(repeated["transaction_id"],original["transaction_id"])
+        self.assertEqual(self.ledger.snapshot(self.tenant,self.wallet),dict(balance=4000,reserved=0,available=4000))
+
+    def test_uncommitted_discount_cannot_be_first_confirmed_after_fulfillment(self):
+        prepared=self.prepare();saved=self.persisted(prepared)
+        for field in ("paid_minor","shipped_minor"):
+            candidate=replace(saved,snapshot=replace(saved.snapshot,**{field:1}))
+            self.assertFalse(self.redemptions.confirm_saved(self.tenant,candidate)["verified"])
+        self.assertEqual(self.ledger.snapshot(self.tenant,self.wallet),dict(balance=5000,reserved=1000,available=4000))
+
 if __name__=="__main__":unittest.main()
+
