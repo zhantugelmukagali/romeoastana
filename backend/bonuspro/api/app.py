@@ -12,7 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.datastructures import MutableHeaders
-from pydantic import BaseModel, Field, SecretStr, ConfigDict, field_validator, StrictInt, StrictBool
+from pydantic import BaseModel, Field, SecretStr, ConfigDict, field_validator, StrictInt, StrictBool, model_validator
 
 from bonuspro.settings import Settings
 from bonuspro.security import AuthenticationFailed
@@ -44,8 +44,27 @@ class Access(BaseModel):
 
 class Activation(BaseModel):
     appUid: str
-    cause: Literal["Install","Resume"]
-    access: list[Access] = Field(min_length=1,max_length=20)
+    cause: Literal["Install","Resume","TariffChanged","Autoprolongation"]
+    access: list[Access] = Field(default_factory=list,max_length=20)
+
+    @model_validator(mode="after")
+    def access_for_cause(self):
+        if self.cause in ("Install","Resume") and not self.access:
+            raise ValueError("installation credentials required")
+        if self.cause in ("TariffChanged","Autoprolongation") and self.access:
+            raise ValueError("billing notifications cannot replace credentials")
+        return self
+
+
+class PermissionAccess(BaseModel):
+    resource: str
+    permissions: dict = Field(default_factory=dict)
+
+
+class PermissionEvent(BaseModel):
+    appUid: str
+    cause: Literal["PermissionsChanged"]
+    access: list[PermissionAccess] = Field(min_length=1,max_length=20)
 
 
 class Deactivation(BaseModel):
@@ -282,11 +301,25 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     @app.put("/api/moysklad/vendor/1.0/apps/{app_id}/{account_id}")
     def install(app_id: UUID, account_id: UUID, body: Activation, request: Request):
         claims = vendor_claims(request,app_id,body.appUid)
+        if body.cause in ("TariffChanged","Autoprolongation"):
+            return {"status":repo.notice(str(account_id),claims,body.cause)}
         access = [x for x in body.access if x.resource.rstrip("/")==REMAP]
         if len(access)!=1:
             raise HTTPException(422,"REMAP access is required")
         state = repo.change(str(account_id),claims,body.cause,access[0].access_token.get_secret_value())
         return {"status":state}
+
+    @app.put("/api/moysklad/vendor/1.0/apps/{app_id}/{account_id}/event")
+    @app.put("/api/vendor/1.0/apps/{app_id}/{account_id}/event")
+    def permission_event(app_id: UUID,account_id: UUID,body: PermissionEvent,request: Request):
+        claims=vendor_claims(request,app_id,body.appUid)
+        grants=[item for item in body.access if item.resource.rstrip("/")==REMAP]
+        if len(grants)!=1:
+            raise HTTPException(422,"REMAP access is required")
+        # No credential is sent with this event. Provider permissions are enforced
+        # on each REMAP request; there is no local cache to overwrite or elevate.
+        repo.notice(str(account_id),claims,body.cause)
+        return Response(status_code=200)
 
     @app.delete("/api/moysklad/vendor/1.0/apps/{app_id}/{account_id}")
     def uninstall(app_id: UUID, account_id: UUID, body: Deactivation, request: Request):

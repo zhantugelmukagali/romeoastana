@@ -4,6 +4,7 @@
                    xsi:schemaLocation="https://apps-api.moysklad.ru/xml/ns/appstore/app/v2 https://apps-api.moysklad.ru/xml/ns/appstore/app/v2/application-v2.xsd">
   <vendorApi>
     <endpointBase>https://loyalty.addwise.kz</endpointBase>
+    <additionalEvents><updatePermissions/></additionalEvents>
   </vendorApi>
   <access>
     <resource>https://api.moysklad.ru/api/remap/1.2</resource>
