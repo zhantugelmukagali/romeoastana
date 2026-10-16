@@ -31,6 +31,52 @@ class Installations:
             conn.execute("SET LOCAL statement_timeout='10s'")
             yield conn
 
+    @staticmethod
+    def _consume(conn,claims):
+        # Expired signed callbacks cannot authenticate again. Remove only a
+        # bounded batch with a safety margin; active replay fences remain.
+        conn.execute("DELETE FROM bonuspro.vendor_replays r USING "
+                     "(SELECT jti FROM bonuspro.vendor_replays "
+                     "WHERE expires_at<clock_timestamp()-interval '10 minutes' "
+                     "LIMIT 100) expired WHERE r.jti=expired.jti")
+        consumed=conn.execute(
+            "INSERT INTO bonuspro.vendor_replays(jti,expires_at) VALUES (%s,to_timestamp(%s)) "
+            "ON CONFLICT DO NOTHING RETURNING jti",(claims["jti"],claims["exp"])).fetchone()
+        if not consumed:
+            logging.getLogger("bonuspro.vendor_auth").warning("VENDOR_AUTH_REJECT reason=replay")
+            raise AuthenticationFailed("repeated authentication token")
+
+    def notice(self,account_id,claims,cause):
+        """Acknowledge signed non-credential events without financial/state effects."""
+        if cause not in ("TariffChanged","Autoprolongation","PermissionsChanged"):
+            raise ValueError("unsupported notice")
+        account=str(UUID(account_id))
+        with self.lifecycle() as conn:
+            self._consume(conn,claims)
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("installation/"+account,))
+            row=conn.execute("SELECT state FROM bonuspro.installations WHERE tenant_id=%s",(account,)).fetchone()
+            if cause=="PermissionsChanged":
+                return row["state"] if row else None
+            if not row or row["state"] not in ("SettingsRequired","Activated"):
+                raise Conflict("billing notification cannot activate an inactive installation")
+            return row["state"]
+
+    @staticmethod
+    def _resume_ready(conn,account):
+        # Reuse administrator consent only for the same approved configuration.
+        conn.execute("SELECT set_config('bonuspro.tenant_id',%s,true)",(account,))
+        return bool(conn.execute("""
+            SELECT EXISTS(
+                SELECT 1 FROM bonuspro.activation_requests a
+                JOIN bonuspro.activation_completions c
+                  ON c.tenant_id=a.tenant_id AND c.request_id=a.id
+                JOIN bonuspro.automation_config cfg ON cfg.tenant_id=a.tenant_id
+                JOIN bonuspro.widget_bindings b ON b.tenant_id=a.tenant_id AND b.marker_id=a.marker_id
+                WHERE a.tenant_id=%s AND a.rule_version=(
+                    SELECT max(version) FROM bonuspro.rule_versions WHERE tenant_id=%s)
+            ) AS ready
+        """,(account,account)).fetchone()["ready"])
+
     def change(self, account_id: str, claims: dict, cause: str, credential: str | None = None):
         account = str(UUID(account_id))
         active = cause in ("Install","Resume")
@@ -41,19 +87,7 @@ class Installations:
         digest = sha256(json.dumps({"cause":cause,"credential":credential},
                                   sort_keys=True,separators=(",",":")).encode()).hexdigest()
         with self.lifecycle() as conn:
-            # Expired signed callbacks cannot authenticate again. Remove only a
-            # bounded batch with a safety margin; active replay fences remain.
-            conn.execute("DELETE FROM bonuspro.vendor_replays r USING "
-                         "(SELECT jti FROM bonuspro.vendor_replays "
-                         "WHERE expires_at<clock_timestamp()-interval '10 minutes' "
-                         "LIMIT 100) expired WHERE r.jti=expired.jti")
-            consumed = conn.execute(
-                "INSERT INTO bonuspro.vendor_replays(jti,expires_at) VALUES (%s,to_timestamp(%s)) "
-                "ON CONFLICT DO NOTHING RETURNING jti", (claims["jti"],claims["exp"])
-            ).fetchone()
-            if not consumed:
-                logging.getLogger("bonuspro.vendor_auth").warning("VENDOR_AUTH_REJECT reason=replay")
-                raise AuthenticationFailed("repeated authentication token")
+            self._consume(conn,claims)
             conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", ("installation/"+account,))
             row = conn.execute("SELECT * FROM bonuspro.installations WHERE tenant_id=%s FOR UPDATE",
                                (account,)).fetchone()
@@ -69,8 +103,9 @@ class Installations:
             if not row:
                 conn.execute("INSERT INTO bonuspro.tenants(id) VALUES (%s) ON CONFLICT DO NOTHING", (account,))
             state = "SettingsRequired" if active else ("Suspended" if cause == "Suspend" else "Uninstalled")
-            # Configuration activation is deliberately separate from installing credentials.
-            # Explicit administrator activation confirms the remote status before enabling sales.
+            if cause=="Resume" and row and row["state"]=="Suspended" and self._resume_ready(conn,account):
+                state="Activated"
+            # New installs require activation; Resume can reuse proven cutover consent.
             cipher = self.config.encrypt(account, credential) if active else None
             conn.execute(
                 "INSERT INTO bonuspro.installations "

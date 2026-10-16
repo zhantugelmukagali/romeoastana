@@ -64,7 +64,7 @@ class VendorClient:
             with httpx.Client(timeout=httpx.Timeout(8,connect=3),follow_redirects=False,
                               trust_env=False,transport=self.transport) as client:
                 with client.stream("PUT",url,headers={"Authorization":"Bearer "+self.secrets.outbound_jwt(),
-                    "Accept":"application/json"},json={"status":"Activated"}) as response:
+                    "Accept":"application/json;charset=utf-8","Accept-Encoding":"gzip"},json={"status":"Activated"}) as response:
                     if response.status_code!=200:
                         raise ProviderUnavailable("activation status not confirmed")
         except httpx.HTTPError:
