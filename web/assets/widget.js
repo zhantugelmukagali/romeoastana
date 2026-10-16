@@ -17,7 +17,14 @@ function enteredPoints(){
 function canSpend(){return Boolean(quote?.can_prepare&&!quote.quote.blocked_reason&&quote.quote.max_spend_points>0);}
 function validAmount(){const value=enteredPoints();return value!==null&&value>0&&value<=quote?.quote.max_spend_points;}
 const plurals=new Intl.PluralRules("ru");
-const pointsLabel=value=>amountFormat.format(value)+" "+({one:"бонус",few:"бонуса",many:"бонусов",other:"бонусов"}[plurals.select(value)]);
+const pointsUnit=value=>({one:"бонус",few:"бонуса",many:"бонусов",other:"бонусов"}[plurals.select(value)]);
+const pointsLabel=value=>amountFormat.format(value)+" "+pointsUnit(value);
+function renderBalance(id,value){
+ const amount=document.createElement("span"),unit=document.createElement("span");
+ amount.className="points-number";amount.textContent=amountFormat.format(value);
+ unit.className="points-unit";unit.textContent=pointsUnit(value);
+ $(id).replaceChildren(amount,document.createTextNode(" "),unit);
+}
 function view(name){document.querySelector("main").dataset.view=name;}
 function status(text,error=false){$("status").textContent=text;$("status").dataset.error=String(error);$("status").hidden=!text;}
 function controls(){
@@ -93,11 +100,11 @@ function showPending(value){
 function renderQuote(value){
   quote=value;attempt=null;$("summary").hidden=false;$("pending").hidden=true;
   $("order-label").textContent=value.name?"Заказ №"+value.name:"Заказ покупателя";
-  $("balance").textContent=pointsLabel(value.quote.balance);
+  renderBalance("balance",value.quote.balance);
   const reserved=Number.isSafeInteger(value.quote.available)&&value.quote.available<value.quote.balance;
   $("available-note").hidden=!reserved;
   $("available-note").textContent=reserved?"В резерве: "+amountFormat.format(value.quote.balance-value.quote.available):"";
-  $("maximum").textContent=pointsLabel(value.quote.max_spend_points);
+  renderBalance("maximum",value.quote.max_spend_points);
   $("limit-block").hidden=!canSpend();
   const empty=value.quote.balance===0;
   $("balances").hidden=empty;

@@ -414,9 +414,31 @@ class WidgetBrowserTests(unittest.TestCase):
                 }""")
                 print("BP_WIDGET_NARROW="+json.dumps(metrics),flush=True)
                 self.assertLessEqual(metrics["bottom"],380)
+                self.assertLessEqual(metrics["body"],380)
                 self.assertGreaterEqual(metrics["height"],40)
                 self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
         self.assertEqual(self.prepares,[])
+
+    def test_reservation_and_verified_result_fit_the_narrow_widget(self):
+        self.page.set_viewport_size({"width":320,"height":720})
+        self.open()
+        self.page.evaluate("document.querySelector('iframe').style.height='380px'")
+        self.apply()
+        self.frame.get_by_text(re.compile(r"1\\s?000 бонусов в резерве")).wait_for()
+        self.page.frames[1].evaluate("scrollTo(0,0)")
+        bounds=self.frame.locator("#verify").bounding_box()
+        frame_bounds=self.page.locator("iframe").bounding_box()
+        self.assertLessEqual(bounds["y"]+bounds["height"],frame_bounds["y"]+380)
+        self.assertGreaterEqual(bounds["height"],38)
+        self.assertEqual(len(self.prepares),1)
+        self.saved=True
+        self.frame.get_by_role("button",name="Проверить сохранение",exact=True).click()
+        self.frame.locator("#pending[data-state=done]").wait_for()
+        self.assertFalse(self.frame.locator("#verify").is_visible())
+        self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+        self.assertLessEqual(self.page.frames[1].evaluate("document.body.getBoundingClientRect().height"),380)
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.verifies,1)
 
     def test_provider_and_operator_access_errors_show_the_right_next_step(self):
         self.order_error=403
