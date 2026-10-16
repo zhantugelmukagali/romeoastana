@@ -1,5 +1,5 @@
 """Real Chromium, synthetic MoySklad host. Not a live provider acceptance test."""
-import base64,json,os,unittest
+import base64,json,os,re,unittest
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
@@ -63,51 +63,51 @@ class WidgetBrowserTests(unittest.TestCase):
             if self.prepared and path.endswith(ORDER):
                 return route.fulfill(json={"redemption":{"id":"attempt","order_id":ORDER,"points":1000,"state":"verifying"}})
             return route.fulfill(json={"name":"0001","saved_source_hash":"a"*64,"eligible_minor":self.eligible_minor,"total_minor":self.total_minor,
-                "can_prepare":self.quote_overrides.get("can_prepare",True),"quote":{"balance":5000,"max_spend_points":3000,"blocked_reason":None,**self.quote_overrides.get("quote",{})}})
+                "can_prepare":self.quote_overrides.get("can_prepare",True),"quote":{"balance":5000,"max_spend_points":3000,"blocked_reason":None,"potential_earn_points":500,**self.quote_overrides.get("quote",{})}})
         file=ROOT/"web"/("widget.html" if path=="/widget" else path.lstrip("/"))
         if file.is_file():
             return route.fulfill(content_type={".html":"text/html",".css":"text/css",".js":"text/javascript"}[file.suffix],body=file.read_text())
         return route.fulfill(status=404)
     def open(self):
         self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
-        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.frame.get_by_text(re.compile(r"5\s?000 бонусов")).wait_for()
     def apply(self):
         self.frame.get_by_label("Списать бонусы",exact=True).fill("1000")
-        self.frame.get_by_role("button",name="Применить к заказу",exact=True).click()
+        self.frame.locator("#apply").click()
     def test_host_ack_is_not_a_success_until_saved_verification(self):
         self.open();self.apply()
-        self.frame.get_by_text("Зарезервировано 1000 бонусов. Итоговое списание ещё не подтверждено.",exact=True).wait_for()
+        self.frame.get_by_text(re.compile(r"1\s?000 бонусов в резерве")).wait_for()
         self.assertEqual(self.page.evaluate("updates.length"),1)
         self.assertEqual(self.verifies,0)
         self.saved=True
         self.page.evaluate("send({name:'Save',messageId:130,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
-        self.frame.get_by_text("Списано 1000 бонусов.",exact=True).wait_for()
+        self.frame.locator("#pending[data-state=done]").wait_for()
         self.assertEqual(len(self.prepares),1);self.assertEqual(self.verifies,1)
     def test_unsaved_change_blocks_apply_even_after_refresh(self):
         self.open()
         self.page.evaluate("send({name:'Change',messageId:120,objectState:{}})")
-        self.frame.get_by_text("В заказе есть изменения. Сначала сохраните его в МойСклад.",exact=True).wait_for()
-        self.assertTrue(self.frame.get_by_role("button",name="Применить к заказу",exact=True).is_disabled())
+        self.frame.get_by_text("Сохраните изменения в заказе.",exact=True).wait_for()
+        self.assertTrue(self.frame.locator("#apply").is_disabled())
         self.frame.get_by_role("button",name="Обновить",exact=True).click()
-        self.frame.get_by_text("В заказе есть изменения. Сначала сохраните его в МойСклад.",exact=True).wait_for()
-        self.assertTrue(self.frame.get_by_role("button",name="Применить к заказу",exact=True).is_disabled())
+        self.frame.get_by_text("Сохраните изменения в заказе.",exact=True).wait_for()
+        self.assertTrue(self.frame.locator("#apply").is_disabled())
         self.assertEqual(self.prepares,[])
     def test_lost_response_keeps_unknown_state_without_second_mutation(self):
         self.lose=True;self.open();self.apply()
-        self.frame.get_by_text("Статус резервирования неизвестен. Обновите данные заказа перед повторной попыткой.",exact=True).wait_for()
+        self.frame.get_by_text("Обновите данные. Не применяйте бонусы повторно.",exact=True).wait_for()
         self.assertEqual(self.page.evaluate("updates.length"),0)
         self.frame.get_by_role("button",name="Обновить",exact=True).click()
-        self.frame.get_by_text("Для заказа уже есть операция. Проверьте её по сохранённым данным.",exact=True).wait_for()
+        self.frame.get_by_text("Сохраните заказ. Если сумма отличается — нужен администратор.",exact=True).wait_for()
         self.assertEqual(len(self.prepares),1)
     def test_host_reuse_resets_points_and_state_between_orders(self):
         self.open();self.frame.get_by_label("Списать бонусы",exact=True).fill("1000")
         self.page.evaluate("openOrder('"+NEXT+"')")
-        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.frame.get_by_text(re.compile(r"5\s?000 бонусов")).wait_for()
         self.assertEqual(self.frame.get_by_label("Списать бонусы",exact=True).input_value(),"")
         self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)
     def test_change_during_prepare_does_not_apply_stale_positions(self):
         self.delay_change=True;self.open();self.apply()
-        self.frame.get_by_text("Данные изменились или запрос уже выполнялся. Проверьте сохранение; резерв сохранён.",exact=True).wait_for()
+        self.frame.get_by_text("Заказ изменился. Резерв сохранён — проверьте операцию.",exact=True).wait_for()
         self.assertEqual(self.page.evaluate("updates.length"),0)
         self.assertEqual(len(self.prepares),1)
 
@@ -122,12 +122,12 @@ class WidgetBrowserTests(unittest.TestCase):
                 self.assertTrue(self.frame.locator("#apply").is_disabled())
                 self.assertEqual(self.page.evaluate("updates.length"),0)
                 self.frame.get_by_role("button",name="Обновить",exact=True).click()
-                self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+                self.frame.get_by_text(re.compile(r"5\s?000 бонусов")).wait_for()
         self.assertEqual(len(self.prepares),3)
 
     def test_save_during_prepare_is_verified_after_response_without_host_mutation(self):
         self.save_during_prepare=True;self.open();self.apply()
-        self.frame.get_by_text("Списано 1000 бонусов.",exact=True).wait_for()
+        self.frame.locator("#pending[data-state=done]").wait_for()
         self.assertEqual(len(self.prepares),1)
         self.assertEqual(self.verifies,1)
         self.assertEqual(self.page.evaluate("updates.length"),0)
@@ -135,7 +135,7 @@ class WidgetBrowserTests(unittest.TestCase):
     def test_host_rejection_keeps_real_reservation_and_reports_without_waiting_for_timeout(self):
         self.host_error=True;self.open();self.apply()
         self.frame.locator("#status[data-error='true']").wait_for(timeout=5000)
-        self.frame.get_by_text("Зарезервировано 1000 бонусов. Итоговое списание ещё не подтверждено.",exact=True).wait_for()
+        self.frame.get_by_text(re.compile(r"1\s?000 бонусов в резерве")).wait_for()
         self.assertEqual(len(self.prepares),1)
         self.assertEqual(self.page.evaluate("updates.length"),1)
         self.assertEqual(self.verifies,0)
@@ -144,13 +144,13 @@ class WidgetBrowserTests(unittest.TestCase):
         self.open()
         self.page.evaluate("""window.feedback=0;window.addEventListener('message',e=>{if(e.data.name==='OpenFeedback')feedback++});
         send({name:'Open',messageId:190,extensionPoint:'document.customerorder.create',objectId:null});""")
-        self.frame.get_by_text("Сначала сохраните заказ с выбранным покупателем в МойСклад.",exact=True).wait_for()
+        self.frame.get_by_text("Выберите покупателя и сохраните заказ.",exact=True).wait_for()
         self.assertEqual(self.page.evaluate("feedback"),0)
 
     def test_wrong_origin_or_source_cannot_supply_open_message(self):
         self.open()
         self.page.frames[1].evaluate("window.postMessage({name:'Open',messageId:999,extensionPoint:'document.customerorder.create'},'*')")
-        self.assertTrue(self.frame.get_by_text("5000 бонусов",exact=True).is_visible())
+        self.assertTrue(self.frame.get_by_text(re.compile(r"5\s?000 бонусов")).is_visible())
         self.assertEqual(self.prepares,[])
     def test_gwt_sibling_open_context_update_and_save_complete_the_saved_readback_flow(self):
         self.open()
@@ -171,12 +171,12 @@ class WidgetBrowserTests(unittest.TestCase):
         }""")
         self.page.wait_for_function("window.gwtOpened===true")
         self.frame=self.page.frame_locator('iframe[src="https://widget.test/widget"]')
-        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.frame.get_by_text(re.compile(r"5\s?000 бонусов")).wait_for()
         self.apply()
-        self.frame.get_by_text("Зарезервировано 1000 бонусов. Итоговое списание ещё не подтверждено.",exact=True).wait_for()
+        self.frame.get_by_text(re.compile(r"1\s?000 бонусов в резерве")).wait_for()
         self.saved=True
         self.page.evaluate("send({name:'Save',messageId:140,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
-        self.frame.get_by_text("Списано 1000 бонусов.",exact=True).wait_for()
+        self.frame.locator("#pending[data-state=done]").wait_for()
         self.assertEqual(len(self.prepares),1)
         self.assertEqual(self.verifies,1)
         self.assertEqual(self.page.frames[1].evaluate("window.hostSender"),{"direct":False,"sibling":True})
@@ -195,7 +195,7 @@ class WidgetBrowserTests(unittest.TestCase):
             name:'Open',messageId:999,extensionPoint:'document.customerorder.create',objectId:null});
         }""")
         self.page.frames[1].wait_for_function("window.unrelatedSeen===true")
-        self.assertTrue(self.frame.get_by_text("5000 бонусов",exact=True).is_visible())
+        self.assertTrue(self.frame.get_by_text(re.compile(r"5\s?000 бонусов")).is_visible())
         self.assertEqual(self.prepares,[])
 
     def test_compact_width_and_maximum_preview(self):
@@ -215,7 +215,7 @@ class WidgetBrowserTests(unittest.TestCase):
 
     def test_invalid_amounts_disable_apply_and_keep_financial_preview_accurate(self):
         self.open();points=self.frame.get_by_label("Списать бонусы",exact=True)
-        button=self.frame.get_by_role("button",name="Применить к заказу",exact=True)
+        button=self.frame.locator("#apply")
         self.assertTrue(button.is_disabled())
         for value in ("0","3001","1.5","9007199254740993"):
             points.fill(value)
@@ -225,21 +225,21 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertTrue(button.is_enabled())
         self.assertEqual(points.get_attribute("aria-invalid"),"false")
         actual="".join(self.frame.locator("#payable").inner_text().split())
-        self.assertIn("11000,00₸",actual)
+        self.assertIn("11000₸",actual)
         self.assertEqual(self.prepares,[])
 
     def test_enter_applies_only_once_and_success_requires_verified_saved_order(self):
         self.open();points=self.frame.get_by_label("Списать бонусы",exact=True)
         points.fill("1000");points.press("Enter")
-        self.frame.get_by_role("heading",name="Осталось сохранить заказ",exact=True).wait_for()
+        self.frame.get_by_role("heading",name="Сохраните заказ",exact=True).wait_for()
         self.assertEqual(len(self.prepares),1)
         self.assertEqual(self.frame.locator("#pending").get_attribute("data-state"),"waiting")
         self.frame.get_by_role("button",name="Проверить сохранение",exact=True).click()
-        self.frame.locator("#status[data-error=true]").wait_for()
+        self.frame.locator("#pending[data-state=review]").wait_for()
         self.assertNotEqual(self.frame.locator("#pending").get_attribute("data-state"),"done")
         self.saved=True
         self.page.evaluate("send({name:'Save',messageId:230,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
-        self.frame.get_by_role("heading",name="Бонусы списаны",exact=True).wait_for()
+        self.frame.get_by_role("heading",name="Списано",exact=True).wait_for()
         self.assertEqual(len(self.prepares),1)
 
     def test_failed_refresh_invalidates_old_quote_and_disables_all_spending(self):
@@ -255,7 +255,10 @@ class WidgetBrowserTests(unittest.TestCase):
     def test_zero_balance_explains_how_to_earn_without_offering_spending(self):
         self.quote_overrides={"quote":{"balance":0,"max_spend_points":0}}
         self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
-        self.frame.get_by_text("У покупателя пока нет бонусов. Начисление — после полной оплаты и отгрузки.",exact=True).wait_for()
+        self.frame.get_by_text("Бонусов пока нет",exact=True).wait_for()
+        self.assertFalse(self.frame.locator("#spend-form").is_visible())
+        self.assertFalse(self.frame.locator("#apply").is_visible())
+        self.assertFalse(self.frame.locator("#balances").is_visible())
         self.assertTrue(self.frame.locator("#points").is_disabled())
         self.assertTrue(self.frame.locator("#apply").is_disabled())
         self.assertEqual(self.prepares,[])
@@ -263,7 +266,7 @@ class WidgetBrowserTests(unittest.TestCase):
     def test_admin_review_blocks_even_a_positive_quote_limit(self):
         self.quote_overrides={"quote":{"blocked_reason":"return_review"}}
         self.open()
-        self.frame.get_by_text("Операция требует проверки администратора.",exact=True).wait_for()
+        self.frame.get_by_text("Списание приостановлено. Нужен администратор.",exact=True).wait_for()
         self.assertTrue(self.frame.locator("#points").is_disabled())
         self.assertTrue(self.frame.locator("#maximum-button").is_disabled())
         self.assertEqual(self.prepares,[])
@@ -271,7 +274,7 @@ class WidgetBrowserTests(unittest.TestCase):
     def test_unconfigured_program_never_offers_a_spend(self):
         self.quote_overrides={"can_prepare":False}
         self.open()
-        self.frame.get_by_text("Списание пока выключено: настройка и проверка магазина не завершены.",exact=True).wait_for()
+        self.frame.get_by_text("Программа ещё не настроена. Нужен администратор.",exact=True).wait_for()
         self.assertTrue(self.frame.locator("#points").is_disabled())
         self.assertEqual(self.prepares,[])
 
@@ -285,14 +288,14 @@ class WidgetBrowserTests(unittest.TestCase):
         with self.page.expect_request("**/api/widget/orders/"+ORDER):
             self.frame.get_by_role("button",name="Обновить",exact=True).click()
         self.page.evaluate("openOrder('"+NEXT+"')")
-        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.frame.get_by_text(re.compile(r"5\s?000 бонусов")).wait_for()
         self.assertEqual(self.session_count,2)
         held[0].fulfill(status=401,json={"error":"expired old order"})
         self.page.wait_for_timeout(100)
         with self.page.expect_request("**/api/widget/orders/"+NEXT) as request:
             self.frame.get_by_role("button",name="Обновить",exact=True).click()
         self.assertEqual(request.value.headers.get("authorization"),"Bearer synthetic-session-2")
-        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.frame.get_by_text(re.compile(r"5\s?000 бонусов")).wait_for()
         self.assertEqual(self.session_count,2)
 
 
@@ -301,7 +304,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.total_minor=8999999999999999;self.eligible_minor=self.total_minor
         self.quote_overrides={"quote":{"balance":9000000000000000,"max_spend_points":26999999999999}}
         self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
-        self.frame.get_by_text("9000000000000000 бонусов",exact=True).wait_for()
+        self.frame.locator("#balance").wait_for()
         self.frame.get_by_role("button",name="Максимум",exact=True).click()
         actual="".join(self.frame.locator("#payable").inner_text().split())
         self.assertIn("63000000000000,99₸",actual)
@@ -330,13 +333,64 @@ class WidgetBrowserTests(unittest.TestCase):
         held=[]
         self.context.route("**/api/widget/orders/*",lambda route:held.append(route))
         self.frame.get_by_role("button",name="Обновить",exact=True).click()
-        self.frame.get_by_text("Загружаем актуальные бонусы…",exact=True).wait_for()
+        self.frame.get_by_text("Загружаем бонусы…",exact=True).wait_for()
         self.page.clock.run_for(16000)
         self.assertEqual(len(held),1)
         self.assertTrue(self.frame.get_by_role("button",name="Обновить",exact=True).is_disabled())
-        self.frame.get_by_text("Загружаем актуальные бонусы…",exact=True).wait_for()
+        self.frame.get_by_text("Загружаем бонусы…",exact=True).wait_for()
         self.route(held[0])
-        self.frame.get_by_text("5000 бонусов",exact=True).wait_for()
+        self.frame.get_by_text(re.compile(r"5\s?000 бонусов")).wait_for()
         self.assertFalse(self.frame.get_by_role("button",name="Обновить",exact=True).is_disabled())
 
+
+    def test_zero_balance_is_compact_and_shows_the_server_earning_estimate(self):
+        self.quote_overrides={"quote":{"balance":0,"available":0,"max_spend_points":0,"potential_earn_points":5000}}
+        self.page.set_viewport_size({"width":390,"height":700})
+        self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
+        self.frame.get_by_text("Бонусов пока нет",exact=True).wait_for()
+        self.frame.get_by_text(re.compile(r"\+5\s?000 бонусов")).wait_for()
+        self.assertFalse(self.frame.locator("#spend-form").is_visible())
+        self.assertFalse(self.frame.locator("#apply").is_visible())
+        self.assertFalse(self.frame.locator("#balances").is_visible())
+        self.assertLessEqual(self.page.frames[1].evaluate("document.body.getBoundingClientRect().height"),260)
+        self.assertEqual(self.prepares,[])
+        if os.environ.get("GITHUB_ACTIONS")=="true":
+            root=ROOT/"test-results";root.mkdir(exist_ok=True)
+            body=self.page.frames[1].locator("body")
+            body.screenshot(path=str(root/"bonuspro-widget-empty.png"))
+            print("BP_VISUAL_WIDGET_EMPTY="+base64.b64encode(body.screenshot(type="jpeg",quality=75)).decode(),flush=True)
+
+    def test_rules_are_collapsed_and_do_not_interrupt_the_spending_form(self):
+        self.open()
+        self.assertFalse(self.frame.locator("#conditions").get_attribute("open"))
+        self.assertFalse(self.frame.get_by_text("1 бонус = 1 ₸. Доставка и услуги не участвуют.",exact=True).is_visible())
+        self.frame.get_by_text("Условия",exact=True).click()
+        self.frame.get_by_text("1 бонус = 1 ₸. Доставка и услуги не участвуют.",exact=True).wait_for()
+        self.assertEqual(self.prepares,[])
+
+    def test_existing_saved_operation_is_verified_automatically_without_another_prepare(self):
+        self.open();self.apply()
+        self.frame.get_by_text(re.compile(r"1\s?000 бонусов в резерве")).wait_for()
+        self.saved=True
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.locator("#pending[data-state=done]").wait_for()
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.verifies,1)
+        self.assertFalse(self.frame.locator("#verify").is_visible())
+        if os.environ.get("GITHUB_ACTIONS")=="true":
+            body=self.page.frames[1].locator("body")
+            (ROOT/"test-results").mkdir(exist_ok=True)
+            body.screenshot(path=str(ROOT/"test-results/bonuspro-widget-done.png"))
+            print("BP_VISUAL_WIDGET_DONE="+base64.b64encode(body.screenshot(type="jpeg",quality=75)).decode(),flush=True)
+
+    def test_reserved_balance_is_explained_without_a_second_active_spend_form(self):
+        self.quote_overrides={"quote":{"balance":5000,"available":3500,"max_spend_points":3000}}
+        self.open()
+        self.frame.get_by_text(re.compile(r"В резерве: 1\s?500")).wait_for()
+        self.apply()
+        self.frame.get_by_role("heading",name="Сохраните заказ",exact=True).wait_for()
+        self.assertFalse(self.frame.locator("#summary").is_visible())
+        self.assertFalse(self.frame.locator("#apply").is_visible())
+
 if __name__=="__main__":unittest.main()
+
