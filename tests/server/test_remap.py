@@ -118,3 +118,29 @@ class RemapTests(unittest.TestCase):
         self.assertEqual(evidence.order["id"],self.order)
         self.assertFalse(hasattr(evidence,"eligible_for_earning"))
         self.assertTrue(all(r.method=="GET" for r in self.calls))
+
+class CurrencyContractTests(unittest.TestCase):
+    def client(self,body):
+        return RemapClient("synthetic",self.tenant,
+            transport=httpx.MockTransport(lambda request:httpx.Response(200,json=body)))
+    def setUp(self):
+        self.tenant,self.identity=str(uuid4()),str(uuid4())
+        self.currency=dict(id=self.identity,meta=dict(type="currency",
+            href=BASE+"/entity/currency/"+self.identity),isoCode="KZT",code="398",
+            default=True,rate=1,multiplicity=1,indirect=False,system=True)
+    def test_documented_currency_without_account_id_is_accepted(self):
+        self.assertEqual(self.client(self.currency).entity("currency",self.identity),self.currency)
+    def test_currency_optional_account_identity_is_still_checked(self):
+        self.assertEqual(self.client({**self.currency,"accountId":self.tenant}).entity(
+            "currency",self.identity)["accountId"],self.tenant)
+        for value in (str(uuid4()),None,"invalid"):
+            with self.subTest(value=value),self.assertRaises(InvalidDocument):
+                self.client({**self.currency,"accountId":value}).entity("currency",self.identity)
+    def test_currency_exception_does_not_relax_other_entity_identity_checks(self):
+        for kind in ("customerorder","counterparty","organization","demand"):
+            body={**self.currency,"meta":{"type":kind}}
+            with self.subTest(kind=kind),self.assertRaises(InvalidDocument):
+                self.client(body).entity(kind,self.identity)
+        for patch in ({"id":str(uuid4())},{"meta":{"type":"counterparty"}}):
+            with self.assertRaises(InvalidDocument):
+                self.client({**self.currency,**patch}).entity("currency",self.identity)

@@ -148,7 +148,9 @@ class Redemptions:
             raise Conflict("wrong tenant")
         # Even a retry of a committed attempt reports a mismatch if the document changed.
         exact=(order.marker==row["marker"] and order.financial()==row["plan"]["after"]
-               and not order.snapshot.cancelled and not order.snapshot.paid_minor and not order.snapshot.shipped_minor)
+               and not order.snapshot.cancelled
+               and (row["state"]=="committed" or
+                    (not order.snapshot.paid_minor and not order.snapshot.shipped_minor)))
         if not exact:
             return dict(**self.public(row),verified=False,reason="saved_order_mismatch")
         with self.ledger.transaction(tenant) as conn:

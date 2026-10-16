@@ -250,7 +250,12 @@ class RemapClient:
             raise InvalidDocument("unsupported entity")
         identity=uuid(identity)
         data=self._get("/entity/"+kind+"/"+identity)
-        if uuid(data.get("id"))!=identity or uuid(data.get("accountId"))!=self.tenant:
+        if uuid(data.get("id"))!=identity:
+            raise InvalidDocument("entity identity mismatch")
+        # Currency responses have no accountId in the official REMAP contract.
+        # The account-scoped credential and locally constructed resource select it.
+        # If a provider does return accountId, it must still match this tenant.
+        if (kind!="currency" or "accountId" in data) and uuid(data.get("accountId"))!=self.tenant:
             raise InvalidDocument("entity does not belong to expected account")
         if data.get("meta",{}).get("type")!=kind:
             raise InvalidDocument("entity type mismatch")
