@@ -1,0 +1,49 @@
+:root{font-family:"Segoe UI",system-ui,-apple-system,sans-serif;font-size:14px;line-height:1.5;color:#243044;background:#f5f6f8;color-scheme:light;font-synthesis:none;--primary:#2463cf;--muted:#647084;--border:#dfe3e8;--nav:196px}
+*{box-sizing:border-box}body{margin:0}main{width:100%;max-width:1360px;margin:auto;padding:24px}
+h1{font-size:23px;line-height:1.25;letter-spacing:-.35px;margin:0 0 5px;font-weight:600}h2{font-size:16px;line-height:1.4;margin:0 0 10px;font-weight:600}h3{font-size:14px}p{margin:10px 0}
+header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}header>div{min-width:0}
+a{color:var(--primary);text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
+button,input,textarea{font:inherit}button,.button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:7px 12px;border:1px solid #cdd3dc;border-radius:5px;background:#fff;color:#344054;cursor:pointer;font-size:13px;font-weight:500;line-height:1.4}
+button:hover:not(:disabled),.button:hover{background:#f3f5f8;border-color:#aeb8c6;text-decoration:none}button:disabled{opacity:.5;cursor:not-allowed}
+button.primary,.button.primary{background:var(--primary);border-color:var(--primary);color:#fff}button.primary:hover:not(:disabled),.button.primary:hover{background:#1d52b0}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #b8cff7;outline-offset:2px}button[aria-pressed=true]{background:#edf3ff;color:#204f9b;border-color:#bfcfeb}
+input,textarea{min-width:0;max-width:100%;border:1px solid #cdd3dc;border-radius:5px;padding:9px 11px;background:#fff}
+textarea{width:100%;resize:vertical}input[type=checkbox]{accent-color:var(--primary)}
+label{display:block;margin:16px 0 7px;font-weight:500}nav,.actions{display:flex;flex-wrap:wrap;gap:8px}main nav{margin:18px 0}
+.hint,.identifier,.muted{color:var(--muted);font-size:12px}.identifier{overflow-wrap:anywhere}.badge{color:#18703d;font-weight:500}
+.case{background:#fff;border:1px solid var(--border);border-radius:6px;padding:18px;margin:12px 0;overflow-wrap:anywhere}
+.error{color:#a63228;background:#fff4f2;border:1px solid #f4d0cb;padding:10px 12px;border-radius:5px}.error:empty{display:none}
+#status{font-size:12px;color:var(--muted);margin:0 0 16px}#status:empty{display:none}#status.error{color:#a63228}
+#workspace>section:not([data-screen]){margin-top:16px;padding:20px;background:#fff;border:1px solid var(--border);border-radius:6px}
+.subtitle{font-size:13px;color:var(--muted);margin:0}.eyebrow{font-size:11px;color:var(--muted);margin:0 0 7px}
+dialog{width:min(600px,calc(100% - 24px));max-height:calc(100dvh - 32px);overflow:auto;overscroll-behavior:contain;padding:24px;border:1px solid #d4dae2;border-radius:8px;background:#fff;color:inherit;box-shadow:0 16px 50px #17212f26;scrollbar-gutter:stable}
+dialog::backdrop{background:#17212f66}dialog .actions{justify-content:flex-end;margin-top:20px}
+html:has(body.with-shell){height:100%;overflow:hidden}body.with-shell{height:100vh;height:100dvh;overflow:hidden}
+.app-content{position:fixed;inset:0 0 0 var(--nav);overflow:auto;overscroll-behavior-y:contain;overflow-anchor:none;scrollbar-gutter:stable;-webkit-overflow-scrolling:touch}
+.app-content>main{min-height:100%}.app-content:focus-visible{outline:2px solid #b8cff7;outline-offset:-2px}
+.app-sidebar{position:fixed;inset:0 auto 0 0;z-index:30;width:var(--nav);overflow:auto;display:flex;flex-direction:column;gap:0;padding:18px 10px;background:#fff;border-right:1px solid var(--border)}
+.app-brand{display:flex;align-items:center;gap:9px;min-height:30px;margin:0 18px 20px 7px;color:#253447;font-size:18px;font-weight:600;white-space:nowrap}.app-brand:hover{text-decoration:none}
+.brand-mark{display:grid;place-items:center;flex-shrink:0;width:27px;height:28px;border-radius:4px;background:var(--primary);color:#fff;font-size:19px;font-weight:600}
+.nav-caption,.sidebar-footer{display:none}
+.app-navigation{display:flex;flex-direction:column;gap:3px;margin:0}.app-navigation a{display:flex;align-items:center;gap:9px;min-height:39px;padding:9px;border-radius:4px;color:#536175;font-size:12px;font-weight:400}
+.app-navigation a:hover{background:#f4f6f9;text-decoration:none}.app-navigation a[aria-current=page]{background:#edf3fd;color:#204f9b;font-weight:600}
+.app-navigation span{min-width:0;overflow-wrap:anywhere}.app-navigation svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex-shrink:0}
+.sidebar-toggle{position:absolute;right:6px;top:20px;width:22px;min-height:24px;padding:0;border:0;background:transparent;color:#647084;font-size:19px}
+.compact-menu{--nav:64px}.compact-menu .app-sidebar{padding:18px 7px}.compact-menu .app-brand{margin:0;padding:0 5px}
+.compact-menu .app-brand strong,.compact-menu .app-navigation span{display:none}.compact-menu .sidebar-toggle{top:54px;right:21px}
+.compact-menu .app-navigation{margin-top:35px}.compact-menu .app-navigation a{justify-content:center;padding:10px}
+.with-shell header .brand{display:none}.with-shell header>a{display:none}.with-shell header>a[href="/returns"]{display:inline-flex;font-size:12px}
+[hidden]{display:none!important}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+@media(max-width:700px){
+ body.with-shell{display:flex;flex-direction:column}
+ .app-sidebar,.compact-menu .app-sidebar{position:static;width:100%;flex:none;max-height:40dvh;padding:10px 12px 0;border-right:0;border-bottom:1px solid var(--border)}
+ .app-brand,.compact-menu .app-brand{margin:0;padding:0 3px;font-size:17px}
+ .compact-menu .app-brand strong,.compact-menu .app-navigation span{display:initial}
+ .app-navigation,.compact-menu .app-navigation{flex-direction:row;flex-wrap:nowrap;overflow:auto;gap:2px;margin:8px 0 0;padding-bottom:6px}
+ .app-navigation a,.compact-menu .app-navigation a{flex-shrink:0;white-space:nowrap;padding:8px 9px;min-height:36px}
+ .sidebar-toggle{display:none}
+ .app-content{position:relative;inset:auto;flex:1;min-height:0;width:100%}
+ main{padding:16px}h1{font-size:21px}.actions button{flex:1}
+ dialog{padding:18px}#workspace>section:not([data-screen]){padding:16px}
+}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}

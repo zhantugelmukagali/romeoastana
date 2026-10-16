@@ -1,0 +1,26 @@
+# Used together with compose.release.yaml and --env-file .env.release.
+services:
+  web:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./deploy/Caddyfile.release:/etc/caddy/Caddyfile:ro
+      - existing_caddydata:/data
+      - existing_caddyconfig:/config
+    depends_on:
+      app:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+volumes:
+  existing_caddydata:
+    external: true
+    name: romeo-customer_caddydata
+  existing_caddyconfig:
+    external: true
+    name: romeo-customer_caddyconfig

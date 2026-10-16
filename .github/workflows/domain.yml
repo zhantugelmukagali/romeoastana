@@ -1,0 +1,115 @@
+name: Domain checks
+on:
+  push:
+    branches: [main, bonuspro/rebuild]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify Python runtime
+        run: python3 -c "import sys; assert sys.version_info >= (3, 12)"
+      - name: Compile application, migration and operational scripts
+        run: python3 -m compileall -q backend migrations scripts deploy
+      - name: Run financial invariant tests
+        env:
+          PYTHONPATH: backend
+        run: python3 -m unittest discover -s tests/unit -v
+  postgres:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:17.6-alpine
+        env:
+          POSTGRES_DB: bonuspro_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-admin
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d bonuspro_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PYTHONPATH: backend
+      TEST_ADMIN_DSN: postgresql://postgres:ci-only-admin@localhost:5432/bonuspro_ci
+      TEST_APP_DSN: postgresql://bonuspro_ci_app:ci-only-ephemeral@localhost:5432/bonuspro_ci
+      TEST_LIFECYCLE_DSN: postgresql://bonuspro_ci_lifecycle:ci-only-lifecycle@localhost:5432/bonuspro_ci
+      DATABASE_MIGRATION_URL: postgresql+psycopg://postgres:ci-only-admin@localhost:5432/bonuspro_ci
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install database test dependencies
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install -r requirements-server.lock
+          .venv/bin/pip check
+          .venv/bin/pip freeze
+      - name: Provision isolated CI roles
+        run: .venv/bin/python tests/integration/provision_ci.py
+      - name: Apply versioned migration twice
+        run: |
+          .venv/bin/alembic upgrade head
+          .venv/bin/alembic upgrade head
+      - name: Test authentication and provider contracts
+        run: .venv/bin/python -m unittest discover -s tests/server -v
+      - name: Test ledger isolation, atomicity and concurrency
+        run: .venv/bin/python -m unittest discover -s tests/integration -p 'test_*.py' -v
+
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install browser test runner
+        run: |
+          python3 -m venv .browser
+          .browser/bin/pip install playwright==1.55.0
+          .browser/bin/playwright install --with-deps chromium
+      - name: Test administrative return UX
+        run: .browser/bin/python -m unittest discover -s tests/browser -v
+      - name: Save cabinet screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bonuspro-interface
+          path: test-results/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Build non-root application image
+        run: |
+          python3 scripts/ci_restrict_build_context.py
+          docker build --pull -t bonuspro:ci .
+      - name: Test real deployment roles, migrations and HTTP readiness
+        run: python3 scripts/ci_container_smoke.py
+  dependencies:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Audit pinned Python dependencies
+        run: |
+          python3 -m venv .audit
+          .audit/bin/pip install pip-audit==2.9.0
+          .audit/bin/pip-audit --disable-pip --no-deps -r requirements-server.lock

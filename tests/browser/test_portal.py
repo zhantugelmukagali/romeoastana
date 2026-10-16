@@ -1,0 +1,223 @@
+"""Chromium cabinet UX with synthetic host and API, never live financial acceptance."""
+import base64,json,os,unittest
+from pathlib import Path
+from datetime import datetime,timezone
+from urllib.parse import urlsplit,parse_qs
+from playwright.sync_api import sync_playwright
+
+ROOT=Path(__file__).resolve().parents[2]
+CUSTOMER="11111111-1111-4111-8111-111111111111"
+TX="22222222-2222-4222-8222-222222222222"
+NAME="Алия <img src=x onerror=alert(1)>"
+HOST="""<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%;overflow:hidden}iframe{border:0;width:100%;height:100vh}</style>
+<iframe scrolling="no" title="БонусПро" src="https://widget.test/admin"></iframe><script>
+addEventListener('message',e=>{if(e.data?.name==='UserContextRequest')
+e.source.postMessage({name:'UserContextResponse',correlationId:e.data.messageId,token:'synthetic'},'https://widget.test')});
+</script>"""
+
+class PortalBrowserTests(unittest.TestCase):
+    def setUp(self):
+        self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
+        self.context=self.browser.new_context(viewport={"width":1440,"height":1050})
+        self.page=self.context.new_page();self.context.route("**/*",self.route)
+        self.sessions=0;self.role="admin";self.state="Activated";self.empty=False;self.balance="184500";self.processing=True;self.calls=[]
+    def tearDown(self):
+        self.context.close();self.browser.close();self.runtime.stop()
+    def route(self,route):
+        url=route.request.url
+        if url.startswith("https://online.moysklad.ru/"):return route.fulfill(content_type="text/html; charset=utf-8",body=HOST)
+        if not url.startswith("https://widget.test/"):return route.abort()
+        path=urlsplit(url).path;query=parse_qs(urlsplit(url).query)
+        if path.startswith("/api/"):
+            self.calls.append(path)
+            if path=="/api/session":
+                self.sessions+=1;return route.fulfill(json={"token":"synthetic-session"})
+            if path=="/api/me":return route.fulfill(json={"role":self.role})
+            if path=="/api/admin/overview":return route.fulfill(json={
+                "customers":0 if self.empty else 124,"balance":"0" if self.empty else self.balance,
+                "reserved":"0" if self.empty else "1200","credited":"0" if self.empty else "296700",
+                "redeemed":"0" if self.empty else "112200","attention":0,"state":self.state,
+                "rules":{"earn_bps":500,"spend_bps":3000,"version":1},
+                "processing":{"heartbeat_at":datetime.now(timezone.utc).isoformat(),"last_error":None} if self.processing else None,"generated_at":"2026-10-15T05:00:00Z"})
+            if path=="/api/admin/customers":return route.fulfill(json={"items":[] if self.empty else [
+                {"id":CUSTOMER,"name":NAME,"phone":"+7 700 111 22 33","balance":1500,"available":1200,"reserved":300,"enrolled":True}],"next_offset":None})
+            if path=="/api/admin/customers/"+CUSTOMER:return route.fulfill(json={
+                "id":CUSTOMER,"name":NAME,"phone":"+7 700 111 22 33","balance":1500,"available":1200,"reserved":300,"enrolled":True})
+            if path=="/api/admin/activity":return route.fulfill(json={"items":[] if self.empty else [
+                {"id":TX,"kind":"credit","points":1500,"created_at":"2026-10-15T04:00:00Z","customer_id":CUSTOMER,"order_id":None}],"next_cursor":None})
+            return route.fulfill(status=404,json={"error":"missing fixture"})
+        file=ROOT/"web"/("index.html" if path=="/admin" else path.lstrip("/"))
+        if file.is_file():return route.fulfill(content_type={".html":"text/html; charset=utf-8",".css":"text/css",".js":"text/javascript"}[file.suffix],body=file.read_text())
+        return route.fulfill(status=404)
+    def open(self):
+        self.page.goto("https://online.moysklad.ru/test-host")
+        self.frame=self.page.frame_locator("iframe")
+        self.frame.get_by_text("Программа активна",exact=True).wait_for() if self.state=="Activated" else self.frame.get_by_text("Требуется настройка",exact=True).wait_for()
+    def shot(self,name):
+        if os.environ.get("GITHUB_ACTIONS")=="true":
+            path=ROOT/"test-results";path.mkdir(exist_ok=True)
+            self.page.evaluate("window.scrollTo(0,0)")
+            self.page.frames[1].evaluate("document.querySelector('.app-content').scrollTop=0")
+            self.page.screenshot(path=str(path/name),full_page=True)
+            label="MOBILE" if "mobile" in name else "DESKTOP"
+            print("BP_VISUAL_"+label+"="+base64.b64encode(self.page.screenshot(type="jpeg",quality=60,full_page=True)).decode(),flush=True)
+    def test_real_numbers_navigation_and_desktop_screenshot(self):
+        self.open()
+        self.assertEqual(self.frame.locator("#total-balance").inner_text().replace("\u00a0","").replace("\u202f",""),"184500")
+        self.assertEqual(self.frame.locator("#rule-earn").inner_text(),"5%")
+        self.assertEqual(self.frame.get_by_role("navigation",name="Основная навигация").count(),1)
+        self.frame.get_by_text("Начисление",exact=True).wait_for()
+        self.assertTrue(self.page.frames[1].evaluate("getComputedStyle(document.querySelector(\'.panel\')).backgroundColor===\'rgb(255, 255, 255)\'"))
+        self.shot("bonuspro-overview-desktop.png")
+        self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+        self.frame.get_by_role("heading",name="Клиенты и бонусы",exact=True).wait_for()
+        self.frame.get_by_text(NAME,exact=True).wait_for()
+        self.assertEqual(self.sessions,1)
+    def test_customer_search_balance_history_and_untrusted_name_are_safe(self):
+        self.open();self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+        self.frame.get_by_label("Имя или телефон клиента").fill("700")
+        self.frame.get_by_role("button",name="Найти",exact=True).click()
+        self.frame.get_by_text("Результаты поиска: 700",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Открыть",exact=True).click()
+        self.frame.get_by_role("heading",name=NAME,exact=True).wait_for()
+        self.assertEqual(self.frame.locator("#customer-available").inner_text().replace("\u00a0","").replace("\u202f",""),"1200")
+        self.frame.locator("#customer-history").get_by_text("Начисление",exact=True).wait_for()
+        self.assertEqual(self.frame.locator("img").count(),0)
+        self.frame.get_by_role("button",name="Закрыть карточку клиента",exact=True).click()
+        self.assertFalse(self.frame.get_by_role("dialog").is_visible())
+    def test_setup_and_empty_state_do_not_invent_financial_activity(self):
+        self.state="SettingsRequired";self.empty=True;self.open()
+        self.frame.get_by_role("heading",name="Настройте программу перед первой продажей",exact=True).wait_for()
+        self.frame.get_by_text("Операций пока нет",exact=True).wait_for()
+        self.assertEqual(self.frame.locator("#total-balance").inner_text(),"0")
+        self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+        self.frame.get_by_text("Клиенты не найдены",exact=True).wait_for()
+        self.frame.get_by_label("Имя или телефон клиента").fill("a")
+        self.frame.get_by_role("button",name="Найти",exact=True).click()
+        self.frame.get_by_text("Введите минимум два символа.",exact=True).wait_for()
+    def test_mobile_layout_and_order_widget_help(self):
+        self.page.set_viewport_size({"width":390,"height":844});self.open()
+        self.frame.get_by_role("button",name="Как пользоваться",exact=True).click()
+        self.frame.get_by_role("heading",name="Бонусы в заказе покупателя",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Закрыть инструкцию",exact=True).click()
+        self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+        self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)
+        self.shot("bonuspro-overview-mobile.png")
+    def test_activation_without_worker_does_not_claim_automated_processing(self):
+        self.processing=False;self.open()
+        self.frame.get_by_text("Проверьте автоматическое начисление",exact=True).wait_for()
+        self.assertTrue(self.frame.get_by_role("link",name="Проверить обработку",exact=True).is_visible())
+
+    def test_large_summary_totals_keep_decimal_precision(self):
+        self.balance="9007199254740993";self.open()
+        actual="".join(self.frame.locator("#total-balance").inner_text().split())
+        self.assertEqual(actual,self.balance)
+
+    def test_reconnection_clears_previous_financial_values_before_new_response(self):
+        self.open()
+        self.frame.get_by_text("Начисление",exact=True).wait_for()
+        attempts=[]
+        def renewed(route):
+            attempts.append(route)
+            if len(attempts)==1:return route.fulfill(status=401,json={"error":"expired"})
+            # Keep the replacement overview pending to inspect its loading state.
+        self.context.route("**/api/admin/overview",renewed)
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.get_by_role("button",name="Повторить подключение",exact=True).wait_for()
+        with self.page.expect_request("**/api/admin/overview"):
+            self.frame.get_by_role("button",name="Повторить подключение",exact=True).click()
+        self.frame.locator("#workspace").wait_for(state="visible")
+        self.assertEqual(self.frame.locator("#total-balance").inner_text(),"—")
+        self.assertEqual(self.frame.locator("#recent-activity").inner_text(),"")
+        self.assertEqual(len(attempts),2)
+        self.route(attempts[-1])
+        self.frame.get_by_text("Программа активна",exact=True).wait_for()
+
+    def test_worker_role_cannot_load_customer_directory_or_metrics(self):
+        self.role="worker"
+        self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
+        self.frame.get_by_text("Кабинет доступен администратору МойСклад. Сотрудники работают с бонусами в виджете заказа.",exact=True).wait_for()
+        self.assertFalse(self.frame.locator("#workspace").is_visible())
+        self.assertNotIn("/api/admin/overview",self.calls)
+        self.assertNotIn("/api/admin/customers",self.calls)
+
+
+    def assert_embedded_scroll(self,width,height):
+        self.page.set_viewport_size({"width":width,"height":height});self.open()
+        content=self.frame.get_by_role("region",name="Содержимое БонусПро",exact=True)
+        metrics=content.evaluate("(el)=>({height:el.clientHeight,full:el.scrollHeight,top:el.scrollTop})")
+        self.assertGreater(metrics["full"],metrics["height"])
+        self.assertEqual(metrics["top"],0)
+        content.hover()
+        self.page.mouse.wheel(0,2000)
+        self.page.wait_for_function("document.querySelector('iframe').contentWindow !== null")
+        self.page.wait_for_timeout(250)
+        self.assertGreater(content.evaluate("(el)=>el.scrollTop"),0)
+        content.focus();self.page.keyboard.press("Control+End")
+        self.page.wait_for_timeout(150)
+        self.assertTrue(self.frame.get_by_role("button",name="Как пользоваться",exact=True).is_visible())
+        self.assertLessEqual(content.evaluate("(el)=>el.scrollHeight-el.clientHeight-el.scrollTop"),2)
+        self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+        # The host page itself never moves, including with scrolling=no.
+        self.assertEqual(self.page.evaluate("scrollY"),0)
+        self.frame.get_by_role("button",name="Как пользоваться",exact=True).click()
+        self.frame.get_by_role("heading",name="Бонусы в заказе покупателя",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Закрыть инструкцию",exact=True).click()
+        self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+        self.page.frames[1].wait_for_function("document.querySelector('.app-content').scrollTop===0")
+
+    def test_scroll_inside_height_limited_host_with_wheel_and_keyboard(self):
+        self.assert_embedded_scroll(1440,480)
+
+    def test_scroll_inside_narrow_height_limited_host(self):
+        self.assert_embedded_scroll(390,600)
+
+
+    def test_compact_header_shows_metrics_early_and_menu_can_free_workspace(self):
+        self.page.set_viewport_size({"width":1280,"height":650});self.open()
+        self.assertEqual(self.frame.locator(".app-topbar").count(),0)
+        self.assertLess(self.frame.locator(".kpi-grid").bounding_box()["y"],200)
+        region=self.frame.get_by_role("region",name="Содержимое БонусПро",exact=True)
+        before=region.bounding_box()["width"]
+        self.frame.get_by_role("button",name="Свернуть меню",exact=True).click()
+        self.assertGreater(region.bounding_box()["width"],before+100)
+        self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+        self.frame.get_by_role("heading",name="Клиенты и бонусы",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Развернуть меню",exact=True).click()
+        self.assertEqual(self.sessions,1)
+
+    def test_find_customer_action_and_keyboard_shortcut_focus_search(self):
+        self.open()
+        self.frame.get_by_role("button",name="Найти клиента",exact=True).click()
+        field=self.frame.get_by_label("Имя или телефон клиента")
+        self.frame.get_by_role("heading",name="Клиенты и бонусы",exact=True).wait_for()
+        self.page.frames[1].wait_for_function("document.activeElement.id==='customer-search'")
+        field.fill("Алия");field.press("/")
+        self.assertEqual(field.input_value(),"Алия/")
+        self.frame.get_by_role("link",name="Обзор",exact=True).click()
+        self.frame.get_by_role("heading",name="Обзор программы",exact=True).wait_for()
+        self.frame.get_by_role("region",name="Содержимое БонусПро",exact=True).focus()
+        self.page.keyboard.press("/")
+        self.page.frames[1].wait_for_function("document.activeElement.id==='customer-search'")
+        self.assertEqual(self.sessions,1)
+
+
+    def test_layout_at_iframe_breakpoints_with_long_customer_data(self):
+        self.open()
+        for width in (320,360,390,700,701,768,950,1024,1440,1920):
+            with self.subTest(width=width):
+                self.page.set_viewport_size({"width":width,"height":720})
+                self.page.frames[1].evaluate("()=>new Promise(requestAnimationFrame)")
+                self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+                self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+                self.frame.get_by_text(NAME,exact=True).wait_for()
+                self.assertTrue(self.page.frames[1].evaluate("""()=>{
+                    const main=document.querySelector('main'),row=document.querySelector('.customer-row:not(.table-heading)');
+                    const box=main.getBoundingClientRect();
+                    return main.scrollWidth<=main.clientWidth &&
+                      [...row.children].every(el=>{const r=el.getBoundingClientRect();return r.left>=box.left&&r.right<=box.right;});
+                }"""))
+                self.frame.get_by_role("link",name="Обзор",exact=True).click()
+                self.frame.get_by_role("heading",name="Обзор программы",exact=True).wait_for()
+
+if __name__=="__main__":unittest.main()

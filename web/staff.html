@@ -1,0 +1,11 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>БонусПро · Сотрудники</title><link rel="stylesheet" href="/assets/app.css"><script type="module" src="/assets/staff.js"></script><script type="module" src="/assets/shell.js"></script></head>
+<body><main><header><div><span class="brand">БонусПро</span><h1>Сотрудники</h1></div><a href="/settings">Настройки</a></header>
+<p id="status" role="status" aria-live="polite">Подключаемся к МойСклад…</p><button id="retry" hidden>Повторить подключение</button>
+<section id="workspace" hidden><p>Сотрудник появится здесь после первого открытия БонусПро в МойСклад.</p>
+<p>Разрешение даёт доступ к балансам и списанию бонусов по заказам всего этого аккаунта. Настройки, перенос остатков и разбор возвратов остаются у администратора. Права на сохранение самого заказа проверяет МойСклад.</p>
+<button id="refresh">Обновить</button><div id="people"></div></section>
+<dialog id="decision"><form id="decision-form"><h2 id="decision-title"></h2><p id="employee"></p>
+<label for="reason">Причина изменения доступа</label><textarea id="reason" required maxlength="500" rows="3"></textarea>
+<p id="error" role="alert"></p><button id="confirm" type="submit">Подтвердить</button><button id="cancel" type="button">Отмена</button>
+</form></dialog></main></body></html>
