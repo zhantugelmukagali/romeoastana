@@ -326,7 +326,12 @@ class WidgetBrowserTests(unittest.TestCase):
                     return document.documentElement.scrollWidth<=innerWidth &&
                       [...document.querySelectorAll('.controls>*')].every(el=>{const r=el.getBoundingClientRect();return r.left>=box.left&&r.right<=box.right;});
                 }"""))
-        self.assertLessEqual(self.page.frames[1].evaluate("document.body.getBoundingClientRect().height"),380)
+        metrics=self.page.frames[1].evaluate("""()=>{
+            const main=document.querySelector('main').getBoundingClientRect();
+            return {height:main.height,applyBottom:document.querySelector('#apply').getBoundingClientRect().bottom,width:innerWidth};
+        }""")
+        print("BP_WIDGET_LAYOUT="+json.dumps(metrics),flush=True)
+        self.assertLessEqual(metrics["height"],380)
         self.assertEqual(self.prepares,[])
 
     def test_slow_order_read_does_not_fail_at_the_old_fifteen_second_timeout(self):
@@ -355,7 +360,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertFalse(self.frame.locator("#spend-form").is_visible())
         self.assertFalse(self.frame.locator("#apply").is_visible())
         self.assertFalse(self.frame.locator("#balances").is_visible())
-        self.assertLessEqual(self.page.frames[1].evaluate("document.body.getBoundingClientRect().height"),260)
+        self.assertLessEqual(self.page.frames[1].evaluate("document.body.getBoundingClientRect().height"),300)
         self.assertEqual(self.prepares,[])
         if os.environ.get("GITHUB_ACTIONS")=="true":
             root=ROOT/"test-results";root.mkdir(exist_ok=True)
@@ -395,6 +400,23 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertFalse(self.frame.locator("#summary").is_visible())
         self.assertFalse(self.frame.locator("#apply").is_visible())
 
+
+    def test_primary_action_fits_the_real_widget_height_on_narrow_screens(self):
+        self.open()
+        for width in (320,360,390,520):
+            with self.subTest(width=width):
+                self.page.set_viewport_size({"width":width,"height":720})
+                self.page.evaluate("document.querySelector('iframe').style.height='380px'")
+                self.page.frames[1].evaluate("()=>new Promise(requestAnimationFrame)")
+                metrics=self.page.frames[1].evaluate("""()=>{
+                    const rect=document.querySelector('#apply').getBoundingClientRect();
+                    return {bottom:rect.bottom,height:rect.height,width:innerWidth,body:document.body.getBoundingClientRect().height};
+                }""")
+                print("BP_WIDGET_NARROW="+json.dumps(metrics),flush=True)
+                self.assertLessEqual(metrics["bottom"],380)
+                self.assertGreaterEqual(metrics["height"],40)
+                self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+        self.assertEqual(self.prepares,[])
 
     def test_provider_and_operator_access_errors_show_the_right_next_step(self):
         self.order_error=403
