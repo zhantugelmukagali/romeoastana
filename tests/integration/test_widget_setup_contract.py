@@ -15,7 +15,7 @@ class WidgetSetupContractTests(unittest.TestCase):
     def setUp(self):
         self.fx=fixture.ReturnAPITests();self.fx.setUp();self.addCleanup(self.fx.doCleanups)
         self.rows=[];self.calls=[];self.posts=0;self.denied=None;self.lose=False
-        self.block=False;self.entered=Event();self.release=Event()
+        self.block=False;self.entered=Event();self.release=Event();self.echo_query=False
         self.marker=str(uuid4());path="/entity/customerorder/metadata/attributes"
         self.row=dict(id=self.marker,name="БонусПро: операция списания",type="string",required=False,
             meta=dict(href=BASE+path+"/"+self.marker,type="attributemetadata",mediaType="application/json"))
@@ -27,7 +27,7 @@ class WidgetSetupContractTests(unittest.TestCase):
                 if self.block:
                     self.entered.set()
                     if not self.release.wait(5):raise httpx.ReadTimeout("held fixture")
-                return httpx.Response(200,json=dict(meta=dict(href=BASE+path,mediaType="application/json"),rows=list(self.rows)))
+                return httpx.Response(200,json=dict(meta=dict(href=str(request.url) if self.echo_query else BASE+path,mediaType="application/json"),rows=list(self.rows)))
             outer.posts+=1
             self.assertEqual(json.loads(request.content),[dict(name=self.row["name"],type="string",required=False)])
             self.rows=[self.row]
@@ -89,3 +89,14 @@ class WidgetSetupContractTests(unittest.TestCase):
         self.assertEqual(self.client.post(self.path,headers=headers).status_code,403)
         self.assertEqual(self.calls,[])
         self.assertIsNone(self.adapter.binding(self.fx.tenant))
+
+    def test_request_url_echo_in_metadata_allows_setup_and_repeat_without_duplicate_fields(self):
+        self.echo_query=True
+        before=self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)
+        for _ in range(2):
+            response=self.setup_widget()
+            self.assertEqual(response.status_code,200,response.text)
+        self.assertIn("limit=1000",str(self.calls[0].url))
+        self.assertEqual(self.posts,1)
+        self.assertEqual(self.adapter.binding(self.fx.tenant),self.marker)
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),before)
