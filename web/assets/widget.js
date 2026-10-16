@@ -47,7 +47,11 @@ async function api(path,options={}){
     ...(token?{Authorization:"Bearer "+token}:{}),...options.headers},signal:AbortSignal.timeout(55000)});
   if(generation!==epoch)throw new Error("document_changed");
   if(!response.ok){
+    let payload;
+    try{payload=await response.json();}catch{payload=null;}
+    if(generation!==epoch)throw new Error("document_changed");
     const error=new Error("api_error");error.status=response.status;
+    if(["moysklad_permissions_required","operator_access_required"].includes(payload?.error))error.code=payload.error;
     if(response.status===401)token=null;
     throw error;
   }
@@ -58,7 +62,7 @@ async function api(path,options={}){
 function explain(error){
   if(error.message==="host_rejected")return "МойСклад отклонил скидку. Резерв сохранён — нужен администратор.";
   if(error.status===401)return "Сессия истекла. Нажмите «Обновить».";
-  if(error.status===403)return "Нет доступа. Администратор может выдать его в разделе «Сотрудники».";
+  if(error.status===403)return error.code==="moysklad_permissions_required"?"Нет доступа к данным МойСклад. Проверьте подключение решения.":"Нет доступа к бонусам. Обратитесь к администратору.";
   if(error.status===409)return "Заказ или баланс изменился. Обновите данные.";
   if(error.status===422)return "Скидка не рассчитана точно. Проверьте позиции и НДС.";
   return attempt?"Связь прервана. Нажмите «Обновить».":"Не удалось загрузить бонусы. Нажмите «Обновить».";

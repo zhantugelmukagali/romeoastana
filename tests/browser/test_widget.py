@@ -24,7 +24,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1000,"height":800})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
-        self.total_minor=1200000;self.eligible_minor=1000000;self.quote_overrides={};self.order_error=None;self.session_count=0;self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False;self.reject_prepare=None;self.save_during_prepare=False;self.host_error=False
+        self.order_error_code="unavailable";self.total_minor=1200000;self.eligible_minor=1000000;self.quote_overrides={};self.order_error=None;self.session_count=0;self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False;self.reject_prepare=None;self.save_during_prepare=False;self.host_error=False
     def tearDown(self):
         self.context.close();self.browser.close();self.runtime.stop()
     def route(self,route):
@@ -59,7 +59,7 @@ class WidgetBrowserTests(unittest.TestCase):
             return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":1000,
                 "state":"committed" if self.saved else "verifying","verified":self.saved})
         if path.startswith("/api/widget/orders/"):
-            if self.order_error:return route.fulfill(status=self.order_error,json={"error":"unavailable"})
+            if self.order_error:return route.fulfill(status=self.order_error,json={"error":self.order_error_code})
             if self.prepared and path.endswith(ORDER):
                 return route.fulfill(json={"redemption":{"id":"attempt","order_id":ORDER,"points":1000,"state":"verifying"}})
             return route.fulfill(json={"name":"0001","saved_source_hash":"a"*64,"eligible_minor":self.eligible_minor,"total_minor":self.total_minor,
@@ -395,5 +395,21 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertFalse(self.frame.locator("#summary").is_visible())
         self.assertFalse(self.frame.locator("#apply").is_visible())
 
+
+    def test_provider_and_operator_access_errors_show_the_right_next_step(self):
+        self.order_error=403
+        for code,message in (
+            ("moysklad_permissions_required","Нет доступа к данным МойСклад. Проверьте подключение решения."),
+            ("operator_access_required","Нет доступа к бонусам. Обратитесь к администратору."),
+        ):
+            with self.subTest(code=code):
+                self.order_error_code=code
+                self.page.goto("https://online.moysklad.ru/test-host")
+                self.frame=self.page.frame_locator("iframe")
+                self.frame.get_by_text(message,exact=True).wait_for()
+                self.assertFalse(self.frame.locator("#apply").is_visible())
+        self.assertEqual(self.prepares,[])
+
 if __name__=="__main__":unittest.main()
+
 
