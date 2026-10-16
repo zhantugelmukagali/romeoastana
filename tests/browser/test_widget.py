@@ -255,10 +255,10 @@ class WidgetBrowserTests(unittest.TestCase):
     def test_zero_balance_explains_how_to_earn_without_offering_spending(self):
         self.quote_overrides={"quote":{"balance":0,"max_spend_points":0}}
         self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
-        self.frame.get_by_text("Бонусов пока нет",exact=True).wait_for()
+        self.frame.get_by_text("0 бонусов",exact=True).wait_for()
         self.assertFalse(self.frame.locator("#spend-form").is_visible())
         self.assertFalse(self.frame.locator("#apply").is_visible())
-        self.assertFalse(self.frame.locator("#balances").is_visible())
+        self.assertTrue(self.frame.locator("#balances").is_visible())
         self.assertTrue(self.frame.locator("#points").is_disabled())
         self.assertTrue(self.frame.locator("#apply").is_disabled())
         self.assertEqual(self.prepares,[])
@@ -355,11 +355,11 @@ class WidgetBrowserTests(unittest.TestCase):
         self.total_minor=10000000;self.eligible_minor=10000000
         self.page.set_viewport_size({"width":390,"height":700})
         self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
-        self.frame.get_by_text("Бонусов пока нет",exact=True).wait_for()
+        self.frame.get_by_text("0 бонусов",exact=True).wait_for()
         self.frame.get_by_text(re.compile(r"\+5\s?000 бонусов")).wait_for()
         self.assertFalse(self.frame.locator("#spend-form").is_visible())
         self.assertFalse(self.frame.locator("#apply").is_visible())
-        self.assertFalse(self.frame.locator("#balances").is_visible())
+        self.assertTrue(self.frame.locator("#balances").is_visible())
         self.assertLessEqual(self.page.frames[1].evaluate("document.body.getBoundingClientRect().height"),300)
         self.assertEqual(self.prepares,[])
         if os.environ.get("GITHUB_ACTIONS")=="true":
