@@ -1,7 +1,7 @@
-# Customer-order widget — stage 2
+# Customer-order widget
 
 The widget is at /widget, embedded using marketplace/descriptor-widget.xml (v2).
-The previous registration descriptor remains available. This candidate adds own attribute metadata
+The main descriptor declares own attribute metadata
 and customer-order create/edit extension points; changed permissions require a provider installation
 update/reinstallation and real acceptance. It does not enable Loyalty/POS API.
 
@@ -36,10 +36,12 @@ POST /api/admin/widget/setup provisions the dedicated string marker field using 
 and binds its UUID to this tenant. Its name is “БонусПро: операция списания”.
 This is an administrator action; no production metadata was changed by the development tests.
 A timeout during metadata provisioning is resolved by reading the named metadata on the next attempt;
-generic document writes are not exposed by the HTTP client.
+generic caller-controlled document writes are not exposed by the HTTP client.
 
-Installation **Activated** is required to prepare/commit a redemption. Lifecycle installation returns
+Installation **Activated** is required to prepare/commit a redemption. A new installation returns
 SettingsRequired; administrator activation confirms Vendor API status and persists the cutoff (CUTOVER.md).
+Resume may restore Activated from a matching completed administrator approval without moving the cutoff;
+see PROVIDER_CONTRACT.md.
 Do not activate the customer account before actual integration acceptance.
 
 Document endpoints permit administrators and explicitly authorized operators. Permission grants cover
@@ -59,14 +61,16 @@ Arbitrary release of active or ambiguous orders remains unavailable. See RETURN_
 
 Change disables new application until the employee saves; refresh alone does not clear dirty state.
 On a cached Open the old document state is discarded, and late results are ignored using an epoch.
-Host events are accepted only from the actual parent and exact MoySklad origin.
+Host events require the exact MoySklad origin and an approved host window. Both the direct parent
+and the host's sibling GWT frame are supported; unrelated windows and the widget's own frame are rejected.
 
 ## Validation and deployment
 Tests exercise real PostgreSQL transactions and Chromium with synthetic provider/host transports.
 They do not prove the actual MoySklad permissions, schema acceptance, tax rounding, marker merge semantics,
 document editing or competing BonusPlus behavior. These remain explicit acceptance items.
 Schema 0007 adds immutable RLS-protected attempts and marker bindings. Application readiness requires the complete current schema 0013.
-The VPS is still on its previous image/schema: do not run migrations separately from a coordinated image upgrade.
+Verify the live image and schema before deployment. The compatible update helper only supports schema 0013;
+it does not migrate or activate the program. See MOYSKLAD_CONTRACT_AUDIT.md and WIDGET_UX.md.
 
 Official contracts reviewed:
 - https://dev.moysklad.ru/doc/api/vendor/1.0/#vidzhety
