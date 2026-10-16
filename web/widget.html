@@ -3,22 +3,22 @@
 <title>БонусПро — бонусы заказа</title><link rel="stylesheet" href="/assets/widget.css">
 <script type="module" src="/assets/widget.js"></script></head>
 <body><main aria-labelledby="title">
-<header><div class="widget-heading"><span class="heading-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="m4 8 8-4 8 4v9l-8 4-8-4V8Z"/><path d="m4 8 8 4 8-4M12 12v9M8 6l8 4"/></svg></span><h1 id="title">Бонусы</h1><span id="order-label" class="sr-only"></span></div>
+<header><div class="widget-heading"><h1 id="title">Бонусный счёт</h1><span id="order-label"></span></div>
 <button id="refresh" type="button" aria-label="Обновить" title="Обновить бонусы">
-<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17"/></svg>
+<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.5-1L20 9M4 15l2.4 3A7 7 0 0 0 17.9 17"/></svg>
 </button></header>
-<div class="status-wrap"><span class="empty-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 8h16v12H4zM3 5h18v4H3zM12 5v15"/><path d="M12 5H8.5A2.5 2.5 0 1 1 11 2.5L12 5Zm0 0h3.5A2.5 2.5 0 1 0 13 2.5L12 5Z"/></svg></span><p id="status" role="status" aria-live="polite">Откройте заказ в МойСклад.</p></div>
+<div class="status-wrap"><p id="status" role="status" aria-live="polite">Откройте заказ в МойСклад.</p></div>
 <section id="summary" hidden>
-<dl id="balances"><div><dt>Баланс</dt><dd id="balance">—</dd><small id="available-note" hidden></small></div>
+<dl id="balances"><div><dt>Баланс клиента</dt><dd id="balance" aria-live="polite">—</dd><small id="available-note" hidden></small></div>
 <div id="limit-block"><dt>Можно списать</dt><dd id="maximum">—</dd></div></dl>
 <form id="spend-form" hidden><label for="points">Списать бонусы</label>
-<div class="controls"><div class="amount-field"><input id="points" name="points" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="Сумма" aria-describedby="amount-hint" required><span aria-hidden="true">₸</span></div>
+<div class="controls"><div class="amount-field"><input id="points" name="points" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="0" aria-describedby="amount-hint" required></div>
 <button id="maximum-button" type="button">Максимум</button></div>
 <p id="amount-hint" role="status" hidden></p></form>
 <div id="payable-row" class="total"><span>К оплате</span><output id="payable" for="points" aria-live="polite"></output></div>
 <button id="apply" type="submit" form="spend-form" hidden>Применить</button>
-<div id="earning" class="earning" hidden><span class="earn-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m5 15 5-5 4 4 5-8M13 6h6v6"/></svg></span><div><strong id="earn-value"></strong><span>После оплаты и отгрузки</span></div></div>
+<div id="earning" class="earning" hidden><div><span>Начисление</span><strong id="earn-value"></strong></div><p>После оплаты и отгрузки</p></div>
 <details id="conditions"><summary>Условия<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg></summary><div class="conditions-body"><p>1 бонус = 1 ₸. Доставка и услуги не участвуют.</p><p id="basis"></p></div></details>
 </section>
-<section id="pending" hidden aria-live="polite"><span class="pending-mark" aria-hidden="true"><svg class="save-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 3h12l3 3v15H4V3h1Z"/><path d="M8 3v6h8V3M8 21v-8h8v8"/></svg><svg class="done-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 4 4L19 6"/></svg></span><h2 id="pending-title"></h2><p id="pending-text"></p><p id="pending-note"></p><button id="verify" type="button">Проверить сохранение</button></section>
+<section id="pending" hidden aria-live="polite"><h2 id="pending-title"></h2><p id="pending-text"></p><p id="pending-note"></p><button id="verify" type="button">Проверить сохранение</button></section>
 </main></body></html>

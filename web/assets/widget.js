@@ -107,7 +107,7 @@ function renderQuote(value){
   renderBalance("maximum",value.quote.max_spend_points);
   $("limit-block").hidden=!canSpend();
   const empty=value.quote.balance===0;
-  $("balances").hidden=empty;
+  $("balances").hidden=false;
   $("basis").textContent="Товары для расчёта: "+money(value.eligible_minor)+".";
   $("points").max=String(value.quote.max_spend_points);
   const earn=value.quote.potential_earn_points;
@@ -118,7 +118,7 @@ function renderQuote(value){
     !value.can_prepare?"Программа ещё не настроена. Нужен администратор.":
     value.quote.blocked_reason?"Списание приостановлено. Нужен администратор.":
     value.quote.max_spend_points===0?(value.eligible_minor===0?"В заказе только услуги — бонусы не списываются.":
-      empty?"Бонусов пока нет":"Бонусы пока недоступны. Проверьте резервы."):"");
+      empty?"":"Бонусы пока недоступны. Проверьте резервы."):"");
   updatePayable();
 }
 async function refresh(){
