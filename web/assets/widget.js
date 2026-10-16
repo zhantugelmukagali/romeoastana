@@ -124,7 +124,7 @@ function renderQuote(value){
 async function refresh(){
   if(!orderId||busy)return;
   const generation=epoch,id=orderId;busy=true;quote=null;$("summary").hidden=true;$("pending").hidden=true;
-  $("order-label").textContent="";view("loading");status("Загружаем бонусы…");controls();
+  view("loading");status("Загружаем бонусы…");controls();
   try{
     await authenticate(generation);
     if(generation!==epoch)return;
