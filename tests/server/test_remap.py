@@ -119,6 +119,22 @@ class RemapTests(unittest.TestCase):
         self.assertFalse(hasattr(evidence,"eligible_for_earning"))
         self.assertTrue(all(r.method=="GET" for r in self.calls))
 
+
+    def test_missing_entity_is_typed_from_the_fixed_requested_resource_only(self):
+        client=self.client(lambda req:httpx.Response(404,text="private-provider-token-document"))
+        for kind in ("customerorder","paymentin"):
+            with self.subTest(kind=kind),self.assertRaises(EntityMissing) as missing:
+                client.entity(kind,self.order)
+            self.assertEqual(missing.exception.requested_kind,kind)
+            self.assertEqual(missing.exception.requested_id,self.order)
+            self.assertNotIn(self.order,str(missing.exception))
+            self.assertNotIn("private-provider-token-document",str(missing.exception))
+        # A positions collection 404 cannot prove the main order was deleted.
+        with self.assertRaises(EntityMissing) as missing:
+            client.positions("customerorder",self.order)
+        self.assertIsNone(missing.exception.requested_kind)
+        self.assertIsNone(missing.exception.requested_id)
+
 class CurrencyContractTests(unittest.TestCase):
     def client(self,body):
         return RemapClient("synthetic",self.tenant,

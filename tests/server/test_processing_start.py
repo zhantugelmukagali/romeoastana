@@ -4,7 +4,7 @@ from uuid import uuid4
 import sys
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/"deploy"))
-from start_processing import select_tenant,check_image,worker_override,ProcessingFailed,processing_confirmed,wait_for_report
+from start_processing import select_tenant,check_image,worker_override,ProcessingFailed,processing_confirmed,wait_for_report,ensure_worker_override
 
 class ProcessingStartTests(unittest.TestCase):
     def test_only_enabled_selected_accounts_are_started(self):
@@ -50,3 +50,37 @@ class ProcessingStartTests(unittest.TestCase):
         self.assertEqual(wait_for_report(lambda:before,baseline,clock=lambda:moments.pop(0),pause=lambda _:self.fail("expired startup must not wait")),before)
         inactive={**before,"ready":False,"checks":[dict(id="activation",complete=False)]}
         self.assertEqual(wait_for_report(lambda:inactive,baseline,pause=lambda _:self.fail("startup must not activate a program")),inactive)
+
+    def test_only_exact_legacy_managed_override_is_upgraded_and_backed_up(self):
+        import tempfile
+        tenant=str(uuid4());text=worker_override(tenant);legacy=text.replace("start_period: 600s","start_period: 45s")
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"compose.processing.yaml";path.write_text(legacy);path.chmod(0o640)
+            backup=ensure_worker_override(path,tenant)
+            self.assertEqual(path.read_text(),text)
+            self.assertEqual(backup.read_text(),legacy)
+            self.assertEqual(backup.stat().st_mode&0o777,0o600)
+            self.assertEqual(path.stat().st_mode&0o777,0o600)
+            self.assertIsNone(ensure_worker_override(path,tenant))
+            self.assertEqual(len(list(path.parent.glob("*.before-health-*"))),1)
+
+    def test_custom_or_other_tenant_override_is_never_replaced(self):
+        import tempfile
+        tenant=str(uuid4())
+        for text in (worker_override(tenant).replace("interval: 15s","interval: 17s"),
+                     worker_override(str(uuid4())).replace("start_period: 600s","start_period: 45s")):
+            with tempfile.TemporaryDirectory() as directory:
+                path=Path(directory)/"compose.processing.yaml";path.write_text(text)
+                with self.assertRaises(ProcessingFailed):ensure_worker_override(path,tenant)
+                self.assertEqual(path.read_text(),text)
+                self.assertFalse(list(path.parent.glob("*.before-health-*")))
+
+    def test_worker_first_cycle_grace_and_wait_cover_the_bounded_document_graph(self):
+        from unittest.mock import patch
+        import start_processing as processing
+        self.assertIn("start_period: 600s",worker_override(str(uuid4())))
+        with patch.object(processing,"run") as execute:
+            processing.start_worker(["docker","compose"])
+        args,kwargs=execute.call_args
+        self.assertEqual(args[0][-3:],["--wait-timeout","720","worker"])
+        self.assertEqual(kwargs["timeout"],900)

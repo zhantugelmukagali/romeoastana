@@ -6,8 +6,8 @@ from urllib.request import urlopen
 
 class UpdateFailed(RuntimeError):pass
 
-def run(args,*,capture=False):
-    result=subprocess.run(args,check=True,timeout=600,stdout=subprocess.PIPE if capture else None,text=True)
+def run(args,*,capture=False,timeout=600):
+    result=subprocess.run(args,check=True,timeout=timeout,stdout=subprocess.PIPE if capture else None,text=True)
     return result.stdout.strip() if capture else None
 
 def replacement(text,image):

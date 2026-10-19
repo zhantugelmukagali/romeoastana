@@ -34,7 +34,10 @@ class AccessDenied(RemapError):
 
 
 class EntityMissing(RemapError):
-    pass
+    def __init__(self,message="MoySklad entity is missing",*,requested_kind=None,requested_id=None):
+        self.requested_kind=requested_kind
+        self.requested_id=requested_id
+        super().__init__(message)
 
 
 class InvalidDocument(RemapError):
@@ -354,7 +357,12 @@ class RemapClient:
         if kind not in ENTITIES:
             raise InvalidDocument("unsupported entity")
         identity=uuid(identity)
-        data=self._get("/entity/"+kind+"/"+identity)
+        try:
+            data=self._get("/entity/"+kind+"/"+identity)
+        except EntityMissing:
+            # Type only the fixed resource requested here; never trust a provider
+            # message or treat a related-document/positions 404 as the main order.
+            raise EntityMissing(requested_kind=kind,requested_id=identity) from None
         if uuid(data.get("id"))!=identity:
             raise InvalidDocument("entity identity mismatch")
         # Currency responses have no accountId in the official REMAP contract.
