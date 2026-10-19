@@ -727,6 +727,72 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertFalse(self.frame.locator("#apply").is_visible())
         self.assertEqual(self.prepares,[])
 
+
+    def open_integer_price_plan(self,*,lose_prepare=False):
+        # One 99 990 KZT item plus an unchanged zero-cost delivery line.
+        # A two-decimal percentage cannot express exactly 5 000 points here.
+        self.total_minor=9999000;self.eligible_minor=9999000
+        self.quote_overrides={"quote":{"max_spend_points":5000}}
+        positions=[{"id":"line","price":9499000},{"id":"delivery"}]
+        update={"positions":positions,"attributes":[{"id":"marker","value":"proof"}]}
+        def prepare(route):
+            self.prepares.append(route.request.post_data_json)
+            self.prepared=True;self.prepared_points=route.request.post_data_json["points"]
+            if lose_prepare:return route.abort()
+            return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":self.prepared_points,
+                "state":"verifying","recoverable":True,"replayed":False,"update_state":update})
+        def resume(route):
+            self.resumes.append(route.request.post_data_json)
+            return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":self.prepared_points,
+                "state":"verifying","recoverable":True,"replayed":True,"update_state":update})
+        self.context.route("**/api/widget/orders/"+ORDER+"/prepare",prepare)
+        self.context.route("**/api/widget/orders/"+ORDER+"/resume",resume)
+        self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
+        self.frame.locator("#balance").filter(has_text=re.compile(r"5\s?000 бонусов")).wait_for()
+        return update
+
+    def test_integer_minor_price_plan_reaches_host_unchanged_and_requires_saved_verification(self):
+        expected=self.open_integer_price_plan()
+        self.frame.get_by_label("Списать бонусы",exact=True).fill("5000")
+        self.assertEqual("".join(self.frame.locator("#payable").inner_text().split()),"94990₸")
+        self.frame.locator("#apply").click()
+        self.frame.get_by_role("heading",name="Сохраните заказ",exact=True).wait_for()
+        actual=self.page.evaluate("updates[0].updateState")
+        self.assertEqual(actual,expected)
+        self.assertIsInstance(actual["positions"][0]["price"],int)
+        self.assertNotIn("discount",actual["positions"][0])
+        self.assertFalse(self.frame.locator("#pending[data-state=done]").is_visible())
+        self.assertEqual(self.verifies,0)
+        self.saved=True
+        self.page.evaluate("send({name:'Save',messageId:930,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.locator("#pending[data-state=done]").wait_for()
+        self.assertEqual([p["points"] for p in self.prepares],[5000])
+        self.assertEqual(self.verifies,1)
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+
+    def test_lost_integer_price_plan_is_recovered_without_recalculating_or_second_prepare(self):
+        expected=self.open_integer_price_plan(lose_prepare=True)
+        self.frame.get_by_label("Списать бонусы",exact=True).fill("5000")
+        self.frame.locator("#apply").click()
+        self.frame.get_by_text("Обновите данные. Не применяйте бонусы повторно.",exact=True).wait_for()
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.locator("#resume").wait_for()
+        self.assertTrue(self.frame.locator("#resume").is_disabled())
+        self.page.evaluate("send({name:'Save',messageId:931,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.locator("#resume:not([disabled])").wait_for()
+        self.frame.locator("#resume").click()
+        self.frame.get_by_role("heading",name="Сохраните заказ",exact=True).wait_for()
+        self.assertEqual(self.page.evaluate("updates[0].updateState"),expected)
+        self.assertEqual(self.resumes,[{"attempt_id":"attempt","source_hash":self.resume_hash}])
+        self.assertEqual([p["points"] for p in self.prepares],[5000])
+        self.assertFalse(self.frame.locator("#pending[data-state=done]").is_visible())
+        self.saved=True
+        self.page.evaluate("send({name:'Save',messageId:932,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.locator("#pending[data-state=done]").wait_for()
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+        self.assertEqual(len(self.prepares),1)
+
 if __name__=="__main__":unittest.main()
 
 

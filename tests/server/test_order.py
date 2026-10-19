@@ -46,7 +46,7 @@ class OrderTests(unittest.TestCase):
         self.assertEqual(line["discount_bps"],2000)
 
     def test_unrepresentable_amount_rejected_instead_of_rounding_points(self):
-        self.lines[0]["price"]=3000000;self.doc["sum"]=3200000
+        self.lines[0].update(price=10000,quantity=3);self.doc["sum"]=230000
         with self.assertRaises(InvalidDocument):self.read().plan(1)
 
     def test_monetary_flags_and_precision_fail_closed(self):
@@ -130,5 +130,95 @@ class OrderTests(unittest.TestCase):
         plan=self.read().plan(1)
         self.assertEqual(plan["after"]["total_minor"],11150)
         self.assertEqual(plan["update_state"]["positions"],[{"id":self.lines[0]["id"],"discount":10.8}])
+
+    def test_price_fallback_applies_5000_points_to_99990_and_keeps_delivery_and_vat(self):
+        self.lines[0].update(price=9999000,vat=16,vatEnabled=True)
+        self.doc.update(sum=10199000,vatEnabled=True,vatIncluded=True)
+        saved=self.read()
+        plan=saved.plan(5000)
+        self.assertEqual(plan["update_state"]["positions"],
+            [{"id":self.lines[0]["id"],"price":9499000},{"id":self.lines[1]["id"]}])
+        self.assertIs(type(plan["update_state"]["positions"][0]["price"]),int)
+        before={line["id"]:line for line in plan["before"]["lines"]}
+        after={line["id"]:line for line in plan["after"]["lines"]}
+        self.assertEqual(after[self.lines[0]["id"]],{**before[self.lines[0]["id"]],
+            "price":str(Decimal(9499000).normalize())})
+        self.assertEqual(after[self.lines[1]["id"]],before[self.lines[1]["id"]])
+        self.assertEqual(plan["after"]["total_minor"],9699000)
+        self.assertEqual(plan["after"]["total_minor"],sum(
+            replace(line,price=Decimal(9499000).normalize()).amount if line.kind=="product" else line.amount
+            for line in saved.lines))
+        # A real provider read normalizes scientific notation in the same way.
+        self.lines[0]["price"]=9499000
+        self.doc["sum"]=9699000
+        self.assertEqual(self.read().financial(),plan["after"])
+
+    def test_price_fallback_preserves_the_ordinary_discount(self):
+        self.lines[0].update(price=9999000,discount=10)
+        self.doc["sum"]=9199100
+        plan=self.read().plan(5000)
+        self.assertEqual(plan["update_state"]["positions"],
+            [{"id":self.lines[0]["id"],"price":9443444},{"id":self.lines[1]["id"]}])
+        changed=next(line for line in plan["after"]["lines"] if line["kind"]=="product")
+        self.assertEqual(changed["discount_bps"],1000)
+        self.assertEqual(plan["after"]["total_minor"],8699100)
+
+    def test_one_plan_can_mix_percentage_and_integral_price_changes(self):
+        self.lines[0]["price"]=9999000
+        extra={**copy.deepcopy(self.lines[0]),"id":str(uuid4()),"assortment":ref("product"),"price":10000}
+        self.lines.insert(1,extra)
+        self.doc["sum"]=10209000
+        plan=self.read().plan(5000)
+        self.assertEqual(plan["update_state"]["positions"],[
+            {"id":self.lines[0]["id"],"price":9499500},
+            {"id":extra["id"],"discount":5.0},{"id":self.lines[2]["id"]}])
+        self.assertEqual(plan["before"]["total_minor"]-plan["after"]["total_minor"],500000)
+
+    def test_price_fallback_cannot_pool_distinct_original_return_groups(self):
+        product=ref("product")
+        self.lines=[dict(id=str(uuid4()),assortment=product,price=price,quantity=1,discount=0,vat=0)
+                    for price in (1000000,1000000,1000000,1000000,1000001,1000001)]
+        self.doc["sum"]=6000002
+        with self.assertRaises(InvalidDocument) as error:self.read().plan(2)
+        self.assertEqual(error.exception.reason,"discount_not_representable")
+
+    def test_percentage_plan_cannot_pool_different_original_discounts_on_full_redemption(self):
+        product=ref("product")
+        self.lines=[dict(id=str(uuid4()),assortment=product,price=10000,
+                        quantity=1,discount=discount,vat=0) for discount in (0,10)]
+        self.doc["sum"]=19000
+        # Both rows would be saved at 100% off, making a one-unit return
+        # ambiguous between the original 100-point and 90-point allocations.
+        with self.assertRaises(InvalidDocument) as error:self.read().plan(190)
+        self.assertEqual(error.exception.reason,"discount_not_representable")
+
+    def test_plans_match_exhaustive_integral_price_and_percentage_representations(self):
+        base=self.read()
+        for price in (10001,11111,19999):
+            for quantity in (1,3,7):
+                for ordinary_bps in (0,1000,2500):
+                    line=replace(base.lines[0],price=Decimal(price).normalize(),
+                        quantity=Decimal(quantity),discount_bps=ordinary_bps)
+                    order=replace(base,lines=(line,),snapshot=replace(base.snapshot,
+                        total_minor=line.amount,eligible_minor=line.amount))
+                    percentages={replace(line,discount_bps=bps).amount for bps in range(ordinary_bps,10001)}
+                    integral_prices={replace(line,price=Decimal(value).normalize()).amount for value in range(price+1)}
+                    for points in (1,2,7):
+                        with self.subTest(price=price,quantity=quantity,ordinary_bps=ordinary_bps,points=points):
+                            target=line.amount-points*100
+                            if target not in percentages|integral_prices:
+                                with self.assertRaises(InvalidDocument):order.plan(points)
+                                continue
+                            plan=order.plan(points)
+                            record=plan["after"]["lines"][0]
+                            changed=replace(line,price=Decimal(record["price"]),discount_bps=record["discount_bps"])
+                            self.assertEqual(changed.amount,target)
+                            self.assertEqual(plan["after"]["total_minor"],target)
+                            self.assertLessEqual(changed.price,line.price)
+                            self.assertEqual(changed.quantity,line.quantity)
+                            if changed.price!=line.price:
+                                self.assertEqual(changed.discount_bps,line.discount_bps)
+                                self.assertEqual(changed.price,changed.price.to_integral_value())
+                                self.assertIs(type(plan["update_state"]["positions"][0]["price"]),int)
 
 if __name__=="__main__":unittest.main()

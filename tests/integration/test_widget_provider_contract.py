@@ -203,8 +203,8 @@ class WidgetProviderContractTests(unittest.TestCase):
     def test_unrepresentable_amount_has_no_reservation_and_identifies_prepare_failure(self):
         from decimal import Decimal
         saved=self.fx.saved
-        self.fx.saved=replace(saved,lines=(replace(saved.lines[0],price=Decimal(3000000)),saved.lines[1]),
-            snapshot=replace(saved.snapshot,total_minor=3200000,eligible_minor=3000000))
+        self.fx.saved=replace(saved,lines=(replace(saved.lines[0],price=Decimal(10000),quantity=Decimal(3)),saved.lines[1]),
+            snapshot=replace(saved.snapshot,total_minor=230000,eligible_minor=30000))
         quote=self.client.get(self.path,headers=self.headers)
         self.assertEqual(quote.status_code,200,quote.text)
         rejected=self.client.post(self.path+"/prepare",headers=self.headers,json=self.request_body(quote.json(),1))
