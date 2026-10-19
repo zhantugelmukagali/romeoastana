@@ -277,6 +277,12 @@ class PortalBrowserTests(unittest.TestCase):
         button.click()
         self.frame.get_by_text("Скидка сохранена. Версия 1.",exact=True).wait_for()
         self.assertEqual(self.personal_saves[0],self.personal_saves[1])
+        if os.environ.get("GITHUB_ACTIONS")=="true":
+            self.page.set_viewport_size({"width":1100,"height":900})
+            self.frame.locator("#customer-dialog").evaluate("(dialog)=>dialog.scrollTop=0")
+            directory=ROOT/"test-results";directory.mkdir(exist_ok=True)
+            self.page.screenshot(path=str(directory/"bonuspro-personal-customer.png"))
+            print("PERSONAL_CUSTOMER_SCREENSHOT_DATA="+base64.b64encode(self.page.screenshot(type="jpeg",quality=65)).decode(),flush=True)
         self.personal_conflict=True
         self.frame.get_by_role("button",name="Изменить скидку",exact=True).click()
         self.frame.get_by_label("Персональная скидка, %",exact=True).fill("25")

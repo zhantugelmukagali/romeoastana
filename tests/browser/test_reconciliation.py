@@ -71,7 +71,7 @@ class ReconciliationBrowserTests(unittest.TestCase):
         held,data=self.held_settlements
         with self.page.expect_response("https://widget.test/api/admin/settlements?state=pending") as response:
             held.fulfill(json=data)
-        response.value.finished()
+        response.value.json()
         self.frame.get_by_role("button",name="Обновить",exact=True).wait_for(state="visible")
         self.frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).click()
         self.assertFalse(self.frame.get_by_role("button",name="Выполнить пересчёт",exact=True).is_enabled())

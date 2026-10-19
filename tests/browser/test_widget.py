@@ -907,6 +907,7 @@ class WidgetBrowserTests(unittest.TestCase):
 
     def test_personal_combined_primary_action_fits_widget_at_all_supported_widths(self):
         self.configure_personal(stack=True);self.open_personal()
+        self.frame.get_by_label("Списать бонусы",exact=True).fill("500")
         for width in (320,360,400,520,760):
             with self.subTest(width=width):
                 self.page.set_viewport_size({"width":width,"height":720})
@@ -919,6 +920,11 @@ class WidgetBrowserTests(unittest.TestCase):
                 self.assertLessEqual(metrics["body"],380);self.assertLessEqual(metrics["bottom"],380)
                 self.assertGreaterEqual(metrics["height"],40)
                 self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+                if width==400 and os.environ.get("GITHUB_ACTIONS")=="true":
+                    directory=ROOT/"test-results";directory.mkdir(exist_ok=True)
+                    body=self.frame.locator("body")
+                    body.screenshot(path=str(directory/"bonuspro-personal-widget.png"))
+                    print("PERSONAL_WIDGET_SCREENSHOT_DATA="+base64.b64encode(body.screenshot(type="jpeg",quality=75)).decode(),flush=True)
 
 if __name__=="__main__":unittest.main()
 

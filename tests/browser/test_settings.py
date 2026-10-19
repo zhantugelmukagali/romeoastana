@@ -85,6 +85,7 @@ class SettingsBrowserTests(unittest.TestCase):
         self.page.goto("https://online.moysklad.ru/test-host")
         self.frame=self.page.frame_locator("iframe")
         self.frame.get_by_text("Сохраните первоначальные правила.",exact=True).wait_for()
+        self.frame.locator("#workspace").wait_for(state="visible")
 
     def test_webhook_setup_retry_and_narrow_layout(self):
         self.hooks_drop=True;self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
@@ -250,6 +251,12 @@ class SettingsBrowserTests(unittest.TestCase):
         button.click()
         self.frame.get_by_text("Настройки скидок сохранены. Версия 1.",exact=True).wait_for()
         self.assertEqual(self.policy_saved[0],self.policy_saved[1])
+        if os.environ.get("GITHUB_ACTIONS")=="true":
+            self.page.set_viewport_size({"width":1100,"height":900})
+            self.page.frames[1].evaluate("document.querySelector('.app-content').scrollTop=0")
+            directory=ROOT/"test-results";directory.mkdir(exist_ok=True)
+            self.page.screenshot(path=str(directory/"bonuspro-personal-settings.png"))
+            print("PERSONAL_SETTINGS_SCREENSHOT_DATA="+base64.b64encode(self.page.screenshot(type="jpeg",quality=65)).decode(),flush=True)
         self.policy_conflict=True
         self.frame.get_by_label("Причина изменения персональных скидок",exact=True).fill("Меняем правило")
         self.frame.get_by_label("Если в позиции уже есть скидка",exact=True).select_option("best")
