@@ -24,6 +24,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1000,"height":800})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
+        self.order_error_details={};self.reject_prepare_details={};self.verify_error=None;self.verify_error_details={};self.prepared_points=1000
         self.order_error_code="unavailable";self.total_minor=1200000;self.eligible_minor=1000000;self.quote_overrides={};self.order_error=None;self.session_count=0;self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False;self.reject_prepare=None;self.save_during_prepare=False;self.host_error=False
     def tearDown(self):
         self.context.close();self.browser.close();self.runtime.stop()
@@ -44,24 +45,25 @@ class WidgetBrowserTests(unittest.TestCase):
             return route.fulfill(json={"token":"synthetic-session-"+str(self.session_count)})
         if path.endswith("/prepare"):
             self.prepares.append(route.request.post_data_json)
-            if self.reject_prepare:return route.fulfill(status=self.reject_prepare,json={"error":"operation rejected"})
-            self.prepared=True
+            if self.reject_prepare:return route.fulfill(status=self.reject_prepare,json={"error":"operation rejected",**self.reject_prepare_details})
+            self.prepared=True;self.prepared_points=route.request.post_data_json["points"]
             if self.save_during_prepare:
                 self.saved=True
                 self.page.evaluate("send({name:'Save',messageId:131,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
             if self.lose:return route.abort()
             if self.delay_change:
                 self.page.evaluate("send({name:'Change',messageId:120,objectState:{}})")
-            return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":1000,"state":"verifying",
-                "update_state":{"positions":[{"id":"line","discount":10}],"attributes":[{"id":"marker","value":"proof"}]},"replayed":False})
+            return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":self.prepared_points,"state":"verifying",
+                "update_state":{"positions":[{"id":"line","discount":self.prepared_points/100}],"attributes":[{"id":"marker","value":"proof"}]},"replayed":False})
         if path.endswith("/verify"):
             self.verifies+=1
-            return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":1000,
+            if self.verify_error:return route.fulfill(status=self.verify_error,json={"error":"unsupported_saved_order",**self.verify_error_details})
+            return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":self.prepared_points,
                 "state":"committed" if self.saved else "verifying","verified":self.saved})
         if path.startswith("/api/widget/orders/"):
-            if self.order_error:return route.fulfill(status=self.order_error,json={"error":self.order_error_code})
+            if self.order_error:return route.fulfill(status=self.order_error,json={"error":self.order_error_code,**self.order_error_details})
             if self.prepared and path.endswith(ORDER):
-                return route.fulfill(json={"redemption":{"id":"attempt","order_id":ORDER,"points":1000,"state":"verifying"}})
+                return route.fulfill(json={"redemption":{"id":"attempt","order_id":ORDER,"points":self.prepared_points,"state":"verifying"}})
             return route.fulfill(json={"name":"0001","saved_source_hash":"a"*64,"eligible_minor":self.eligible_minor,"total_minor":self.total_minor,
                 "can_prepare":self.quote_overrides.get("can_prepare",True),"quote":{"balance":5000,"max_spend_points":3000,"blocked_reason":None,"potential_earn_points":500,**self.quote_overrides.get("quote",{})}})
         file=ROOT/"web"/("widget.html" if path=="/widget" else path.lstrip("/"))
@@ -457,6 +459,82 @@ class WidgetBrowserTests(unittest.TestCase):
                 self.frame.get_by_text(message,exact=True).wait_for()
                 self.assertFalse(self.frame.locator("#apply").is_visible())
         self.assertEqual(self.prepares,[])
+
+    def test_initial_422_reports_order_check_instead_of_an_invented_discount_failure(self):
+        self.order_error=422
+        self.order_error_details={"error":"unsupported_saved_order","reason":"saved_order_invalid",
+            "stage":"prepare","trace_id":"ab12cd34ef56","message":"private-customer-document"}
+        self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
+        status=self.frame.locator("#status[data-error=true]");status.wait_for()
+        text=status.inner_text()
+        self.assertIn("Не удалось проверить данные заказа",text)
+        self.assertIn("BP-ab12cd34ef56",text)
+        self.assertNotIn("НДС",text)
+        self.assertNotIn("Скидка не рассчитана",text)
+        self.assertNotIn("private-customer-document",text)
+        self.assertFalse(self.frame.locator("#summary").is_visible())
+        self.assertEqual(self.prepares,[])
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+
+    def test_load_422_preserves_specific_safe_tax_or_customer_action(self):
+        for reason,expected in (("vat_mode_unsupported","Этот режим НДС пока не поддерживается. Нужна проверка администратора."),
+                                ("customer_missing","Выберите покупателя и сохраните заказ.")):
+            with self.subTest(reason=reason):
+                self.order_error=422;self.order_error_details={"reason":reason}
+                self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
+                self.frame.get_by_text(expected,exact=True).wait_for()
+                self.assertFalse(self.frame.locator("#spend-form").is_visible())
+        self.assertEqual(self.prepares,[])
+
+    def test_unrepresentable_amount_preserves_input_and_allows_a_different_amount(self):
+        self.open()
+        self.reject_prepare=422
+        self.reject_prepare_details={"reason":"discount_not_representable","trace_id":"ab12cd34ef56"}
+        self.apply()
+        self.frame.locator("#status[data-error=true]").wait_for()
+        self.assertTrue(self.frame.locator("#summary").is_visible())
+        self.assertFalse(self.frame.locator("#pending").is_visible())
+        self.assertEqual(self.frame.get_by_label("Списать бонусы",exact=True).input_value(),"1000")
+        self.assertFalse(self.frame.locator("#apply").is_disabled())
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+        self.reject_prepare=None
+        self.frame.get_by_label("Списать бонусы",exact=True).fill("500")
+        self.frame.locator("#apply").click()
+        self.frame.locator("#pending").wait_for()
+        self.assertEqual([p["points"] for p in self.prepares],[1000,500])
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+
+    def test_fulfilled_order_keeps_balance_visible_without_spending_controls(self):
+        self.quote_overrides={"quote":{"blocked_reason":"order_fulfilled","max_spend_points":0}}
+        self.open()
+        self.frame.get_by_text("По заказу уже есть оплата или отгрузка. Новое списание недоступно.",exact=True).wait_for()
+        self.assertTrue(self.frame.locator("#balances").is_visible())
+        self.assertFalse(self.frame.locator("#spend-form").is_visible())
+        self.assertFalse(self.frame.locator("#apply").is_visible())
+        self.assertEqual(self.prepares,[])
+
+    def test_linked_document_notice_does_not_claim_a_payment_was_completed(self):
+        self.quote_overrides={"quote":{"blocked_reason":"linked_documents_present","max_spend_points":0}}
+        self.open()
+        text=self.frame.locator("#status").inner_text()
+        self.assertIn("связанные документы",text)
+        self.assertNotIn("уже есть оплата",text)
+        self.assertFalse(self.frame.locator("#apply").is_visible())
+        self.assertEqual(self.prepares,[])
+
+    def test_verify_422_retains_the_reservation_and_does_not_offer_a_new_spend(self):
+        self.open();self.apply()
+        self.frame.locator("#pending").wait_for()
+        self.verify_error=422
+        self.verify_error_details={"reason":"saved_order_invalid","trace_id":"ab12cd34ef56"}
+        self.frame.get_by_role("button",name="Проверить сохранение",exact=True).click()
+        status=self.frame.locator("#status[data-error=true]");status.wait_for()
+        self.assertIn("Резерв сохранён",status.inner_text())
+        self.assertIn("BP-ab12cd34ef56",status.inner_text())
+        self.assertTrue(self.frame.locator("#pending").is_visible())
+        self.assertFalse(self.frame.locator("#apply").is_visible())
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.page.evaluate("updates.length"),1)
 
 if __name__=="__main__":unittest.main()
 

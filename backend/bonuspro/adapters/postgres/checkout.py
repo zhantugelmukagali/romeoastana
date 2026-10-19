@@ -104,13 +104,20 @@ class Checkout:
             return self._rule_dict(row)
 
     def preview(self, tenant_id, snapshot: OrderSnapshot, *, requested_points, actor_id,
-                eligibility_version: int,authorize=None):
+                eligibility_version: int,authorize=None,read_only_reason=None):
         tenant, actor = map(uuid_value,(tenant_id,actor_id))
         natural(requested_points,"requested_points")
         natural(eligibility_version,"eligibility_version",2147483647)
         if snapshot.tenant_id != tenant:
             raise Conflict("document belongs to another tenant")
-        snapshot.validate_for_discount()
+        if snapshot.currency!="KZT":
+            raise Conflict("unsupported currency")
+        if read_only_reason is None:
+            snapshot.validate_for_discount()
+        elif read_only_reason not in ("order_not_posted","order_fulfilled","linked_documents_present","order_has_marker"):
+            raise ValueError("unsupported read-only reason")
+        elif requested_points:
+            raise Conflict("read-only preview cannot request a discount")
         source_hash = fingerprint(asdict(snapshot))
         with self.ledger.transaction(tenant) as conn:
             if authorize:authorize(conn)
@@ -162,7 +169,7 @@ class Checkout:
             existing = conn.execute("SELECT state FROM bonuspro.reservations WHERE tenant_id=%s AND order_id=%s "
                                     "AND state IN ('held','verifying','committed')",
                                     (tenant,snapshot.order_id)).fetchone()
-            blocked = "return_review" if pending else ("order_has_redemption" if existing else None)
+            blocked = "return_review" if pending else ("order_has_redemption" if existing else read_only_reason)
             rules = Rules(row["earn_bps"],row["spend_bps"])
             maximum = 0 if blocked else spend_limit(snapshot.eligible_minor,funds["available"],rules)
             if requested_points > maximum:

@@ -38,7 +38,9 @@ class EntityMissing(RemapError):
 
 
 class InvalidDocument(RemapError):
-    pass
+    def __init__(self,message="invalid provider document",*,reason="saved_order_invalid"):
+        self.reason=reason
+        super().__init__(message)
 
 
 class RetryLater(RemapError):
