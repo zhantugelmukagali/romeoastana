@@ -1,5 +1,6 @@
-"""Start the existing schema-0013 tenant worker without changing keys or financial setup."""
-import argparse,json,os,re
+"""Start the existing schema-0016 tenant worker without changing keys or financial setup."""
+import argparse,json,os,re,time
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 from update_cabinet import run,compose
@@ -22,6 +23,28 @@ def check_image(config,current_image):
     if not re.fullmatch(r"bonuspro:[0-9a-f]{12,40}",current_image):
         raise ProcessingFailed("Immutable application image required")
 
+def processing_confirmed(report,started_after):
+    """A previous container's heartbeat cannot confirm the newly started worker."""
+    try:
+        heartbeat=datetime.fromisoformat(report["last_processing_at"])
+        baseline=datetime.fromisoformat(started_after)
+        return bool(report["ready"] and heartbeat.tzinfo is not None and baseline.tzinfo is not None
+                    and heartbeat>baseline)
+    except (KeyError,TypeError,ValueError):
+        return False
+
+def wait_for_report(fetch,started_after,*,timeout=60,clock=time.monotonic,pause=time.sleep):
+    deadline=clock()+timeout
+    report=fetch()
+    while not processing_confirmed(report,started_after):
+        activated=any(x.get("id")=="activation" and x.get("complete") for x in report.get("checks",[]))
+        remaining=deadline-clock()
+        if not activated or remaining<=0:
+            break
+        pause(min(2,remaining))
+        report=fetch()
+    return report
+
 def worker_override(tenant):
     tenant=str(UUID(tenant))
     return '# Managed by BonusPro start_processing.py\nservices:\n  worker:\n    environment:\n      BONUSPRO_TENANT_ID: "'+tenant+'"\n    healthcheck:\n      test: [CMD, python, -m, bonuspro.worker, --health]\n      interval: 15s\n      timeout: 5s\n      start_period: 45s\n      retries: 6\n'
@@ -32,7 +55,7 @@ def main():
     os.umask(0o077);root=args.root.resolve()
     try:
         schema=run(["docker","exec","bonuspro-release-db-1","psql","-U","postgres","-d","bonuspro","-At","-c","SELECT version_num FROM public.alembic_version"],capture=True)
-        if schema!="0013":raise ProcessingFailed("This helper requires schema 0013; no migration was attempted")
+        if schema!="0016":raise ProcessingFailed("This helper requires schema 0016; no migration was attempted")
         rows=json.loads(run(["docker","exec","bonuspro-release-db-1","psql","-U","postgres","-d","bonuspro","-At","-c",
             "SELECT COALESCE(json_agg(json_build_object('tenant_id',tenant_id,'state',state)),'[]'::json)::text FROM bonuspro.installations WHERE state IN ('SettingsRequired','Activated')"],capture=True))
         tenant=select_tenant(rows,args.tenant)
@@ -56,13 +79,17 @@ def main():
             with os.fdopen(fd,"w") as stream:stream.write(text);stream.flush();os.fsync(stream.fileno())
         command=compose(root,"-f",str(override),"--profile","automation")
         run(command+["config","--quiet"])
-        run(command+["up","-d","--no-build","--no-deps","--wait","--wait-timeout","180","worker"])
         code=("import json;from bonuspro.settings import Settings;from bonuspro.adapters.postgres.ledger import Ledger;"
               "from bonuspro.adapters.postgres.readiness import Readiness;"
               "print(json.dumps(Readiness(Ledger(Settings.from_env().database_url)).report("+repr(tenant)+")))")
-        report=json.loads(run(["docker","exec","bonuspro-release-app-1","python","-c",code],capture=True))
-        print(json.dumps(report,ensure_ascii=False,indent=2))
-        if report["ready"]:print("PROCESSING_READY: automatic order processing has reported a recent successful cycle")
+        def report():
+            return json.loads(run(["docker","exec","bonuspro-release-app-1","python","-c",code],capture=True))
+        started_after=report()["checked_at"]
+        run(command+["up","-d","--no-build","--no-deps","--wait","--wait-timeout","180","worker"])
+        print("Waiting for a new processing cycle; existing orders are checked without changing program setup.",flush=True)
+        result=wait_for_report(report,started_after)
+        print(json.dumps(result,ensure_ascii=False,indent=2))
+        if processing_confirmed(result,started_after):print("PROCESSING_READY: automatic order processing has reported a new successful cycle")
         else:print("PROCESSING_STARTED: finish the incomplete steps in BonusPro settings; processing is not yet confirmed")
         print("No migrations, key regeneration or program activation were performed. Active programs can now process orders.")
     except ProcessingFailed as error:raise SystemExit(str(error))

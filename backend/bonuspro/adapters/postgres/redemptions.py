@@ -11,6 +11,7 @@ from bonuspro.adapters.moysklad.order import SavedOrder
 
 
 class SetupInProgress(Conflict):pass
+class ProgramNotConfigured(Conflict):pass
 
 class Redemptions:
     def __init__(self,ledger: Ledger):
@@ -55,7 +56,7 @@ class Redemptions:
                 "WHERE tenant_id=%s AND order_id=%s),(SELECT max(version) FROM bonuspro.rule_versions WHERE tenant_id=%s))",
                 (tenant,tenant,order,tenant)).fetchone()
             if not row:
-                raise Conflict("rules are not configured")
+                raise ProgramNotConfigured("rules are not configured")
             return row
 
     def existing(self,tenant,order):
@@ -68,7 +69,8 @@ class Redemptions:
 
     @staticmethod
     def public(row):
-        return dict(id=str(row["id"]),order_id=str(row["order_id"]),state=row["state"],points=row["points"])
+        return dict(id=str(row["id"]),order_id=str(row["order_id"]),state=row["state"],points=row["points"],
+                    recoverable=row["state"]=="verifying")
 
     def prepare(self,tenant,order: SavedOrder,*,points,request_id,actor_id,expected_source,authorize=None):
         tenant,request_id,actor=map(uuid_value,(tenant,request_id,actor_id))
@@ -92,6 +94,8 @@ class Redemptions:
                 raise Conflict("order changed; reload")
             plan=order.plan(points)
             conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("installation/"+tenant,))
+            self.ledger._key_lock(conn,tenant,"settings")
+            self.ledger._key_lock(conn,tenant,"order/"+order.snapshot.order_id)
             installation=conn.execute("SELECT state FROM bonuspro.installations WHERE tenant_id=%s",
                                       (tenant,)).fetchone()
             if not installation or installation["state"]!="Activated":
@@ -138,7 +142,43 @@ class Redemptions:
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 (tenant,rid,order.snapshot.order_id,request_id,body_hash,actor,expected_source,marker_id,marker,Jsonb(plan)))
             return dict(id=rid,order_id=order.snapshot.order_id,state="verifying",points=points,
-                        update_state=plan["update_state"],replayed=False)
+                        update_state=plan["update_state"],replayed=False,recoverable=True)
+
+    @staticmethod
+    def resumable(row,order: SavedOrder):
+        # Recovery can replay only the absolute plan for the unchanged original
+        # financial document. A fresh Save may advance revision without changing it.
+        return (row["state"]=="verifying" and not order.marker
+                and not order.discount_blocked_reason
+                and not order.snapshot.cancelled
+                and not order.snapshot.paid_minor and not order.snapshot.shipped_minor
+                and order.financial()==row["plan"]["before"])
+
+    def resume(self,tenant,order: SavedOrder,*,attempt_id,expected_source,authorize=None):
+        tenant,attempt_id=map(uuid_value,(tenant,attempt_id))
+        digest_value(expected_source)
+        if tenant!=order.snapshot.tenant_id:
+            raise Conflict("wrong tenant")
+        with self.ledger.transaction(tenant) as conn:
+            if authorize:authorize(conn)
+            # Serialize against confirmation, void and installation revocation.
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("installation/"+tenant,))
+            self.ledger._key_lock(conn,tenant,"settings")
+            self.ledger._key_lock(conn,tenant,"order/"+order.snapshot.order_id)
+            row=conn.execute("SELECT a.*,r.state,r.points FROM bonuspro.redemption_attempts a "
+                "JOIN bonuspro.reservations r ON r.tenant_id=a.tenant_id AND r.id=a.id "
+                "WHERE a.tenant_id=%s AND a.order_id=%s AND a.id=%s",
+                (tenant,order.snapshot.order_id,attempt_id)).fetchone()
+            if not row or not self.resumable(row,order) or order.source_hash!=expected_source:
+                raise Conflict("saved order changed; verify before recovery")
+            active=conn.execute("SELECT state FROM bonuspro.installations WHERE tenant_id=%s",(tenant,)).fetchone()
+            binding=conn.execute("SELECT marker_id FROM bonuspro.widget_bindings WHERE tenant_id=%s",(tenant,)).fetchone()
+            if not active or active["state"]!="Activated" or not binding or str(binding["marker_id"])!=str(row["marker_id"]):
+                raise Conflict("widget setup or sales activation required")
+            if authorize:authorize(conn)
+            # No reservation or debit is created. Values come from the immutable
+            # stored plan, never from the caller or a newly calculated discount.
+            return dict(**self.public(row),update_state=row["plan"]["update_state"],replayed=True)
 
     def confirm_saved(self,tenant,order: SavedOrder,*,authorize=None):
         row=self.existing(tenant,order.snapshot.order_id)
@@ -152,7 +192,11 @@ class Redemptions:
                and (row["state"]=="committed" or
                     (not order.snapshot.paid_minor and not order.snapshot.shipped_minor)))
         if not exact:
-            return dict(**self.public(row),verified=False,reason="saved_order_mismatch")
+            result=dict(**self.public(row),verified=False,reason="saved_order_mismatch")
+            result["recoverable"]=self.resumable(row,order)
+            if result["recoverable"]:
+                result["resume_source_hash"]=order.source_hash
+            return result
         with self.ledger.transaction(tenant) as conn:
             reservation=conn.execute("SELECT quote_hash FROM bonuspro.reservations WHERE tenant_id=%s AND id=%s",
                                      (tenant,row["id"])).fetchone()

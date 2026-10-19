@@ -2,6 +2,7 @@
 from datetime import datetime, timezone, timedelta
 from uuid import uuid4
 import time
+from psycopg.errors import CheckViolation
 from bonuspro.adapters.postgres.ledger import Ledger, Conflict, VerifiedDiscount, fingerprint, uuid_value, MAX_POINTS
 from bonuspro.adapters.postgres.jobs import Jobs
 from bonuspro.adapters.postgres.settlements import Settlements
@@ -136,9 +137,23 @@ class Automation:
         if proof.created_at<config["starts_at"]:
             outcome("historical")
             return
-        if context and str(context["counterparty_id"])!=s.counterparty_id:
-            outcome("document_review")
-            return
+        if context:
+            try:
+                # A preview may have enrolled the previous buyer without any
+                # order effects. Roll back a new wallet too if history pins it.
+                with conn.transaction():
+                    link=conn.execute("SELECT wallet_id FROM bonuspro.customer_wallets WHERE tenant_id=%s AND counterparty_id=%s",
+                                      (tenant,s.counterparty_id)).fetchone()
+                    if not link:
+                        destination=str(uuid4())
+                        conn.execute("INSERT INTO bonuspro.wallets(tenant_id,id) VALUES (%s,%s)",(tenant,destination))
+                        conn.execute("INSERT INTO bonuspro.customer_wallets(tenant_id,counterparty_id,wallet_id) VALUES (%s,%s,%s)",
+                                     (tenant,s.counterparty_id,destination))
+                    context=conn.execute("SELECT * FROM bonuspro.rebind_order_customer(%s,%s,%s,%s,%s)",
+                        (s.order_id,s.counterparty_id,saved.source_hash,s.revision,actor or str(config["actor_id"]))).fetchone()
+            except CheckViolation:
+                outcome("document_review")
+                return
         # New accounts/contexts are enrolled automatically by discovery; employees do not connect orders manually.
         if not context:
             rule=conn.execute("SELECT * FROM bonuspro.rule_versions WHERE tenant_id=%s ORDER BY version DESC LIMIT 1",(tenant,)).fetchone()
@@ -152,9 +167,9 @@ class Automation:
                 conn.execute("INSERT INTO bonuspro.customer_wallets(tenant_id,counterparty_id,wallet_id) VALUES (%s,%s,%s)",
                              (tenant,s.counterparty_id,wallet))
             conn.execute("INSERT INTO bonuspro.order_contexts "
-                "(tenant_id,order_id,counterparty_id,wallet_id,rule_version,initial_source_hash,enrolled_by) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (tenant,s.order_id,s.counterparty_id,wallet,rule["version"],saved.source_hash,config["actor_id"]))
+                "(tenant_id,order_id,counterparty_id,wallet_id,rule_version,initial_source_hash,enrolled_by,binding_revision) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                (tenant,s.order_id,s.counterparty_id,wallet,rule["version"],saved.source_hash,config["actor_id"],s.revision))
             context=dict(wallet_id=wallet,rule_version=rule["version"])
         wallet=str(context["wallet_id"])
         complete=(proof.outcome=="eligible" or (proof.full_payment and proof.full_shipment)) and not s.cancelled

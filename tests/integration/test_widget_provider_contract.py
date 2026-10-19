@@ -230,3 +230,83 @@ class WidgetProviderContractTests(unittest.TestCase):
             self.assertEqual(response.json()["reason"],reason)
             self.assertEqual(response.json()["stage"],"load")
 
+    def test_lost_prepare_recovery_uses_fresh_saved_proof_and_original_reservation(self):
+        quote=self.client.get(self.path,headers=self.headers)
+        prepared=self.client.post(self.path+"/prepare",headers=self.headers,
+                                 json=self.request_body(quote.json()))
+        self.assertEqual(prepared.status_code,200,prepared.text)
+        attempt=prepared.json()
+        # Simulate losing the prepare response, then explicitly saving the
+        # unchanged host order before asking to continue its original attempt.
+        self.fx.saved=replace(self.fx.saved,snapshot=replace(self.fx.saved.snapshot,
+                                                           revision="saved-for-recovery"))
+        checked=self.client.post(self.path+"/verify",headers=self.headers)
+        self.assertEqual(checked.status_code,200,checked.text)
+        self.assertFalse(checked.json()["verified"])
+        source=checked.json()["resume_source_hash"]
+        body=dict(attempt_id=attempt["id"],source_hash=source)
+        stale=self.client.post(self.path+"/resume",headers=self.headers,
+                              json={**body,"source_hash":quote.json()["saved_source_hash"]})
+        self.assertEqual(stale.status_code,409,stale.text)
+        recovered=self.client.post(self.path+"/resume",headers=self.headers,json=body)
+        self.assertEqual(recovered.status_code,200,recovered.text)
+        self.assertEqual(recovered.json()["id"],attempt["id"])
+        self.assertEqual(recovered.json()["update_state"],attempt["update_state"])
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),
+                         dict(balance=5000,reserved=1000,available=4000))
+        self.fx.saved=self.fx.persisted(attempt)
+        done=self.client.post(self.path+"/verify",headers=self.headers)
+        self.assertEqual(done.status_code,200,done.text)
+        self.assertTrue(done.json()["verified"])
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),
+                         dict(balance=4000,reserved=0,available=4000))
+        self.assertEqual(self.client.post(self.path+"/resume",headers=self.headers,json=body).status_code,409)
+
+    def test_resume_refuses_concurrent_saved_edit_and_linked_draft(self):
+        quote=self.client.get(self.path,headers=self.headers)
+        prepared=self.client.post(self.path+"/prepare",headers=self.headers,
+                                 json=self.request_body(quote.json()))
+        self.assertEqual(prepared.status_code,200,prepared.text)
+        checked=self.client.post(self.path+"/verify",headers=self.headers)
+        body=dict(attempt_id=prepared.json()["id"],source_hash=checked.json()["resume_source_hash"])
+        original=self.fx.saved
+        self.fx.saved=replace(original,snapshot=replace(original.snapshot,revision="edited-after-proof"))
+        rejected=self.client.post(self.path+"/resume",headers=self.headers,json=body)
+        self.assertEqual(rejected.status_code,409,rejected.text)
+        self.fx.saved=original;self.linked=True;self.demand_applicable=False
+        rejected=self.client.post(self.path+"/resume",headers=self.headers,json=body)
+        self.assertEqual(rejected.status_code,422,rejected.text)
+        self.assertEqual(rejected.json()["reason"],"linked_documents_present")
+        self.assertEqual(rejected.json()["stage"],"resume")
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),
+                         dict(balance=5000,reserved=1000,available=4000))
+
+    def test_resume_requires_operator_origin_and_exact_request_contract(self):
+        quote=self.client.get(self.path,headers=self.headers)
+        prepared=self.client.post(self.path+"/prepare",headers=self.headers,
+                                 json=self.request_body(quote.json()))
+        checked=self.client.post(self.path+"/verify",headers=self.headers)
+        body=dict(attempt_id=prepared.json()["id"],source_hash=checked.json()["resume_source_hash"])
+        self.assertEqual(self.client.post(self.path+"/resume",headers={"Origin":"https://testserver"},json=body).status_code,401)
+        self.assertEqual(self.client.post(self.path+"/resume",headers={**self.headers,"Origin":"https://evil.test"},
+                                         json=body).status_code,403)
+        for patch in ({"points":1},{"wallet_id":str(uuid4())},{"source_hash":"forged"},{"attempt_id":str(uuid4())}):
+            rejected=self.client.post(self.path+"/resume",headers=self.headers,json={**body,**patch})
+            self.assertEqual(rejected.status_code,409 if "attempt_id" in patch else 422,rejected.text)
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)["reserved"],1000)
+
+    def test_unconfigured_shop_reports_setup_without_provider_reads_or_implicit_wallet(self):
+        import time
+        tenant,actor=str(uuid4()),str(uuid4())
+        self.fx.install.change(tenant,dict(iat=int(time.time())-10,exp=int(time.time())+60,jti=str(uuid4())),
+                               "Install","synthetic")
+        session=self.fx.install.create_session(UserContext(tenant,actor,"admin"))
+        headers={"Authorization":"Bearer "+session,"Origin":"https://testserver"}
+        before=len(self.calls)
+        response=self.client.get("/api/widget/orders/"+str(uuid4()),headers=headers)
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertEqual(response.json(),{"error":"program_not_configured"})
+        self.assertEqual(len(self.calls),before)
+        with self.fx.ledger.transaction(tenant) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) AS n FROM bonuspro.wallets").fetchone()["n"],0)
+            self.assertEqual(conn.execute("SELECT count(*) AS n FROM bonuspro.reservations").fetchone()["n"],0)

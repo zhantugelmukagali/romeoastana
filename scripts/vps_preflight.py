@@ -11,10 +11,10 @@ def command(args):
     except (OSError,subprocess.TimeoutExpired):return None
 
 def main():
-    report={"read_only":True,"expected_schema":"0015","business_acceptance_verified":False}
+    report={"read_only":True,"expected_schema":"0016","business_acceptance_verified":False}
     report["checkout"]=command(["git","rev-parse","HEAD"])
     report["tracked_changes"]=bool(command(["git","status","--porcelain","--untracked-files=no"]))
-    for service in ("app","db","web","worker","worker-pool"):
+    for service in ("app","db","web","worker"):
         name="bonuspro-release-"+service+"-1"
         value=command(["docker","inspect","--format",
             '{{.Config.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}',name])
@@ -32,6 +32,6 @@ def main():
     if stat.exists():
         memory={row.split(":")[0]:row.split(":")[1].strip() for row in stat.read_text().splitlines()}
         report["memory"]={k:memory.get(k) for k in ("MemAvailable","SwapTotal","SwapFree")}
-    report["schema_matches_checkout"]=report["schema"]=="0015"
+    report["schema_matches_checkout"]=report["schema"]=="0016"
     print(json.dumps(report,ensure_ascii=False,indent=2))
 if __name__=="__main__":main()

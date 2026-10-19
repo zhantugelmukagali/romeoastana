@@ -116,6 +116,11 @@ class Worker:
                 # Discovery failed: do not advance its cursor or lose that window.
                 self.automation.cooldown(self.tenant,300,"invalid_document")
                 return "invalid_document"
+            except Exception:
+                # A failed cycle must not keep the previous successful readiness
+                # signal. Store only an allowlisted classification, never provider text.
+                self.automation.cooldown(self.tenant,30,"provider_unavailable")
+                raise
 
 
 def main():

@@ -59,7 +59,7 @@ summary::-webkit-details-marker{display:none}
 #pending h2:before{content:"";width:6px;height:6px;flex-shrink:0;border-radius:50%;background:#987027}
 #pending-text{margin:0 0 8px;color:#202938;font-size:20px;font-weight:600;line-height:1.4;letter-spacing:-.2px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 #pending-note{margin:0;color:#596579;font-size:12px;line-height:1.5;overflow-wrap:anywhere}
-#verify{width:100%;min-height:38px;margin-top:14px;font-size:12px}
+#verify,#resume{width:100%;min-height:38px;margin-top:14px;font-size:12px}
 #pending[data-state=done] h2{color:#197154}
 #pending[data-state=done] h2:before{background:#197154}
 #pending[data-state=review] h2{color:#865b20}

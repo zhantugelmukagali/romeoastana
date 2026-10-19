@@ -13,6 +13,11 @@ from bonuspro.adapters.moysklad.remap import OrderEvidence, InvalidDocument, Ret
 from bonuspro.adapters.moysklad.order import SavedOrder, normalize_order
 
 MSK=timezone(timedelta(hours=3))
+# REMAP paymentin/cashin document links; unrelated allocations are validated,
+# but only this order and its posted demands can prove this order's payment.
+INCOMING_ALLOCATIONS=frozenset((
+    "customerorder","purchasereturn","demand","invoiceout","commissionreportin","retailshift",
+))
 
 
 def moment(value):
@@ -39,6 +44,13 @@ def party_check(doc,order):
             raise InvalidDocument("related document party mismatch")
     if link(doc.get("rate",{}),"currency",{"currency"})!=link(order.get("rate",{}),"currency",{"currency"}):
         raise InvalidDocument("related document currency mismatch")
+
+
+def tax_modes_match(first,second):
+    # vatIncluded is inert when VAT is disabled and may be absent in REMAP.
+    # Keep each document's financial representation unchanged for saved plans.
+    return (first.vat_enabled==second.vat_enabled and
+            (not first.vat_enabled or first.vat_included==second.vat_included))
 
 
 def basket(lines):
@@ -118,7 +130,7 @@ class FulfillmentReader:
             party_check(demand,doc)
             normalized=normalize_order(self.client,OrderEvidence(
                 {**demand,"payedSum":0,"shippedSum":0},tuple(rows),(),()),allow_fulfilled=True)
-            if normalized.vat_included!=saved.vat_included or normalized.vat_enabled!=saved.vat_enabled:
+            if not tax_modes_match(normalized,saved):
                 raise InvalidDocument("shipment tax mismatch")
             demand_returns=[]
             for returned,positions in returns:
@@ -131,7 +143,7 @@ class FulfillmentReader:
                     raise InvalidDocument("posted return references unposted shipment")
                 value=normalize_order(self.client,OrderEvidence(
                     {**returned,"payedSum":0,"shippedSum":0},tuple(positions),(),()),allow_fulfilled=True)
-                if value.vat_included!=saved.vat_included or value.vat_enabled!=saved.vat_enabled:
+                if not tax_modes_match(value,saved):
                     raise InvalidDocument("return tax mismatch")
                 demand_returns.extend(value.lines)
             shipped_basket=basket(normalized.lines)
@@ -150,8 +162,7 @@ class FulfillmentReader:
                 raise InvalidDocument("payment allocation is missing or too large")
             allocated=0;counted=0;seen=set()
             for operation in operations:
-                kind,identity=reference(operation.get("meta"),{
-                    "customerorder","demand","invoiceout","retailshift","commissionreportout","prepayment"})
+                kind,identity=reference(operation.get("meta"),INCOMING_ALLOCATIONS)
                 if (kind,identity) in seen:
                     raise InvalidDocument("duplicate payment allocation")
                 seen.add((kind,identity))
@@ -164,7 +175,7 @@ class FulfillmentReader:
             paid+=counted
             related={uuid(x[0]["id"]) for x in demands}
             linked_paid+=sum(exact_minor(o["linkedSum"]) for o in operations
-                if reference(o.get("meta"),{"customerorder","demand","invoiceout","retailshift","commissionreportout","prepayment"}) in
+                if reference(o.get("meta"),INCOMING_ALLOCATIONS) in
                 ({("customerorder",saved.snapshot.order_id)}|{("demand",i) for i in related}))
         shipped=sum(x.snapshot.total_minor for x in posted)
         actual=basket([line for demand in posted for line in demand.lines])
