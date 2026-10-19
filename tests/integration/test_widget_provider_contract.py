@@ -22,6 +22,7 @@ class WidgetProviderContractTests(unittest.TestCase):
         self.fx=fixtures.RedemptionTests();self.fx.setUp()
         self.currency=str(uuid4());self.calls=[];self.linked=False
         self.currency_account=None
+        self.omit_vat_included=False;self.order_overrides={};self.demand_applicable=True
         self.order_account=self.fx.tenant
         config=Settings("https://testserver",self.fx.install.config,
                         self.fx.ledger.dsn,self.fx.install.lifecycle_dsn)
@@ -46,8 +47,8 @@ class WidgetProviderContractTests(unittest.TestCase):
             if self.currency_account is not None:body["accountId"]=self.currency_account
         elif request.url.path.endswith("/positions"):
             rows=[dict(id=x.id,accountId=self.fx.tenant,assortment=ref(x.kind,x.assortment),
-                quantity=int(x.quantity),price=int(x.price),discount=x.discount_bps/100,
-                vat=int(x.vat),vatEnabled=x.vat_enabled) for x in saved.lines]
+                quantity=float(x.quantity),price=float(x.price),discount=x.discount_bps/100,
+                vat=float(x.vat),vatEnabled=x.vat_enabled) for x in saved.lines]
             body={"meta":{"size":len(rows)},"rows":rows}
         elif request.url.path.endswith("/customerorder/"+self.fx.order):
             body=dict(id=s.order_id,accountId=self.order_account,
@@ -57,10 +58,12 @@ class WidgetProviderContractTests(unittest.TestCase):
                 payedSum=s.paid_minor,shippedSum=s.shipped_minor,updated=s.revision,
                 applicable=not s.cancelled,vatEnabled=saved.vat_enabled,vatIncluded=saved.vat_included,
                 attributes=[{"id":self.fx.marker,"value":saved.marker}] if saved.marker else [],name=saved.name)
+            if self.omit_vat_included:body.pop("vatIncluded")
+            body.update(self.order_overrides)
             if self.linked:body["demands"]=[ref("demand",self.fx.order)]
         elif request.url.path.endswith("/demand/"+self.fx.order):
             body=dict(id=self.fx.order,accountId=self.fx.tenant,meta=ref("demand",self.fx.order)["meta"],
-                      applicable=True,sum=s.total_minor)
+                      applicable=self.demand_applicable,sum=s.total_minor)
         else:
             return httpx.Response(404,json={"errors":[{"code":1021}]})
         return httpx.Response(200,json=body)
@@ -100,3 +103,130 @@ class WidgetProviderContractTests(unittest.TestCase):
             self.assertEqual(response.status_code,422,response.text)
             setattr(self,field,original)
         self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)["reserved"],0)
+
+    def request_body(self,quote,points=1000):
+        return dict(points=points,request_id=str(uuid4()),source_hash=quote["saved_source_hash"])
+
+    def test_disabled_vat_omission_real_transport_prepares_and_confirms_saved_discount(self):
+        self.omit_vat_included=True
+        quote=self.client.get(self.path,headers=self.headers)
+        self.assertEqual(quote.status_code,200,quote.text)
+        prepared=self.client.post(self.path+"/prepare",headers=self.headers,json=self.request_body(quote.json()))
+        self.assertEqual(prepared.status_code,200,prepared.text)
+        self.fx.saved=self.fx.persisted(prepared.json())
+        result=self.client.post(self.path+"/verify",headers=self.headers)
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertTrue(result.json()["verified"])
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),
+                         dict(balance=4000,reserved=0,available=4000))
+
+    def test_explicit_false_disabled_vat_remains_compatible_with_immutable_plan(self):
+        self.fx.saved=replace(self.fx.saved,vat_included=False)
+        quote=self.client.get(self.path,headers=self.headers)
+        self.assertEqual(quote.status_code,200,quote.text)
+        prepared=self.client.post(self.path+"/prepare",headers=self.headers,json=self.request_body(quote.json()))
+        self.assertEqual(prepared.status_code,200,prepared.text)
+        with self.fx.ledger.transaction(self.fx.tenant) as conn:
+            row=conn.execute("SELECT plan FROM bonuspro.redemption_attempts WHERE id=%s",(prepared.json()["id"],)).fetchone()
+            self.assertFalse(row["plan"]["before"]["vat_included"])
+            self.assertFalse(row["plan"]["after"]["vat_included"])
+        self.fx.saved=self.fx.persisted(prepared.json())
+        result=self.client.post(self.path+"/verify",headers=self.headers)
+        self.assertEqual(result.status_code,200,result.text)
+        self.assertTrue(result.json()["verified"])
+
+    def test_paid_shipped_and_unposted_orders_open_read_only_without_authorizing_spend(self):
+        original=self.fx.saved
+        for patch,reason in ((dict(paid_minor=1),"order_fulfilled"),
+                             (dict(shipped_minor=1),"order_fulfilled"),
+                             (dict(cancelled=True),"order_not_posted")):
+            with self.subTest(patch=patch):
+                self.fx.saved=replace(original,snapshot=replace(original.snapshot,**patch))
+                quote=self.client.get(self.path,headers=self.headers)
+                self.assertEqual(quote.status_code,200,quote.text)
+                self.assertEqual(quote.json()["quote"]["balance"],5000)
+                self.assertEqual(quote.json()["quote"]["max_spend_points"],0)
+                self.assertEqual(quote.json()["quote"]["blocked_reason"],reason)
+                rejected=self.client.post(self.path+"/prepare",headers=self.headers,
+                    json=self.request_body(quote.json(),1))
+                self.assertEqual(rejected.status_code,409,rejected.text)
+                self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)["reserved"],0)
+
+    def test_draft_linked_document_is_a_blocked_view_not_an_initial_load_error(self):
+        self.linked=True;self.demand_applicable=False
+        quote=self.client.get(self.path,headers=self.headers)
+        self.assertEqual(quote.status_code,200,quote.text)
+        self.assertEqual(quote.json()["quote"]["blocked_reason"],"linked_documents_present")
+        self.assertEqual(quote.json()["quote"]["max_spend_points"],0)
+        rejected=self.client.post(self.path+"/prepare",headers=self.headers,
+                                 json=self.request_body(quote.json(),1))
+        self.assertEqual(rejected.status_code,422,rejected.text)
+        self.assertEqual(rejected.json()["reason"],"linked_documents_present")
+        self.assertEqual(rejected.json()["stage"],"prepare")
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)["reserved"],0)
+
+    def test_invalid_tax_modes_stay_rejected_with_safe_specific_reason(self):
+        cases=((dict(vatEnabled=True,vatIncluded=None),"vat_mode_missing"),
+               (dict(vatEnabled=False,vatIncluded=None),"vat_mode_missing"),
+               (dict(vatEnabled=False,vatIncluded="private-document-secret"),"vat_mode_missing"),
+               (dict(vatEnabled=True,vatIncluded=False),"vat_mode_unsupported"))
+        for fields,reason in cases:
+            with self.subTest(fields=fields):
+                self.order_overrides=fields
+                result=self.client.get(self.path,headers=self.headers)
+                self.assertEqual(result.status_code,422,result.text)
+                self.assertEqual(result.json()["reason"],reason)
+                self.assertEqual(result.json()["stage"],"load")
+                self.assertRegex(result.json()["trace_id"],"^[a-f0-9]{12}$")
+                self.assertNotIn("private-document-secret",result.text)
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)["reserved"],0)
+
+    def test_real_json_fractional_quantity_and_existing_discount_round_trip(self):
+        from decimal import Decimal
+        line=replace(self.fx.saved.lines[0],price=Decimal(10000),quantity=Decimal("1.25"),discount_bps=1000)
+        self.fx.saved=replace(self.fx.saved,lines=(line,),snapshot=replace(self.fx.saved.snapshot,
+                             total_minor=11250,eligible_minor=11250))
+        quote=self.client.get(self.path,headers=self.headers)
+        self.assertEqual(quote.status_code,200,quote.text)
+        self.assertEqual(quote.json()["eligible_minor"],11250)
+        prepared=self.client.post(self.path+"/prepare",headers=self.headers,json=self.request_body(quote.json(),1))
+        self.assertEqual(prepared.status_code,200,prepared.text)
+        self.assertEqual(prepared.json()["update_state"]["positions"],[{"id":line.id,"discount":10.8}])
+        self.fx.saved=replace(self.fx.saved,lines=(replace(line,discount_bps=1080),),
+            marker="bonuspro:v1:"+prepared.json()["id"],snapshot=replace(self.fx.saved.snapshot,
+                revision="saved-fractional",total_minor=11150,eligible_minor=11150))
+        verified=self.client.post(self.path+"/verify",headers=self.headers)
+        self.assertEqual(verified.status_code,200,verified.text)
+        self.assertTrue(verified.json()["verified"])
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)["balance"],4999)
+
+    def test_unrepresentable_amount_has_no_reservation_and_identifies_prepare_failure(self):
+        from decimal import Decimal
+        saved=self.fx.saved
+        self.fx.saved=replace(saved,lines=(replace(saved.lines[0],price=Decimal(3000000)),saved.lines[1]),
+            snapshot=replace(saved.snapshot,total_minor=3200000,eligible_minor=3000000))
+        quote=self.client.get(self.path,headers=self.headers)
+        self.assertEqual(quote.status_code,200,quote.text)
+        rejected=self.client.post(self.path+"/prepare",headers=self.headers,json=self.request_body(quote.json(),1))
+        self.assertEqual(rejected.status_code,422,rejected.text)
+        self.assertEqual(rejected.json()["reason"],"discount_not_representable")
+        self.assertEqual(rejected.json()["stage"],"prepare")
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),
+                         dict(balance=5000,reserved=0,available=5000))
+        with self.fx.ledger.transaction(self.fx.tenant) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) n FROM bonuspro.redemption_attempts").fetchone()["n"],0)
+
+    def test_missing_customer_empty_positions_and_totals_are_distinct_load_failures(self):
+        original=self.fx.saved
+        for case,reason in (("customer","customer_missing"),("positions","positions_missing"),("sum","totals_mismatch")):
+            self.order_overrides={}
+            self.fx.saved=original
+            if case=="customer":self.order_overrides={"agent":None}
+            elif case=="positions":
+                self.fx.saved=replace(original,lines=(),snapshot=replace(original.snapshot,total_minor=0,eligible_minor=0))
+            else:self.fx.saved=replace(original,snapshot=replace(original.snapshot,total_minor=1200001))
+            response=self.client.get(self.path,headers=self.headers)
+            self.assertEqual(response.status_code,422,response.text)
+            self.assertEqual(response.json()["reason"],reason)
+            self.assertEqual(response.json()["stage"],"load")
+

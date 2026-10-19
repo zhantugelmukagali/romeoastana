@@ -96,4 +96,31 @@ class WidgetAPITests(unittest.TestCase):
         self.fx.install.logout(self.headers["Authorization"].split(" ",1)[1])
         self.assertEqual(self.client.post(self.path+"/verify",headers=self.headers).status_code,401)
 
+    def test_document_failure_logs_and_response_only_allowlisted_codes(self):
+        from unittest.mock import patch
+        from bonuspro.adapters.moysklad.remap import InvalidDocument
+        failure=InvalidDocument("private-token-and-customer-document",reason="private-reason")
+        with self.assertLogs("bonuspro.widget",level="WARNING") as logs:
+            with patch("bonuspro.api.app.read_order",side_effect=failure):
+                response=self.client.get(self.path,headers=self.headers)
+        self.assertEqual(response.status_code,422,response.text)
+        self.assertEqual(response.json()["reason"],"saved_order_invalid")
+        self.assertEqual(response.json()["stage"],"load")
+        self.assertRegex(response.json()["trace_id"],"^[a-f0-9]{12}$")
+        public=response.text+" ".join(logs.output)
+        self.assertNotIn("private-token",public)
+        self.assertNotIn("private-reason",public)
+        self.assertNotIn(self.fx.customer,public)
+        self.assertIn("trace=BP-"+response.json()["trace_id"],public)
+
+    def test_invalid_widget_request_has_redacted_trace_and_no_financial_effect(self):
+        body=self.body()
+        response=self.client.post(self.path+"/prepare",headers=self.headers,
+            json={**body,"points":"private-token-and-document"})
+        self.assertEqual(response.status_code,422,response.text)
+        self.assertEqual(response.json()["reason"],"invalid_request")
+        self.assertEqual(response.json()["stage"],"prepare")
+        self.assertNotIn("private-token",response.text)
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)["reserved"],0)
+
 if __name__=="__main__":unittest.main()

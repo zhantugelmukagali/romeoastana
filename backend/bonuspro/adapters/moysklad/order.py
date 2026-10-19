@@ -57,6 +57,7 @@ class SavedOrder:
     vat_enabled: bool
     marker: str | None
     name: str
+    discount_blocked_reason: str | None = None
 
     def financial(self):
         s = self.snapshot
@@ -76,8 +77,10 @@ class SavedOrder:
         if not points:
             raise InvalidDocument("positive redemption required")
         self.snapshot.validate_for_discount()
+        if self.discount_blocked_reason:
+            raise InvalidDocument("saved order is read-only",reason=self.discount_blocked_reason)
         if self.marker:
-            raise InvalidDocument("order already carries a redemption marker")
+            raise InvalidDocument("order already carries a redemption marker",reason="order_has_marker")
         if points*100>self.snapshot.eligible_minor:
             raise InvalidDocument("discount exceeds eligible goods")
         allocation = allocate_discount(points*100,{x.id:x.amount for x in self.lines if x.kind in GOODS})
@@ -97,7 +100,7 @@ class SavedOrder:
                         hi=mid
                 changed=replace(line,discount_bps=lo)
                 if changed.amount != target:
-                    raise InvalidDocument("discount cannot represent requested points exactly")
+                    raise InvalidDocument("discount cannot represent requested points exactly",reason="discount_not_representable")
             result.append(changed)
             update={"id":line.id}
             if changed.discount_bps!=line.discount_bps:
@@ -120,20 +123,24 @@ def normalize_order(client,evidence,*,marker_id=None,allow_fulfilled=False):
     doc=evidence.order
     # Conservative initial supported mode: VAT included in prices, or VAT disabled.
     vat_enabled=doc.get("vatEnabled")
-    vat_included=doc.get("vatIncluded")
+    # REMAP may omit vatIncluded when VAT is disabled. Preserve explicit flags:
+    # immutable legacy plans compare their original financial representation.
+    vat_included=doc.get("vatIncluded",True) if vat_enabled is False else doc.get("vatIncluded")
     if type(vat_enabled) is not bool or type(vat_included) is not bool:
-        raise InvalidDocument("tax mode missing")
+        raise InvalidDocument("tax mode missing",reason="vat_mode_missing")
     if vat_enabled and not vat_included:
-        raise InvalidDocument("VAT exclusive prices are not supported for redemption")
+        raise InvalidDocument("VAT exclusive prices are not supported for redemption",reason="vat_mode_unsupported")
+    if not isinstance(doc.get("agent"),dict) or not isinstance(doc["agent"].get("meta"),dict):
+        raise InvalidDocument("saved customer is missing",reason="customer_missing")
     _,customer=reference(doc.get("agent",{}).get("meta"),{"counterparty"})
     _,organization=reference(doc.get("organization",{}).get("meta"),{"organization"})
     _,currency_id=reference(doc.get("rate",{}).get("currency",{}).get("meta"),{"currency"})
     currency=client.entity("currency",currency_id)
     if currency.get("isoCode")!="KZT":
-        raise InvalidDocument("only KZT is supported")
+        raise InvalidDocument("only KZT is supported",reason="currency_unsupported")
     rate=doc.get("rate",{}).get("value")
     if rate is not None and number(rate)!=1:
-        raise InvalidDocument("unexpected KZT exchange rate")
+        raise InvalidDocument("unexpected KZT exchange rate",reason="exchange_rate_unsupported")
     if type(doc.get("applicable")) is not bool:
         raise InvalidDocument("posting status missing")
     lines=[]
@@ -147,10 +154,10 @@ def normalize_order(client,evidence,*,marker_id=None,allow_fulfilled=False):
         quantity=number(raw.get("quantity"),maximum=Decimal("1000000000"))
         price=number(raw.get("price"))
         if quantity==0 or -quantity.as_tuple().exponent>6 or -price.as_tuple().exponent>2:
-            raise InvalidDocument("unsupported quantity or price precision")
+            raise InvalidDocument("unsupported quantity or price precision",reason="position_precision_unsupported")
         discount=number(raw.get("discount"),maximum=Decimal(100))*100
         if discount!=discount.to_integral_value():
-            raise InvalidDocument("discount precision exceeds two decimals")
+            raise InvalidDocument("discount precision exceeds two decimals",reason="position_precision_unsupported")
         vat=number(raw.get("vat"),maximum=Decimal(100))
         line_vat=raw.get("vatEnabled",vat_enabled)
         if type(line_vat) is not bool:
@@ -160,16 +167,18 @@ def normalize_order(client,evidence,*,marker_id=None,allow_fulfilled=False):
         if pack is not None and not isinstance(pack,dict):
             raise InvalidDocument("invalid pack")
         lines.append(Line(identity,kind,assortment,quantity,price,int(discount),vat,line_vat,pack_id))
-    if not lines or len(lines)>1000:
-        raise InvalidDocument("redemption requires 1 to 1000 saved positions")
+    if not lines:
+        raise InvalidDocument("saved positions are missing",reason="positions_missing")
+    if len(lines)>1000:
+        raise InvalidDocument("too many saved positions",reason="positions_limit")
     total=exact_minor(doc.get("sum"))
     if sum(x.amount for x in lines)!=total:
-        raise InvalidDocument("position rounding does not match saved order sum")
+        raise InvalidDocument("position rounding does not match saved order sum",reason="totals_mismatch")
     paid=exact_minor(doc.get("payedSum"))
     shipped=exact_minor(doc.get("shippedSum"))
     # Any linked document blocks editing, even a draft: staff must settle that workflow first.
     if not allow_fulfilled and (evidence.payments or evidence.demands):
-        raise InvalidDocument("order already has linked payment or shipment documents")
+        raise InvalidDocument("order already has linked payment or shipment documents",reason="linked_documents_present")
     marker=None
     attrs=doc.get("attributes",[])
     if not isinstance(attrs,list):
@@ -189,5 +198,9 @@ def normalize_order(client,evidence,*,marker_id=None,allow_fulfilled=False):
     snapshot=OrderSnapshot(client.tenant,uuid(doc.get("id")),customer,revision,"KZT",total,
                            sum(x.amount for x in lines if x.kind in GOODS),paid,shipped,
                            not doc["applicable"])
+    blocked=("order_not_posted" if snapshot.cancelled else
+             "order_fulfilled" if paid or shipped else
+             "linked_documents_present" if evidence.payments or evidence.demands else
+             "order_has_marker" if marker else None)
     return SavedOrder(snapshot,tuple(lines),organization,vat_included,vat_enabled,marker,
-                      str(doc.get("name",""))[:256])
+                      str(doc.get("name",""))[:256],blocked)

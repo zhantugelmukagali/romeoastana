@@ -6,6 +6,29 @@ let sequence=0,epoch=0,openMessage=null,orderId=null,token=null,quote=null;
 let dirty=false,busy=false,attempt=null,requestId=null,draftRevision=0,savedWhileBusy=false;
 const waiting=new Map();
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const documentErrors={
+  vat_mode_missing:"МойСклад не вернул режим НДС. Обновите заказ; если ошибка остаётся, нужен администратор.",
+  vat_mode_unsupported:"Этот режим НДС пока не поддерживается. Нужна проверка администратора.",
+  customer_missing:"Выберите покупателя и сохраните заказ.",
+  currency_unsupported:"Бонусы работают только с заказами в KZT.",
+  exchange_rate_unsupported:"Не удалось подтвердить курс KZT в заказе. Нужна проверка администратора.",
+  positions_missing:"В заказе нет сохранённых позиций. Добавьте товары и сохраните заказ.",
+  positions_limit:"В заказе больше 1000 позиций. Для списания нужен администратор.",
+  position_precision_unsupported:"Формат количества, цены или скидки пока не поддерживается. Нужна проверка администратора.",
+  totals_mismatch:"Сумма позиций не совпадает с итогом МойСклад. Сохраните и обновите заказ; если ошибка остаётся, нужен администратор.",
+  linked_documents_present:"У заказа есть связанные документы оплаты или отгрузки. Новое списание недоступно.",
+  order_has_marker:"В заказе уже отмечено списание. Нужна сверка с администратором.",
+  discount_not_representable:"Эту сумму бонусов нельзя списать точно. Измените сумму.",
+  invalid_request:"Обновите виджет. Если ошибка повторяется, нужен администратор."
+};
+const readOnlyMessages={
+  order_not_posted:"Заказ не проведён. Новое списание недоступно.",
+  order_fulfilled:"По заказу уже есть оплата или отгрузка. Новое списание недоступно.",
+  linked_documents_present:documentErrors.linked_documents_present,
+  order_has_marker:documentErrors.order_has_marker,
+  order_has_redemption:"В заказе уже есть операция списания. Обновите данные для проверки.",
+  return_review:"Списание приостановлено. Нужен администратор."
+};
 const amountFormat=new Intl.NumberFormat("ru-KZ");
 const money=value=>{
  const minor=BigInt(value),fraction=minor%100n;return amountFormat.format(minor/100n)+(fraction?","+String(fraction).padStart(2,"0"):"")+" ₸";
@@ -58,6 +81,10 @@ async function api(path,options={}){
     try{payload=await response.json();}catch{payload=null;}
     if(generation!==epoch)throw new Error("document_changed");
     const error=new Error("api_error");error.status=response.status;
+    error.stage=path.endsWith("/prepare")?"prepare":path.endsWith("/verify")?"verify":path.startsWith("/api/widget/orders/")?"load":"session";
+    if(Object.hasOwn(documentErrors,payload?.reason)&&
+       (payload.reason!=="discount_not_representable"||error.stage==="prepare"))error.reason=payload.reason;
+    if(typeof payload?.trace_id==="string"&&/^[a-f0-9]{12}$/.test(payload.trace_id))error.trace=payload.trace_id;
     if(["moysklad_permissions_required","operator_access_required"].includes(payload?.error))error.code=payload.error;
     if(response.status===401)token=null;
     throw error;
@@ -71,7 +98,13 @@ function explain(error){
   if(error.status===401)return "Сессия истекла. Нажмите «Обновить».";
   if(error.status===403)return error.code==="moysklad_permissions_required"?"Нет доступа к данным МойСклад. Проверьте подключение решения.":"Нет доступа к бонусам. Обратитесь к администратору.";
   if(error.status===409)return "Заказ или баланс изменился. Обновите данные.";
-  if(error.status===422)return "Скидка не рассчитана точно. Проверьте позиции и НДС.";
+  if(error.status===422){
+    const fallback=error.stage==="load"?"Не удалось проверить данные заказа. Нужен администратор.":
+      error.stage==="verify"?"Не удалось проверить сохранённое списание. Резерв сохранён — нужен администратор.":
+      error.stage==="session"?"Не удалось подключить сессию. Обновите виджет.":
+      "Не удалось проверить заказ перед списанием. Обновите данные.";
+    return (documentErrors[error.reason]||fallback)+(error.trace?" Код BP-"+error.trace+".":"");
+  }
   return attempt?"Связь прервана. Нажмите «Обновить».":"Не удалось загрузить бонусы. Нажмите «Обновить».";
 }
 async function authenticate(generation){
@@ -116,7 +149,7 @@ function renderQuote(value){
   view(empty?"empty":"ready");
   status(dirty?"Сохраните изменения в заказе.":
     !value.can_prepare?"Программа ещё не настроена. Нужен администратор.":
-    value.quote.blocked_reason?"Списание приостановлено. Нужен администратор.":
+    value.quote.blocked_reason?(readOnlyMessages[value.quote.blocked_reason]||"Списание приостановлено. Нужен администратор."):
     value.quote.max_spend_points===0?(value.eligible_minor===0?"В заказе только услуги — бонусы не списываются.":
       empty?"":"Бонусы пока недоступны. Проверьте резервы."):"");
   updatePayable();
@@ -184,8 +217,12 @@ async function apply(event){
       if(rejected){
         // An explicit rejection is different from an ambiguous network failure.
         // Require a fresh quote, without inventing a successful reservation.
-        quote=null;requestId=null;
-        $("summary").hidden=true;$("pending").hidden=true;
+        requestId=null;
+        // This typed rejection occurs before any reservation. Keep the entered
+        // value and quote so staff can choose another amount without starting over.
+        if(error.reason!=="discount_not_representable"||!quote){
+          quote=null;$("summary").hidden=true;$("pending").hidden=true;
+        }
       }else{
         // A lost prepare response may already have reserved points.
         // Preserve uncertainty and never dispatch a second mutation blindly.

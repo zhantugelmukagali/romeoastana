@@ -1,5 +1,6 @@
 """MoySklad installation, administration and gated saved-discount verification."""
-from uuid import UUID
+import logging
+from uuid import UUID, uuid4
 from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Literal
@@ -219,10 +220,23 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
 
     app.add_middleware(SecurityHeaders)
 
+    def widget_failure(request,*,reason="saved_order_invalid",error_code="unsupported_saved_order"):
+        # Only finite codes and an opaque correlation value are public/logged.
+        # No provider bodies, exception text, tokens or customer/order identities.
+        if not request.url.path.startswith("/api/widget/orders/"):
+            return JSONResponse({"error":error_code},status_code=422)
+        allowed=("vat_mode_missing","vat_mode_unsupported","customer_missing","currency_unsupported","exchange_rate_unsupported","positions_missing","positions_limit","position_precision_unsupported","totals_mismatch","linked_documents_present","order_has_marker","discount_not_representable","saved_order_invalid","invalid_request")
+        if reason not in allowed:reason="saved_order_invalid"
+        path=request.url.path
+        stage="prepare" if path.endswith("/prepare") else "verify" if path.endswith("/verify") else "load"
+        trace=uuid4().hex[:12]
+        logging.getLogger("bonuspro.widget").warning("WIDGET_REJECT reason=%s stage=%s trace=BP-%s",reason,stage,trace)
+        return JSONResponse({"error":error_code,"reason":reason,"stage":stage,"trace_id":trace},status_code=422)
+
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, error):
         # FastAPI's default response may echo a credential from the submitted body.
-        return JSONResponse({"error":"invalid request"},status_code=422)
+        return widget_failure(request,reason="invalid_request",error_code="invalid request")
 
     @app.exception_handler(AuthenticationFailed)
     async def invalid_auth(request, error):
@@ -261,7 +275,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
             return JSONResponse({"error":"moysklad_permissions_required"},status_code=403)
         if isinstance(error,EntityMissing):
             return JSONResponse({"error":"saved_order_not_found"},status_code=404)
-        return JSONResponse({"error":"unsupported_saved_order"},status_code=422)
+        return widget_failure(request,reason=getattr(error,"reason","saved_order_invalid"))
 
     def bearer(request):
         authorization = request.headers.get("authorization","")
@@ -548,11 +562,12 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         if existing:
             return {"redemption":redemptions.public(existing)}
         marker=redemptions.binding(identity.tenant_id)
-        saved=read_order(document_client(identity),str(order_id),marker_id=marker)
+        saved=read_order(document_client(identity),str(order_id),marker_id=marker,allow_fulfilled=True)
         rules=redemptions.rules_for_order(identity.tenant_id,str(order_id))
         operator_identity(request)
         value=checkout.preview(identity.tenant_id,saved.snapshot,requested_points=0,
-                               actor_id=identity.user_id,eligibility_version=rules["version"],authorize=lambda conn:operators.check_in(conn,identity))
+                               actor_id=identity.user_id,eligibility_version=rules["version"],authorize=lambda conn:operators.check_in(conn,identity),
+                               read_only_reason=saved.discount_blocked_reason)
         # API token and full provider document never leave the backend.
         return {"quote":value,"saved_source_hash":saved.source_hash,"name":saved.name,
                 "eligible_minor":saved.snapshot.eligible_minor,"total_minor":saved.snapshot.total_minor,

@@ -104,4 +104,31 @@ class OrderTests(unittest.TestCase):
         self.lines.reverse()
         self.assertEqual(before,self.read().financial())
 
+    def test_disabled_vat_may_omit_vat_included_but_explicit_flags_are_preserved(self):
+        del self.doc["vatIncluded"]
+        saved=self.read()
+        self.assertFalse(saved.vat_enabled)
+        self.assertTrue(saved.vat_included)
+        self.assertEqual(saved.plan(1000)["after"]["total_minor"],1100000)
+        for flag in (False,True):
+            self.doc["vatIncluded"]=flag
+            self.assertIs(self.read().financial()["vat_included"],flag)
+
+    def test_missing_enabled_vat_or_non_boolean_flags_still_fail_closed(self):
+        for enabled,included in ((True,None),(False,None),(False,"false"),("false",True)):
+            self.doc["vatEnabled"]=enabled;self.doc["vatIncluded"]=included
+            with self.subTest(enabled=enabled,included=included),self.assertRaises(InvalidDocument) as error:
+                self.read()
+            self.assertEqual(error.exception.reason,"vat_mode_missing")
+        self.doc["vatEnabled"]=True
+        del self.doc["vatIncluded"]
+        with self.assertRaises(InvalidDocument):self.read()
+
+    def test_fractional_quantity_and_ordinary_discount_have_exact_saved_plan(self):
+        self.lines=[{**self.lines[0],"quantity":Decimal("1.25"),"price":10000,"discount":10}]
+        self.doc["sum"]=11250
+        plan=self.read().plan(1)
+        self.assertEqual(plan["after"]["total_minor"],11150)
+        self.assertEqual(plan["update_state"]["positions"],[{"id":self.lines[0]["id"],"discount":10.8}])
+
 if __name__=="__main__":unittest.main()

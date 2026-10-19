@@ -159,4 +159,18 @@ class CheckoutTests(unittest.TestCase):
             with self.subTest(patch=patch),self.assertRaises(ValueError):
                 self.checkout.save_rules(self.tenant,**body)
 
+    def test_read_only_preview_never_accepts_points_or_an_untrusted_reason(self):
+        self.save()
+        doc=replace(self.doc,paid_minor=1)
+        result=self.checkout.preview(self.tenant,doc,requested_points=0,actor_id=self.actor,
+                                     eligibility_version=1,read_only_reason="order_fulfilled")
+        self.assertEqual(result["max_spend_points"],0)
+        self.assertEqual(result["blocked_reason"],"order_fulfilled")
+        with self.assertRaises(Conflict):
+            self.checkout.preview(self.tenant,doc,requested_points=1,actor_id=self.actor,
+                                  eligibility_version=1,read_only_reason="order_fulfilled")
+        with self.assertRaises(ValueError):
+            self.checkout.preview(self.tenant,doc,requested_points=0,actor_id=self.actor,
+                                  eligibility_version=1,read_only_reason="untrusted")
+
 if __name__=="__main__":unittest.main()
