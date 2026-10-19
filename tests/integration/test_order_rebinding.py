@@ -204,7 +204,10 @@ class OrderRebindingTests(unittest.TestCase):
     def test_legacy_null_revision_with_history_stays_immutable_even_on_same_buyer(self):
         fx=self.fx
         self.legacy_null_revision()
-        fx.prepare(points=1)
+        # A legacy context can already have history before any upgraded
+        # prepare observes its provider revision.
+        fx.ledger.reserve(fx.tenant,fx.wallet,order_id=fx.order,points=1,eligible_minor=1000000,
+            rules=Rules(),quote_hash="a"*64,key=str(uuid4()),actor_id=fx.actor)
         before=self.context()
         with fx.ledger.transaction(fx.tenant) as conn:
             conn.execute("SELECT * FROM bonuspro.rebind_order_customer(%s,%s,%s,%s,%s)",

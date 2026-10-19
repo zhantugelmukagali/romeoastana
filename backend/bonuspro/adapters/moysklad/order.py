@@ -5,6 +5,7 @@ The UpdateRequest plan must be saved by MoySklad and read back before posting po
 """
 from dataclasses import dataclass, replace
 from decimal import Decimal, ROUND_HALF_UP
+from fractions import Fraction
 from bonuspro.adapters.moysklad.remap import InvalidDocument, exact_minor, reference, uuid
 from bonuspro.adapters.postgres.checkout import OrderSnapshot
 from bonuspro.adapters.postgres.ledger import fingerprint
@@ -48,6 +49,38 @@ class Line:
                     vat_enabled=self.vat_enabled,pack=self.pack)
 
 
+def _represent_amount(line,target):
+    """Reach an exact lower line amount without changing quantity or tax."""
+    if target==line.amount:
+        return line
+    if not 0<=target<line.amount:
+        raise InvalidDocument("discount target is out of bounds",reason="discount_not_representable")
+    # Smallest additional 0.01% step reaching target, without approximation.
+    lo,hi=line.discount_bps,10000
+    while lo<hi:
+        mid=(lo+hi)//2
+        if replace(line,discount_bps=mid).amount>target:
+            lo=mid+1
+        else:
+            hi=mid
+    changed=replace(line,discount_bps=lo)
+    if changed.amount != target:
+        # Keep the ordinary discount and use an integral minor-unit price
+        # only when the provider percentage grid cannot fit.
+        lo,hi=0,int(line.price)
+        while lo<hi:
+            mid=(lo+hi+1)//2
+            candidate=replace(line,price=Decimal(mid).normalize())
+            if candidate.amount>target:
+                hi=mid-1
+            else:
+                lo=mid
+        changed=replace(line,price=Decimal(lo).normalize())
+        if changed.amount != target:
+            raise InvalidDocument("discount cannot represent requested amount exactly",reason="discount_not_representable")
+    return changed
+
+
 @dataclass(frozen=True)
 class SavedOrder:
     snapshot: OrderSnapshot
@@ -72,6 +105,35 @@ class SavedOrder:
                                 paid=self.snapshot.paid_minor,shipped=self.snapshot.shipped_minor,
                                 cancelled=self.snapshot.cancelled,marker=self.marker))
 
+    def personal_discount(self,rate_bps,external_policy):
+        """Project personal prices; the caller authorizes the original order."""
+        natural(rate_bps,"rate_bps",10000)
+        if external_policy not in ("skip","best","sequential"):
+            raise ValueError("unsupported external discount policy")
+        lines=[]
+        records=[]
+        delta=0
+        for line in self.lines:
+            if line.kind not in GOODS:
+                lines.append(line)
+                continue
+            before=line.amount
+            target=before
+            if rate_bps and not (external_policy=="skip" and line.discount_bps>0):
+                basis=Decimal(before) if external_policy=="sequential" else line.price*line.quantity
+                target=min(before,rounded(basis*(10000-rate_bps)/10000))
+            changed=_represent_amount(line,target)
+            lines.append(changed)
+            reduction=before-changed.amount
+            delta+=reduction
+            records.append(dict(id=line.id,ordinary_discount_bps=line.discount_bps,
+                personal_rate_bps=rate_bps,policy=external_policy,before_minor=before,
+                personal_basis_minor=changed.amount,personal_discount_minor=reduction))
+        projected=replace(self,lines=tuple(lines),snapshot=replace(self.snapshot,
+            total_minor=self.snapshot.total_minor-delta,
+            eligible_minor=self.snapshot.eligible_minor-delta))
+        return projected,records
+
     def plan(self, points):
         natural(points,"points")
         if not points:
@@ -88,31 +150,7 @@ class SavedOrder:
         updates = []
         for line in self.lines:
             target = line.amount-allocation.get(line.id,0)
-            changed = line
-            if allocation.get(line.id,0):
-                # Smallest additional 0.01% step reaching target, without approximation.
-                lo,hi=line.discount_bps,10000
-                while lo<hi:
-                    mid=(lo+hi)//2
-                    if replace(line,discount_bps=mid).amount>target:
-                        lo=mid+1
-                    else:
-                        hi=mid
-                changed=replace(line,discount_bps=lo)
-                if changed.amount != target:
-                    # Keep the ordinary discount and use an integral minor-unit
-                    # price only when the provider percentage grid cannot fit.
-                    lo,hi=0,int(line.price)
-                    while lo<hi:
-                        mid=(lo+hi+1)//2
-                        candidate=replace(line,price=Decimal(mid).normalize())
-                        if candidate.amount>target:
-                            hi=mid-1
-                        else:
-                            lo=mid
-                    changed=replace(line,price=Decimal(lo).normalize())
-                    if changed.amount != target:
-                        raise InvalidDocument("discount cannot represent requested points exactly",reason="discount_not_representable")
+            changed = _represent_amount(line,target)
             result.append(changed)
             update={"id":line.id}
             if changed.discount_bps!=line.discount_bps:
@@ -122,12 +160,18 @@ class SavedOrder:
             updates.append(update)
         # Returns identify groups by the saved financial signature. Neither
         # percentage nor price changes may pool different original allocations.
+        # Equal unit prices can still have different rounded amounts per unit.
         def signature(value):
             return (value.kind,value.assortment,value.price,value.discount_bps,
                     value.vat,value.vat_enabled,value.pack)
         groups={}
         for original,changed in zip(self.lines,result):
-            groups.setdefault(signature(changed),set()).add(signature(original))
+            allocation_signature=(signature(original),)
+            if original.kind in GOODS and allocation.get(original.id,0)>0:
+                quantity=Fraction(original.quantity)
+                allocation_signature+=(Fraction(original.amount)/quantity,
+                                       Fraction(allocation.get(original.id,0))/quantity)
+            groups.setdefault(signature(changed),set()).add(allocation_signature)
         if any(len(originals)>1 for originals in groups.values()):
             raise InvalidDocument("discount would merge distinct return allocations",reason="discount_not_representable")
         after=replace(self,lines=tuple(result),

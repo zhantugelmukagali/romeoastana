@@ -28,3 +28,12 @@ label:has(input[type=checkbox]){display:flex;align-items:flex-start;font-size:13
 #automation-details p,#setup-status,#webhook-status,#activation-status,#automation-status{font-size:12px;color:#647084}
 .setup-step{display:none}
 @media(max-width:560px){.fields{gap:12px}.fields input{font-size:19px}.rules-actions #reload{width:100%}.rule-facts{display:block}.rule-facts span{display:block;margin:5px 0}.rule-facts span+span:before{content:none}.settings-tabs{gap:22px}}
+
+#personal-policy-form{max-width:620px}
+#personal-policy-form>label:first-child{margin-top:0}
+#personal-policy-form select{display:block;width:100%;max-width:420px}
+#personal-policy-reason{display:block;max-width:560px;min-height:64px}
+#personal-example,#personal-stack-note{max-width:560px}
+#personal-policy-history article{border-bottom:1px solid var(--border);padding:14px 0}
+#personal-policy-history p{font-size:12px;overflow-wrap:anywhere}
+#personal-policy-history p:last-child{color:var(--muted)}

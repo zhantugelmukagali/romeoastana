@@ -59,8 +59,15 @@ class Redemptions:
                 raise ProgramNotConfigured("rules are not configured")
             return row
 
+    def personal_preview(self,tenant,saved,original_quote):
+        from bonuspro.adapters.postgres.personal_applications import PersonalApplications
+        return PersonalApplications(self.ledger).preview(tenant,saved,original_quote)
+
     def existing(self,tenant,order):
         with self.ledger.transaction(tenant) as conn:
+            from bonuspro.adapters.postgres.personal_applications import PersonalApplications
+            personal=PersonalApplications.existing_in(conn,tenant,order)
+            if personal:return personal
             row=conn.execute("SELECT a.*,r.state,r.points FROM bonuspro.redemption_attempts a "
                 "JOIN bonuspro.reservations r ON r.tenant_id=a.tenant_id AND r.id=a.id "
                 "WHERE a.tenant_id=%s AND a.order_id=%s AND r.state IN ('verifying','committed')",
@@ -69,10 +76,22 @@ class Redemptions:
 
     @staticmethod
     def public(row):
-        return dict(id=str(row["id"]),order_id=str(row["order_id"]),state=row["state"],points=row["points"],
+        result=dict(id=str(row["id"]),order_id=str(row["order_id"]),state=row["state"],points=row["points"],
                     recoverable=row["state"]=="verifying")
+        if row.get("personal_application"):
+            result.update(application_id=str(row["id"]),apply_personal=True,
+                          personal_discount_minor=row["plan"]["personal_discount_minor"],
+                          personal_rate_bps=row["rate_bps"])
+        return result
 
-    def prepare(self,tenant,order: SavedOrder,*,points,request_id,actor_id,expected_source,authorize=None):
+    def prepare(self,tenant,order: SavedOrder,*,points,request_id,actor_id,expected_source,authorize=None,
+                apply_personal=False,expected_policy_version=None,expected_assignment_version=None):
+        if type(apply_personal) is not bool:raise ValueError("invalid personal discount selection")
+        if apply_personal:
+            from bonuspro.adapters.postgres.personal_applications import PersonalApplications
+            return PersonalApplications(self.ledger).prepare(tenant,order,points=points,request_id=request_id,
+                actor_id=actor_id,expected_source=expected_source,expected_policy_version=expected_policy_version,
+                expected_assignment_version=expected_assignment_version,authorize=authorize)
         tenant,request_id,actor=map(uuid_value,(tenant,request_id,actor_id))
         natural(points,"points")
         digest_value(expected_source)
@@ -82,6 +101,8 @@ class Redemptions:
         with self.ledger.transaction(tenant) as conn:
             if authorize:authorize(conn)
             self.ledger._key_lock(conn,tenant,"widget/request/"+request_id)
+            if conn.execute("SELECT 1 FROM bonuspro.personal_discount_applications WHERE tenant_id=%s AND request_id=%s",
+                            (tenant,request_id)).fetchone():raise Conflict("request ID reused")
             previous=conn.execute("SELECT a.*,r.state,r.points FROM bonuspro.redemption_attempts a "
                 "JOIN bonuspro.reservations r ON r.tenant_id=a.tenant_id AND r.id=a.id "
                 "WHERE a.tenant_id=%s AND a.request_id=%s",(tenant,request_id)).fetchone()
@@ -108,6 +129,14 @@ class Redemptions:
                 "WHERE o.tenant_id=%s AND o.order_id=%s",(tenant,order.snapshot.order_id)).fetchone()
             if not context or str(context["counterparty_id"])!=order.snapshot.counterparty_id:
                 raise Conflict("customer or order binding changed")
+            try:
+                conn.execute("SELECT bonuspro.rebind_order_customer(%s,%s,%s,%s,%s)",
+                    (order.snapshot.order_id,order.snapshot.counterparty_id,order.source_hash,order.snapshot.revision,actor))
+            except psycopg.errors.CheckViolation:
+                raise Conflict("order changed; reload") from None
+            if conn.execute("SELECT 1 FROM bonuspro.personal_discount_applications WHERE tenant_id=%s AND order_id=%s "
+                            "AND state IN ('verifying','confirmed')",(tenant,order.snapshot.order_id)).fetchone():
+                raise Conflict("order already has a personal discount operation")
             wallet=str(context["wallet_id"])
             self.ledger._wallet_lock(conn,tenant,wallet)
             if conn.execute("SELECT 1 FROM bonuspro.reservations WHERE tenant_id=%s AND order_id=%s "
@@ -155,6 +184,11 @@ class Redemptions:
                 and order.financial()==row["plan"]["before"])
 
     def resume(self,tenant,order: SavedOrder,*,attempt_id,expected_source,authorize=None):
+        current=self.existing(tenant,order.snapshot.order_id)
+        if current and current.get("personal_application"):
+            from bonuspro.adapters.postgres.personal_applications import PersonalApplications
+            return PersonalApplications(self.ledger).resume(tenant,order,attempt_id=attempt_id,
+                expected_source=expected_source,authorize=authorize)
         tenant,attempt_id=map(uuid_value,(tenant,attempt_id))
         digest_value(expected_source)
         if tenant!=order.snapshot.tenant_id:
@@ -184,6 +218,9 @@ class Redemptions:
         row=self.existing(tenant,order.snapshot.order_id)
         if not row:
             raise NotFound("redemption not found")
+        if row.get("personal_application"):
+            from bonuspro.adapters.postgres.personal_applications import PersonalApplications
+            return PersonalApplications(self.ledger).confirm(tenant,order,authorize=authorize)
         if tenant!=order.snapshot.tenant_id:
             raise Conflict("wrong tenant")
         # Even a retry of a committed attempt reports a mismatch if the document changed.

@@ -6,11 +6,20 @@ class Voids:
     def __init__(self,ledger):self.ledger=ledger
     def lookup(self,tenant,rid):
         with self.ledger.transaction(tenant) as conn:
+            personal=conn.execute("SELECT order_id,state FROM bonuspro.personal_discount_applications "
+                                  "WHERE tenant_id=%s AND id=%s",(tenant,uuid_value(rid))).fetchone()
+            if personal:return personal
             row=conn.execute("SELECT a.order_id,r.state FROM bonuspro.redemption_attempts a JOIN bonuspro.reservations r "
                 "ON r.tenant_id=a.tenant_id AND r.id=a.id WHERE a.tenant_id=%s AND a.id=%s",(tenant,uuid_value(rid))).fetchone()
             if not row:raise NotFound("attempt missing")
             return row
     def release(self,tenant,rid,proof,*,actor,reason):
+        with self.ledger.transaction(tenant) as conn:
+            personal=conn.execute("SELECT 1 FROM bonuspro.personal_discount_applications WHERE tenant_id=%s AND id=%s",
+                                  (tenant,uuid_value(rid))).fetchone()
+        if personal:
+            from bonuspro.adapters.postgres.personal_applications import PersonalApplications
+            return PersonalApplications(self.ledger).release(tenant,rid,proof,actor=actor,reason=reason)
         rid,actor=map(uuid_value,(rid,actor));text_value(reason,"reason",500)
         with self.ledger.transaction(tenant) as conn:
             conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("installation/"+tenant,))

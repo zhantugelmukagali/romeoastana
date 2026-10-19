@@ -10,12 +10,12 @@ update=importlib.util.module_from_spec(spec);spec.loader.exec_module(update)
 
 class SchemaUpgradeTests(unittest.TestCase):
     def exercise(self,*,local_failure=False,public_failure=False,preflight_failure=False,
-                 rollback_blocked=False,ambiguous_commit=False):
+                 rollback_blocked=False,ambiguous_commit=False,original_schema="0013"):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory);env=root/".env.release"
             old="BONUSPRO_IMAGE=bonuspro:"+"a"*12+"\n";env.write_text(old);env.chmod(0o600)
             backup=root/"protected";backup.mkdir(mode=0o700)
-            schema={"value":"0013"};audit={"rows":0};events=[]
+            schema={"value":original_schema};audit={"rows":0};events=[]
             initial={name:True for name in update.QUIET_SERVICES}
             current=initial.copy()
             def execute(args,**kwargs):
@@ -34,17 +34,18 @@ class SchemaUpgradeTests(unittest.TestCase):
                 events.append("isolated_restore")
                 if preflight_failure:raise RuntimeError("isolated migration failed")
             def apply(database,source):
-                events.append("migration");schema["value"]="0014"
+                events.append("migration");schema["value"]="0015"
                 if ambiguous_commit:raise RuntimeError("connection lost after commit")
             def local(source):
                 events.append("local_verify")
                 if local_failure:
                     if rollback_blocked:audit["rows"]=1
                     raise RuntimeError("new application is unhealthy")
-            def rollback():
+            def rollback(source,expected):
                 events.append("ddl_rollback")
                 if audit["rows"]:raise update.UpdateFailed("history prevents rollback")
-                schema["value"]="0013"
+                self.assertEqual(expected,original_schema)
+                schema["value"]=expected
             def public(source):
                 events.append("public_verify")
                 if public_failure:raise RuntimeError("public verification failed")
@@ -55,8 +56,8 @@ class SchemaUpgradeTests(unittest.TestCase):
                 replacements={"run":execute,"service_states":lambda:current.copy(),
                     "protected_backup":lambda _:backup,"dump_database":dumped,
                     "verify_restore":preflight,"stop_for_upgrade":stop,"database_schema":lambda:schema["value"],
-                    "apply_rebinding_migration":apply,"verify_local":local,
-                    "rollback_rebinding_migration":rollback,"restore_previous_services":restore}
+                    "apply_compatible_migrations":apply,"verify_local":local,
+                    "rollback_compatible_migrations":rollback,"restore_previous_services":restore}
                 for name,value in replacements.items():stack.enter_context(patch.object(update,name,value))
                 error=None
                 try:update.upgrade_schema_and_switch(root,root,"bonuspro:"+"b"*12,verify=public)
@@ -72,7 +73,7 @@ class SchemaUpgradeTests(unittest.TestCase):
         self.assertLess(events.index("database.pre-upgrade.dump"),events.index("migration"))
         self.assertLess(events.index("migration"),events.index("new_app"))
         self.assertLess(events.index("local_verify"),events.index("web_exposure"))
-        self.assertEqual(result["schema"],"0014")
+        self.assertEqual(result["schema"],"0015")
         self.assertIn("database.dump",result["backups"])
         self.assertIn("database.pre-upgrade.dump",result["backups"])
         # The old worker cannot run against a new schema before start_processing replaces it.
@@ -140,3 +141,70 @@ class SchemaUpgradeTests(unittest.TestCase):
             self.assertIn("version_num='0014'",sql)
             self.assertIn("Unexpected schema",sql)
             self.assertTrue(sql.startswith("BEGIN;"));self.assertTrue(sql.endswith("COMMIT;\n"))
+
+    def test_existing_0014_upgrade_failure_preserves_rebinding_history_and_original_schema(self):
+        result=self.exercise(local_failure=True,original_schema="0014")
+        self.assertIn("UPDATE_FAILED: schema 0014",result["error"])
+        self.assertEqual(result["schema"],"0014")
+        self.assertEqual(result["env"],result["old"])
+        self.assertIn("restore_previous",result["events"])
+
+    def test_personal_rollback_checks_every_new_table_before_owner_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory);path=source/"migrations/versions/0015_personal_discounts.down.sql"
+            path.parent.mkdir(parents=True);path.write_text("SELECT 'exact supplied down migration';")
+            captured=[]
+            with patch.object(update,"migration_owner",return_value='"bonuspro_migrator"'),\
+                 patch.object(update,"database_sql",side_effect=lambda database,sql,**kw:captured.append(sql)):
+                update.rollback_personal_discount_migration(source)
+            sql=captured[0];role=sql.index("SET LOCAL ROLE")
+            for table in update.PERSONAL_DISCOUNT_TABLES:
+                self.assertLess(sql.index("LOCK TABLE bonuspro."+table+" IN ACCESS EXCLUSIVE MODE"),role)
+                self.assertLess(sql.index("EXISTS(SELECT 1 FROM bonuspro."+table+")"),role)
+            self.assertIn(path.read_text(),sql)
+            self.assertLess(role,sql.index(path.read_text()))
+            self.assertNotIn("CASCADE",sql)
+            self.assertIn("version_num='0014'",sql)
+            self.assertIn("DO $$ BEGIN IF",sql);self.assertIn("END $$;",sql)
+
+    def test_compatible_upgrade_chain_handles_both_supported_origins_and_is_idempotent(self):
+        for initial,expected in (("0013",["rebinding","personal"]),("0014",["personal"]),("0015",[])):
+            state={"schema":initial};calls=[]
+            def rebinding(database,source):
+                self.assertEqual(state["schema"],"0013");calls.append("rebinding");state["schema"]="0014"
+            def personal(database,source):
+                self.assertEqual(state["schema"],"0014");calls.append("personal");state["schema"]="0015"
+            with patch.object(update,"database_schema",side_effect=lambda *_:state["schema"]),\
+                 patch.object(update,"apply_rebinding_migration",side_effect=rebinding),\
+                 patch.object(update,"apply_personal_discount_migration",side_effect=personal):
+                update.apply_compatible_migrations("bonuspro",ROOT)
+            self.assertEqual(calls,expected);self.assertEqual(state["schema"],"0015")
+        with patch.object(update,"database_schema",return_value="0017"),\
+             patch.object(update,"database_sql") as execute:
+            with self.assertRaises(update.UpdateFailed):update.apply_compatible_migrations("bonuspro",ROOT)
+            execute.assert_not_called()
+
+    def test_rollback_chain_never_crosses_original_schema_or_drops_rebinding_after_personal_history(self):
+        for original,expected in (("0013",["personal","rebinding"]),("0014",["personal"])):
+            state={"schema":"0015"};calls=[]
+            def personal(source,database):
+                calls.append("personal");state["schema"]="0014"
+            def rebinding(database):
+                calls.append("rebinding");state["schema"]="0013"
+            with patch.object(update,"database_schema",side_effect=lambda *_:state["schema"]),\
+                 patch.object(update,"rollback_personal_discount_migration",side_effect=personal),\
+                 patch.object(update,"rollback_rebinding_migration",side_effect=rebinding):
+                update.rollback_compatible_migrations(ROOT,original)
+            self.assertEqual(calls,expected);self.assertEqual(state["schema"],original)
+        with patch.object(update,"database_schema",return_value="0015"),\
+             patch.object(update,"rollback_personal_discount_migration",side_effect=update.UpdateFailed("history exists")),\
+             patch.object(update,"rollback_rebinding_migration") as rebinding:
+            with self.assertRaises(update.UpdateFailed):update.rollback_compatible_migrations(ROOT,"0013")
+            rebinding.assert_not_called()
+
+    def test_only_adjacent_compatible_schema_transitions_are_allowed(self):
+        for old,new in (("0013","0014"),("0014","0013"),("0014","0015"),("0015","0014")):
+            self.assertIn("COMMIT;",update.guarded_schema_sql("SELECT 1;",expected=old,result=new,owner="bonuspro_migrator"))
+        for old,new in (("0013","0015"),("0015","0013"),("0016","0017"),("0014","0014")):
+            with self.assertRaises(update.UpdateFailed):
+                update.guarded_schema_sql("SELECT 1;",expected=old,result=new,owner="bonuspro_migrator")

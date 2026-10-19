@@ -20,6 +20,7 @@ class PortalBrowserTests(unittest.TestCase):
         self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1440,"height":1050})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
+        self.personal_assignment={"counterparty_id":CUSTOMER,"version":0,"rate_bps":None};self.personal_saves=[];self.personal_requests={};self.personal_conflict=False;self.personal_drop_first=False;self.personal_archived=False
         self.sessions=0;self.role="admin";self.state="Activated";self.empty=False;self.balance="184500";self.processing=True;self.calls=[]
     def tearDown(self):
         self.context.close();self.browser.close();self.runtime.stop()
@@ -41,8 +42,19 @@ class PortalBrowserTests(unittest.TestCase):
                 "processing":{"heartbeat_at":datetime.now(timezone.utc).isoformat(),"last_error":None} if self.processing else None,"generated_at":"2026-10-15T05:00:00Z"})
             if path=="/api/admin/customers":return route.fulfill(json={"items":[] if self.empty else [
                 {"id":CUSTOMER,"name":NAME,"phone":"+7 700 111 22 33","balance":1500,"available":1200,"reserved":300,"enrolled":True}],"next_offset":None})
+            if path=="/api/admin/customers/"+CUSTOMER+"/personal-discount":
+                body=route.request.post_data_json;self.personal_saves.append(body)
+                if self.personal_archived:return route.fulfill(status=409,json={"error":"customer_archived"})
+                if self.personal_conflict:return route.fulfill(status=409,json={"error":"conflict"})
+                if body["request_id"] not in self.personal_requests:
+                    self.personal_assignment={**body,"counterparty_id":CUSTOMER,"version":self.personal_assignment["version"]+1,
+                                              "actor_id":"synthetic-user","created_at":"2026-10-19T00:00:00Z"}
+                    self.personal_requests[body["request_id"]]=self.personal_assignment
+                if self.personal_drop_first and len(self.personal_saves)==1:return route.abort()
+                return route.fulfill(json={"current":self.personal_requests[body["request_id"]]})
             if path=="/api/admin/customers/"+CUSTOMER:return route.fulfill(json={
-                "id":CUSTOMER,"name":NAME,"phone":"+7 700 111 22 33","balance":1500,"available":1200,"reserved":300,"enrolled":True})
+                "id":CUSTOMER,"name":NAME,"phone":"+7 700 111 22 33","balance":1500,"available":1200,"reserved":300,"enrolled":True,
+                "personal_discount":{**self.personal_assignment,"enabled":True,"effective_rate_bps":self.personal_assignment["rate_bps"] or 0}})
             if path=="/api/admin/activity":return route.fulfill(json={"items":[] if self.empty else [
                 {"id":TX,"kind":"credit","points":1500,"created_at":"2026-10-15T04:00:00Z","customer_id":CUSTOMER,"order_id":None}],"next_cursor":None})
             return route.fulfill(status=404,json={"error":"missing fixture"})
@@ -219,5 +231,77 @@ class PortalBrowserTests(unittest.TestCase):
                 }"""))
                 self.frame.get_by_role("link",name="Обзор",exact=True).click()
                 self.frame.get_by_role("heading",name="Обзор программы",exact=True).wait_for()
+
+
+    def open_personal_editor(self):
+        self.open();self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+        self.frame.get_by_role("button",name="Открыть",exact=True).click()
+        self.frame.get_by_role("heading",name=NAME,exact=True).wait_for()
+        self.frame.get_by_role("button",name="Изменить скидку",exact=True).click()
+
+    def test_customer_personal_discount_assign_zero_and_remove_have_distinct_real_writes(self):
+        self.page.set_viewport_size({"width":320,"height":844});self.open_personal_editor()
+        self.frame.get_by_label("Назначение скидки",exact=True).select_option("rate")
+        self.frame.get_by_label("Персональная скидка, %",exact=True).fill("12.50")
+        self.frame.get_by_label("Причина изменения скидки",exact=True).fill("Постоянный клиент")
+        self.frame.get_by_role("button",name="Сохранить скидку",exact=True).click()
+        self.frame.get_by_text("Скидка сохранена. Версия 1.",exact=True).wait_for()
+        self.assertEqual(self.personal_saves[0]["rate_bps"],1250)
+        self.assertEqual(self.personal_saves[0]["expected_version"],0)
+        self.assertNotIn("counterparty_id",self.personal_saves[0])
+        self.frame.get_by_role("button",name="Изменить скидку",exact=True).click()
+        self.frame.get_by_label("Персональная скидка, %",exact=True).fill("0")
+        self.frame.get_by_label("Причина изменения скидки",exact=True).fill("Отключить по просьбе клиента")
+        self.frame.get_by_role("button",name="Сохранить скидку",exact=True).click()
+        self.frame.get_by_text("Скидка сохранена. Версия 2.",exact=True).wait_for()
+        self.frame.get_by_text("0% · скидка отключена для клиента",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Изменить скидку",exact=True).click()
+        self.frame.get_by_label("Назначение скидки",exact=True).select_option("none")
+        self.frame.get_by_label("Причина изменения скидки",exact=True).fill("Удалить назначение")
+        self.frame.get_by_role("button",name="Сохранить скидку",exact=True).click()
+        self.frame.get_by_text("Скидка сохранена. Версия 3.",exact=True).wait_for()
+        self.frame.locator("#customer-personal-value").get_by_text("Не назначена",exact=True).wait_for()
+        self.assertEqual([row["rate_bps"] for row in self.personal_saves],[1250,0,None])
+        self.assertEqual([row["expected_version"] for row in self.personal_saves],[0,1,2])
+        self.assertEqual("".join(self.frame.locator("#customer-available").inner_text().split()),"1200")
+        self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+
+    def test_customer_personal_retry_and_version_conflict_preserve_intent(self):
+        self.personal_drop_first=True;self.open_personal_editor()
+        self.frame.get_by_label("Назначение скидки",exact=True).select_option("rate")
+        self.frame.get_by_label("Персональная скидка, %",exact=True).fill("15")
+        self.frame.get_by_label("Причина изменения скидки",exact=True).fill("Согласовано")
+        button=self.frame.get_by_role("button",name="Сохранить скидку",exact=True)
+        button.click()
+        self.frame.locator("#customer-personal-status").get_by_text("Нет ответа сервера.",exact=False).wait_for()
+        button.click()
+        self.frame.get_by_text("Скидка сохранена. Версия 1.",exact=True).wait_for()
+        self.assertEqual(self.personal_saves[0],self.personal_saves[1])
+        self.personal_conflict=True
+        self.frame.get_by_role("button",name="Изменить скидку",exact=True).click()
+        self.frame.get_by_label("Персональная скидка, %",exact=True).fill("25")
+        self.frame.get_by_label("Причина изменения скидки",exact=True).fill("Новое согласование")
+        button.click()
+        self.frame.get_by_text("Скидка уже изменена. Загрузите актуальную скидку и проверьте значения.",exact=True).wait_for()
+        self.assertFalse(button.is_enabled())
+        self.assertEqual(self.frame.get_by_label("Персональная скидка, %",exact=True).input_value(),"25")
+        self.personal_conflict=False
+        self.frame.get_by_role("button",name="Загрузить актуальную скидку",exact=True).click()
+        self.frame.get_by_text("Актуальная скидка загружена.",exact=True).wait_for()
+        self.frame.get_by_role("button",name="Изменить скидку",exact=True).click()
+        self.assertEqual(self.frame.get_by_label("Персональная скидка, %",exact=True).input_value(),"15")
+
+
+    def test_archived_customer_cannot_be_retried_as_a_version_conflict(self):
+        self.personal_archived=True;self.open_personal_editor()
+        self.frame.get_by_label("Назначение скидки",exact=True).select_option("rate")
+        self.frame.get_by_label("Персональная скидка, %",exact=True).fill("10")
+        self.frame.get_by_label("Причина изменения скидки",exact=True).fill("Проверка")
+        self.frame.get_by_role("button",name="Сохранить скидку",exact=True).click()
+        self.frame.get_by_text("Клиент в архиве МойСклад. Восстановите его в МойСклад и откройте карточку заново.",exact=True).wait_for()
+        self.assertFalse(self.frame.get_by_role("button",name="Сохранить скидку",exact=True).is_enabled())
+        self.assertFalse(self.frame.get_by_role("button",name="Изменить скидку",exact=True).is_enabled())
+        self.assertFalse(self.frame.locator("#reload-customer-personal").is_visible())
+        self.assertEqual(len(self.personal_saves),1)
 
 if __name__=="__main__":unittest.main()

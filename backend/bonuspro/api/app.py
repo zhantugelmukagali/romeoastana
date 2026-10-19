@@ -23,6 +23,7 @@ from bonuspro.adapters.postgres.ledger import Ledger, Conflict, NotFound
 from bonuspro.adapters.postgres.returns import Returns
 from bonuspro.adapters.postgres.checkout import Checkout
 from bonuspro.adapters.postgres.portal import Portal
+from bonuspro.adapters.postgres.personal_discounts import PersonalDiscounts
 from bonuspro.adapters.postgres.readiness import Readiness
 from bonuspro.adapters.postgres.redemptions import Redemptions,SetupInProgress,ProgramNotConfigured
 from bonuspro.adapters.postgres.automation import Automation
@@ -144,11 +145,36 @@ class RuleUpdate(BaseModel):
         return value.strip()
 
 
+class PersonalDiscountPolicyUpdate(IssueDecision):
+    request_id: UUID
+    expected_version: StrictInt = Field(ge=0,le=2147483646)
+    enabled: StrictBool
+    external_policy: Literal["skip","best","sequential"]
+    allow_bonus_stack: StrictBool
+
+
+class CustomerDiscountUpdate(IssueDecision):
+    request_id: UUID
+    expected_version: StrictInt = Field(ge=0,le=2147483646)
+    rate_bps: StrictInt | None = Field(ge=0,le=10000)
+
+
 class RedemptionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    points: StrictInt = Field(gt=0,le=90000000000000)
+    points: StrictInt = Field(ge=0,le=90000000000000)
     request_id: UUID
     source_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    apply_personal: StrictBool = False
+    expected_policy_version: StrictInt | None = Field(default=None,ge=0,le=2147483647)
+    expected_assignment_version: StrictInt | None = Field(default=None,ge=0,le=2147483647)
+
+    @model_validator(mode="after")
+    def requested_benefit(self):
+        if not self.points and not self.apply_personal:
+            raise ValueError("a discount or positive redemption is required")
+        if self.apply_personal and (self.expected_policy_version is None or self.expected_assignment_version is None):
+            raise ValueError("personal discount versions are required")
+        return self
 
 
 class ResumeRequest(BaseModel):
@@ -215,6 +241,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     provider = vendor or VendorClient(config.credentials)
     returns = Returns(Ledger(config.database_url))
     checkout = Checkout(Ledger(config.database_url))
+    discounts = PersonalDiscounts(Ledger(config.database_url))
     redemptions = Redemptions(Ledger(config.database_url))
     automation = Automation(Ledger(config.database_url))
     imports = Imports(Ledger(config.database_url))
@@ -314,9 +341,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         try:
             with psycopg.connect(config.database_url,connect_timeout=3) as conn:
                 conn.execute("SET LOCAL statement_timeout='3s'")
-                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events'),to_regclass('bonuspro.import_batches'),to_regclass('bonuspro.opening_balances'),to_regclass('bonuspro.activation_requests'),to_regclass('bonuspro.activation_completions'),to_regclass('bonuspro.operator_permissions'),to_regclass('bonuspro.redemption_voids'),to_regclass('bonuspro.order_customer_rebindings'),to_regprocedure('bonuspro.rebind_order_customer(uuid,uuid,text,text,uuid)')").fetchone()
+                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events'),to_regclass('bonuspro.import_batches'),to_regclass('bonuspro.opening_balances'),to_regclass('bonuspro.activation_requests'),to_regclass('bonuspro.activation_completions'),to_regclass('bonuspro.operator_permissions'),to_regclass('bonuspro.redemption_voids'),to_regclass('bonuspro.order_customer_rebindings'),to_regprocedure('bonuspro.rebind_order_customer(uuid,uuid,text,text,uuid)'),to_regclass('bonuspro.personal_discount_policy_versions'),to_regclass('bonuspro.customer_personal_discount_versions'),to_regclass('bonuspro.personal_discount_applications'),to_regclass('bonuspro.personal_discount_voids')").fetchone()
                 revision = conn.execute("SELECT version_num FROM public.alembic_version").fetchall()
-                if not all(exists) or revision != [("0014",)]:
+                if not all(exists) or revision != [("0015",)]:
                     raise RuntimeError("missing schema")
             return {"status":"ready"}
         except (psycopg.Error,RuntimeError):
@@ -438,6 +465,46 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     @app.get("/staff")
     def staff_page():
         return FileResponse(web / "staff.html")
+
+    @app.get("/api/admin/personal-discounts/policy")
+    def get_personal_discount_policy(request: Request):
+        identity=admin_identity(request)
+        return {"current":discounts.policy(identity.tenant_id)}
+
+    @app.get("/api/admin/personal-discounts/policy/history")
+    def personal_discount_policy_history(request: Request,before: int | None=None):
+        identity=admin_identity(request)
+        if before is not None and not 1<=before<=2147483647:
+            raise HTTPException(422,"invalid cursor")
+        return discounts.policy_history(identity.tenant_id,before=before)
+
+    @app.put("/api/admin/personal-discounts/policy")
+    def update_personal_discount_policy(body: PersonalDiscountPolicyUpdate,request: Request):
+        same_origin(request);identity=admin_identity(request)
+        result=discounts.save_policy(identity.tenant_id,enabled=body.enabled,
+            external_policy=body.external_policy,allow_bonus_stack=body.allow_bonus_stack,
+            expected_version=body.expected_version,request_id=str(body.request_id),
+            actor_id=identity.user_id,reason=body.reason)
+        return {"current":result}
+
+    @app.get("/api/admin/customers/{customer_id}/personal-discount/history")
+    def personal_discount_customer_history(customer_id: UUID,request: Request,before: int | None=None):
+        identity=admin_identity(request)
+        if before is not None and not 1<=before<=2147483647:
+            raise HTTPException(422,"invalid cursor")
+        return discounts.assignment_history(identity.tenant_id,str(customer_id),before=before)
+
+    @app.put("/api/admin/customers/{customer_id}/personal-discount")
+    def update_customer_personal_discount(customer_id: UUID,body: CustomerDiscountUpdate,request: Request):
+        same_origin(request);identity=admin_identity(request)
+        customer=document_client(identity).entity("counterparty",str(customer_id))
+        admin_identity(request)
+        if customer.get("archived") is True:
+            return JSONResponse({"error":"customer_archived"},status_code=409)
+        result=discounts.save_assignment(identity.tenant_id,str(customer_id),rate_bps=body.rate_bps,
+            expected_version=body.expected_version,request_id=str(body.request_id),
+            actor_id=identity.user_id,reason=body.reason)
+        return {"current":result}
 
     @app.get("/api/admin/operators")
     def operator_list(request: Request):
@@ -581,7 +648,8 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         # API token and full provider document never leave the backend.
         return {"quote":value,"saved_source_hash":saved.source_hash,"name":saved.name,
                 "eligible_minor":saved.snapshot.eligible_minor,"total_minor":saved.snapshot.total_minor,
-                "can_prepare":bool(marker) and repo.state(identity.tenant_id)["state"]=="Activated"}
+                "can_prepare":bool(marker) and repo.state(identity.tenant_id)["state"]=="Activated",
+                "personal_discount":redemptions.personal_preview(identity.tenant_id,saved,value)}
 
     @app.post("/api/widget/orders/{order_id}/prepare")
     def widget_prepare(order_id: UUID,body: RedemptionRequest,request: Request):
@@ -593,7 +661,10 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         saved=read_order(document_client(identity),str(order_id),marker_id=marker)
         operator_identity(request)
         return redemptions.prepare(identity.tenant_id,saved,points=body.points,
-                    request_id=str(body.request_id),actor_id=identity.user_id,expected_source=body.source_hash,authorize=lambda conn:operators.check_in(conn,identity))
+                    request_id=str(body.request_id),actor_id=identity.user_id,expected_source=body.source_hash,
+                    apply_personal=body.apply_personal,expected_policy_version=body.expected_policy_version,
+                    expected_assignment_version=body.expected_assignment_version,
+                    authorize=lambda conn:operators.check_in(conn,identity))
 
     @app.post("/api/widget/orders/{order_id}/resume")
     def widget_resume(order_id: UUID,body: ResumeRequest,request: Request):
@@ -648,7 +719,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         result=document_client(identity).counterparties(q,offset)
         admin_identity(request)
         values=Portal(Ledger(config.database_url)).balances(identity.tenant_id,[row["id"] for row in result["items"]])
-        return dict(items=[{**row,**values.get(row["id"],dict(enrolled=False,balance=0,reserved=0,available=0))}
+        personal=discounts.assignments(identity.tenant_id,[row["id"] for row in result["items"]])
+        return dict(items=[{**row,"personal_discount":personal[row["id"]],
+                            **values.get(row["id"],dict(enrolled=False,balance=0,reserved=0,available=0))}
                            for row in result["items"]],next_offset=result["next_offset"])
 
     @app.get("/api/admin/customers/{customer_id}")
@@ -658,7 +731,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         admin_identity(request)
         values=Portal(Ledger(config.database_url)).balances(identity.tenant_id,[str(customer_id)])
         return dict(id=str(customer_id),name=str(row.get("name",""))[:256],phone=str(row.get("phone",""))[:100],
-                    archived=row.get("archived") is True,**values.get(str(customer_id),dict(enrolled=False,balance=0,reserved=0,available=0)))
+                    archived=row.get("archived") is True,
+                    personal_discount=discounts.assignment(identity.tenant_id,str(customer_id)),
+                    **values.get(str(customer_id),dict(enrolled=False,balance=0,reserved=0,available=0)))
 
     @app.get("/returns")
     def previous_returns_page():

@@ -16,8 +16,10 @@ class SettingsBrowserTests(unittest.TestCase):
         self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1280,"height":1200})
         self.page=self.context.new_page()
-        self.setup_error=None;self.widget_configured=False;self.automation_config=None;self.activations=[]
+        self.unverified=[];self.setup_error=None;self.widget_configured=False;self.automation_config=None;self.activations=[]
         self.current=None;self.saved=[];self.drop_first=False;self.conflict=False
+        self.policy={"version":0,"enabled":False,"external_policy":"skip","allow_bonus_stack":False}
+        self.policy_saved=[];self.policy_requests={};self.policy_conflict=False;self.policy_drop_first=False
         self.context.route("**/*",self.route)
 
     def tearDown(self):
@@ -37,7 +39,7 @@ class SettingsBrowserTests(unittest.TestCase):
             if route.request.method=="POST":
                 self.automation_config={"starts_at":"2026-10-14T00:00:00Z","heartbeat_at":None,"last_error":None}
                 return route.fulfill(json={"configured":True,"starts_at":self.automation_config["starts_at"]})
-            return route.fulfill(json={"configuration":self.automation_config,"orders":{},"issues":[]})
+            return route.fulfill(json={"configuration":self.automation_config,"orders":{},"issues":[],"unverified":self.unverified})
         if path=="/api/admin/activate":
             self.activations.append(route.request.post_data_json)
             self.automation_config={"starts_at":"2026-10-14T00:00:00Z","heartbeat_at":None,"last_error":None}
@@ -48,6 +50,18 @@ class SettingsBrowserTests(unittest.TestCase):
             labels=["Правила бонусов сохранены","Настройка виджета сохранена","Программа запущена","Заказы обрабатываются автоматически"]
             targets=["rules-form","widget-settings","launch-settings","processing-settings"]
             return route.fulfill(json={"ready":False,"checks":[{"id":k,"label":label,"target":target,"complete":ok} for k,label,target,ok in zip(ids,labels,targets,complete)]})
+        if path=="/api/admin/personal-discounts/policy/history":
+            return route.fulfill(json={"items":[self.policy] if self.policy["version"] else [],"next_cursor":None})
+        if path=="/api/admin/personal-discounts/policy":
+            if route.request.method=="PUT":
+                body=route.request.post_data_json;self.policy_saved.append(body)
+                if self.policy_conflict:return route.fulfill(status=409,json={"error":"conflict"})
+                if body["request_id"] not in self.policy_requests:
+                    self.policy={**body,"version":self.policy["version"]+1,"actor_id":"synthetic-user","created_at":"2026-10-19T00:00:00Z"}
+                    self.policy_requests[body["request_id"]]=self.policy
+                if self.policy_drop_first and len(self.policy_saved)==1:return route.abort()
+                return route.fulfill(json={"current":self.policy_requests[body["request_id"]]})
+            return route.fulfill(json={"current":self.policy})
         if path=="/api/me":return route.fulfill(json={"role":"admin"})
         if path.startswith("/api/admin/rules/history"):return route.fulfill(json={"items":[self.current] if self.current else [],"next_cursor":None})
         if path=="/api/admin/rules":
@@ -180,5 +194,66 @@ class SettingsBrowserTests(unittest.TestCase):
         self.frame.locator("#status").get_by_text("Сеанс завершён. Подключитесь снова и повторите настройку виджета.",exact=True).wait_for()
         self.assertFalse(self.frame.locator("#workspace").is_visible())
         self.assertTrue(self.frame.get_by_role("button",name="Повторить подключение",exact=True).is_visible())
+
+
+    def test_readiness_rules_action_reveals_rules_panel(self):
+        self.open()
+        self.frame.get_by_role("tab",name="Подключение",exact=True).click()
+        self.frame.locator('#readiness-list a[href="#rules-form"]').click()
+        self.frame.get_by_role("tabpanel",name="Правила",exact=True).wait_for()
+        self.assertEqual(self.frame.get_by_role("tab",name="Правила",exact=True).get_attribute("aria-selected"),"true")
+        self.assertTrue(self.frame.get_by_role("button",name="Сохранить правила",exact=True).is_visible())
+
+
+    def test_personal_policy_saves_real_settings_and_explicit_stacking_formula(self):
+        self.page.set_viewport_size({"width":320,"height":844});self.open()
+        self.frame.get_by_role("tab",name="Персональные скидки",exact=True).click()
+        self.assertFalse(self.frame.get_by_label("Использовать персональные скидки",exact=True).is_checked())
+        self.frame.get_by_label("Использовать персональные скидки",exact=True).check()
+        self.frame.get_by_label("Если в позиции уже есть скидка",exact=True).select_option("sequential")
+        self.frame.locator("#personal-example").get_by_text("10 000 ₸ × 90% × 80% = 7 200 ₸",exact=False).wait_for()
+        self.frame.get_by_label("Разрешить списание бонусов вместе с персональной скидкой",exact=True).check()
+        self.frame.get_by_text("Лимит списания рассчитывается от товаров после персональной скидки.",exact=True).wait_for()
+        self.frame.get_by_label("Причина изменения персональных скидок",exact=True).fill("Правила согласованы")
+        self.frame.get_by_role("button",name="Сохранить настройки скидок",exact=True).click()
+        self.frame.get_by_text("Настройки скидок сохранены. Версия 1.",exact=True).wait_for()
+        self.assertEqual(len(self.policy_saved),1)
+        self.assertEqual({k:self.policy_saved[0][k] for k in ("enabled","external_policy","allow_bonus_stack","expected_version","reason")},
+                         {"enabled":True,"external_policy":"sequential","allow_bonus_stack":True,"expected_version":0,"reason":"Правила согласованы"})
+        self.assertEqual(self.saved,[])
+        self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+
+    def test_personal_policy_lost_response_reuses_request_and_conflict_requires_reload(self):
+        self.policy_drop_first=True;self.open()
+        self.frame.get_by_role("tab",name="Персональные скидки",exact=True).click()
+        self.frame.get_by_label("Использовать персональные скидки",exact=True).check()
+        self.frame.get_by_label("Причина изменения персональных скидок",exact=True).fill("Включаем клиентам")
+        button=self.frame.get_by_role("button",name="Сохранить настройки скидок",exact=True)
+        button.click()
+        self.frame.locator("#personal-policy-status").get_by_text("Нет ответа сервера.",exact=False).wait_for()
+        button.click()
+        self.frame.get_by_text("Настройки скидок сохранены. Версия 1.",exact=True).wait_for()
+        self.assertEqual(self.policy_saved[0],self.policy_saved[1])
+        self.policy_conflict=True
+        self.frame.get_by_label("Причина изменения персональных скидок",exact=True).fill("Меняем правило")
+        self.frame.get_by_label("Если в позиции уже есть скидка",exact=True).select_option("best")
+        button.click()
+        self.frame.get_by_text("Настройки скидок изменились. Загрузите актуальные настройки и проверьте значения.",exact=True).wait_for()
+        self.assertFalse(button.is_enabled())
+        self.assertEqual(self.frame.get_by_label("Если в позиции уже есть скидка",exact=True).input_value(),"best")
+        self.policy_conflict=False
+        self.frame.get_by_role("button",name="Загрузить настройки скидок",exact=True).click()
+        self.frame.get_by_text("Персональные скидки включены. Версия 1.",exact=True).wait_for()
+        self.assertTrue(button.is_enabled())
+        self.assertEqual(self.frame.get_by_label("Если в позиции уже есть скидка",exact=True).input_value(),"skip")
+
+
+    def test_automation_pending_personal_only_discount_has_no_zero_bonus_claim(self):
+        self.unverified=[{"id":"application","order_id":"order","points":0}]
+        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
+        self.frame.get_by_role("button",name="Проверить обработку",exact=True).click()
+        self.frame.locator("#automation-details").get_by_text("Персональная скидка — ожидает подтверждения",exact=False).wait_for()
+        self.assertNotIn("0 бонусов",self.frame.locator("#automation-details").inner_text())
+        self.assertTrue(self.frame.locator("#automation-details").get_by_role("link",name="Открыть заказ",exact=True).is_visible())
 
 if __name__=="__main__":unittest.main()

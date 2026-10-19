@@ -10,7 +10,7 @@ class ReconciliationBrowserTests(unittest.TestCase):
     def setUp(self):
         self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
         self.ctx=self.browser.new_context(viewport={"width":390,"height":844});self.page=self.ctx.new_page()
-        self.decisions=[];self.conflict=False;self.resolved=False
+        self.decisions=[];self.conflict=False;self.resolved=False;self.hold_settlements=False;self.held_settlements=None;self.unverified=[]
         self.ctx.route("**/*",self.route)
     def tearDown(self):self.ctx.close();self.browser.close();self.runtime.stop()
     def route(self,r):
@@ -20,11 +20,14 @@ class ReconciliationBrowserTests(unittest.TestCase):
         path=url.split("https://widget.test",1)[1]
         if path=="/api/session":return r.fulfill(json={"token":"synthetic"})
         if path=="/api/me":return r.fulfill(json={"role":"admin"})
-        if path=="/api/admin/automation":return r.fulfill(json={"issues":[]})
+        if path=="/api/admin/automation":return r.fulfill(json={"issues":[],"unverified":self.unverified})
         if path.startswith("/api/admin/settlements?"):
             items=[] if self.resolved else [dict(id="case",order_id="order",order_name="123",earn_delta=-500,refund_delta=0,
                                                total_delta=-500,available=0,state="pending",reason=None)]
-            return r.fulfill(json={"items":items,"next_cursor":None})
+            data={"items":items,"next_cursor":None}
+            if self.hold_settlements:
+                self.hold_settlements=False;self.held_settlements=(r,data);return
+            return r.fulfill(json=data)
         if path.endswith("/resolve"):
             self.decisions.append(r.request.post_data_json)
             if self.conflict:return r.fulfill(status=409,json={"error":"conflict"})
@@ -52,5 +55,41 @@ class ReconciliationBrowserTests(unittest.TestCase):
         self.frame.get_by_role("button",name="Подтвердить",exact=True).click()
         self.frame.get_by_text("Документы изменились или бонусов недостаточно. Обновите список и проверьте решение.",exact=True).wait_for()
         self.assertTrue(self.frame.get_by_role("dialog").is_visible())
+
+
+    def test_refresh_blocks_old_case_actions_until_authoritative_list_returns(self):
+        self.open()
+        self.hold_settlements=True
+        with self.page.expect_request("https://widget.test/api/admin/settlements?state=pending"):
+            self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.assertFalse(self.frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).is_enabled())
+        self.assertFalse(self.frame.get_by_role("button",name="Выполнить пересчёт",exact=True).is_enabled())
+        self.page.frames[1].evaluate("document.querySelector('#cases .actions button:last-child').click()")
+        self.assertFalse(self.frame.get_by_role("dialog").is_visible())
+        self.assertEqual(self.decisions,[])
+        self.assertIsNotNone(self.held_settlements)
+        held,data=self.held_settlements
+        with self.page.expect_response("https://widget.test/api/admin/settlements?state=pending") as response:
+            held.fulfill(json=data)
+        response.value.finished()
+        self.frame.get_by_role("button",name="Обновить",exact=True).wait_for(state="visible")
+        self.frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).click()
+        self.assertFalse(self.frame.get_by_role("button",name="Выполнить пересчёт",exact=True).is_enabled())
+        self.frame.get_by_label("Причина решения").fill("Согласовано с клиентом")
+        self.frame.get_by_role("button",name="Подтвердить",exact=True).click()
+        self.frame.get_by_text("Операций в этом разделе нет.",exact=True).wait_for()
+        self.assertEqual(self.decisions,[{"decision":"waive","reason":"Согласовано с клиентом"}])
+
+
+    def test_personal_only_pending_operation_never_claims_zero_bonus_reserve(self):
+        self.unverified=[{"id":"application","order_id":"order","points":0}]
+        self.open()
+        self.frame.get_by_text("Персональная скидка — ожидает подтверждения",exact=True).wait_for()
+        self.frame.get_by_role("heading",name="Неподтверждённые операции",exact=True).wait_for()
+        self.assertNotIn("0 бонусов",self.frame.locator("#unverified").inner_text())
+        self.frame.get_by_role("button",name="Проверить отмену скидки",exact=True).click()
+        self.frame.get_by_role("heading",name="Отменить применение персональной скидки?",exact=True).wait_for()
+        self.assertNotIn("резерв",self.frame.locator("#decision").inner_text().lower())
+        self.frame.get_by_text("Если скидка уже сохранена, отмена запрещена.",exact=False).wait_for()
 
 if __name__=="__main__":unittest.main()

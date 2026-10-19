@@ -1,4 +1,4 @@
-"""Start the existing schema-0014 tenant worker without changing keys or financial setup."""
+"""Start the existing schema-0015 tenant worker without changing keys or financial setup."""
 import argparse,json,os,re,time
 from datetime import datetime,timezone
 from pathlib import Path
@@ -81,7 +81,7 @@ def main():
     os.umask(0o077);root=args.root.resolve()
     try:
         schema=run(["docker","exec","bonuspro-release-db-1","psql","-U","postgres","-d","bonuspro","-At","-c","SELECT version_num FROM public.alembic_version"],capture=True)
-        if schema!="0014":raise ProcessingFailed("This helper requires schema 0014; no migration was attempted")
+        if schema!="0015":raise ProcessingFailed("This helper requires schema 0015; no migration was attempted")
         rows=json.loads(run(["docker","exec","bonuspro-release-db-1","psql","-U","postgres","-d","bonuspro","-At","-c",
             "SELECT COALESCE(json_agg(json_build_object('tenant_id',tenant_id,'state',state)),'[]'::json)::text FROM bonuspro.installations WHERE state IN ('SettingsRequired','Activated')"],capture=True))
         tenant=select_tenant(rows,args.tenant)

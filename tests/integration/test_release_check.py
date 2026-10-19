@@ -37,7 +37,8 @@ class ReleaseProbeTests(unittest.TestCase):
         with fx.ledger.transaction(fx.tenant) as conn:
             counts={table:conn.execute("SELECT count(*) n FROM bonuspro."+table).fetchone()["n"]
                     for table in ("wallets","order_contexts","reservations","ledger_transactions",
-                                  "ledger_postings","order_monitors","jobs")}
+                                  "ledger_postings","order_monitors","jobs","personal_discount_policy_versions",
+                                  "customer_personal_discount_versions","personal_discount_applications","personal_discount_voids")}
         return dict(counts=counts,funds=fx.ledger.snapshot(fx.tenant,fx.wallet))
     def test_real_account_graph_probe_is_read_only_and_not_a_financial_acceptance_claim(self):
         before=self.snapshot()

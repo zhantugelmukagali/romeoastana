@@ -10,16 +10,22 @@ class ImportInvalid(ValueError):
 
 
 def parse_csv(text):
-    if not isinstance(text,str) or not text or len(text.encode("utf-8"))>60000:
+    if not isinstance(text,str) or not text:
+        raise ImportInvalid("Файл должен быть UTF-8 CSV размером до 60 КБ.")
+    try:
+        encoded=text.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ImportInvalid("Файл должен содержать корректный текст UTF-8.") from None
+    if len(encoded)>60000:
         raise ImportInvalid("Файл должен быть UTF-8 CSV размером до 60 КБ.")
     text=text.lstrip("\ufeff")
     header=text.splitlines()[0] if text.splitlines() else ""
     delimiter=";" if header=="counterparty_id;bonus_balance" else ","
     reader=csv.DictReader(io.StringIO(text),delimiter=delimiter,strict=True)
-    if reader.fieldnames!=["counterparty_id","bonus_balance"]:
-        raise ImportInvalid("Нужны колонки counterparty_id и bonus_balance.")
     rows=[];seen=set()
     try:
+        if reader.fieldnames!=["counterparty_id","bonus_balance"]:
+            raise ImportInvalid("Нужны колонки counterparty_id и bonus_balance.")
         for index,row in enumerate(reader,start=2):
             if len(rows)>=100:raise ImportInvalid("За один импорт допускается до 100 клиентов.")
             if set(row)!={"counterparty_id","bonus_balance"} or any(v is None for v in row.values()):

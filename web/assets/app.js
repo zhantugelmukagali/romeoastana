@@ -37,9 +37,9 @@ function renderCase(item) {
     const actions=document.createElement("div");actions.className="actions";
     for(const [action,label] of [["reverse","Отменить начисление"],["waive","Сохранить бонусы клиенту"]]) {
       const button=text("button",label);
-      if(action==="reverse" && item.available<item.points) {
-        button.disabled=true;button.title="Недостаточно свободных бонусов";
-      }
+      const insufficient=action==="reverse"&&item.available<item.points;
+      button.dataset.allowed=String(!insufficient);button.disabled=loading||insufficient;
+      if(insufficient)button.title="Недостаточно свободных бонусов";
       button.addEventListener("click",()=>openDecision(item,action));
       actions.append(button);
     }
@@ -51,10 +51,13 @@ function renderCase(item) {
   }
   return card;
 }
+function caseControls(value){
+  loading=value;$("refresh").disabled=value;$("more").disabled=value;
+  document.querySelectorAll("[data-state]").forEach(button=>button.disabled=value);
+  document.querySelectorAll("#cases [data-allowed]").forEach(button=>button.disabled=value||button.dataset.allowed==="false");
+}
 async function loadCases(append=false) {
-  if(loading || submitting)return;loading=true;
-  $("refresh").disabled=true;$("more").disabled=true;
-  document.querySelectorAll("[data-state]").forEach(b=>b.disabled=true);
+  if(loading || submitting)return;caseControls(true);
   message("Загружаем возвраты…");
   try {
     const query=new URLSearchParams({state});if(append&&cursor)query.set("before",cursor);
@@ -65,11 +68,11 @@ async function loadCases(append=false) {
     message($("cases").childElementCount?"":"Возвратов в этом разделе нет.");
   } catch(error) {message(error.message,true);}
   finally {
-    loading=false;$("refresh").disabled=false;$("more").disabled=false;
-    document.querySelectorAll("[data-state]").forEach(b=>b.disabled=false);
+    caseControls(false);
   }
 }
 function openDecision(item,action) {
+  if(loading||submitting)return;
   selected={item,action};$("reason").value="";$("form-error").textContent="";
   $("decision-title").textContent=action==="reverse"?"Отменить начисление?":"Сохранить бонусы клиенту?";
   $("impact").textContent=action==="reverse"
@@ -108,6 +111,7 @@ async function connect() {
 $("retry").onclick=connect;$("refresh").onclick=()=>loadCases();
 $("more").onclick=()=>loadCases(true);
 document.querySelectorAll("[data-state]").forEach(button=>button.onclick=()=>{
+  if(loading||submitting)return;
   state=button.dataset.state;cursor=null;$("cases").replaceChildren();$("more").hidden=true;
   document.querySelectorAll("[data-state]").forEach(b=>b.setAttribute("aria-pressed",String(b===button)));
   loadCases();

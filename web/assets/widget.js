@@ -38,8 +38,13 @@ function enteredPoints(){
  const raw=$("points").value;
  return /^[0-9]+$/.test(raw)&&Number.isSafeInteger(Number(raw))?Number(raw):null;
 }
-function canSpend(){return Boolean(quote?.can_prepare&&!quote.quote.blocked_reason&&quote.quote.max_spend_points>0);}
-function validAmount(){const value=enteredPoints();return value!==null&&value>0&&value<=quote?.quote.max_spend_points;}
+function hasPersonal(){const p=quote?.personal_discount;return Boolean(quote?.can_prepare&&p?.enabled&&p.can_apply&&!p.blocked_reason&&p.discount_minor>0);}
+function personalSelected(){return hasPersonal()&&$("apply-personal").checked;}
+function projection(){return personalSelected()?quote.personal_discount.quote:quote?.quote;}
+function canSpend(){const value=projection();return Boolean(quote?.can_prepare&&!value?.blocked_reason&&value?.max_spend_points>0);}
+function requestedPoints(){return personalSelected()&&(!canSpend()||$("points").value==="")?0:enteredPoints();}
+function validAmount(){const value=requestedPoints();return value!==null&&value>=(personalSelected()?0:1)&&value<=(projection()?.max_spend_points??0);}
+function preservedOperation(){return attempt?.apply_personal&&attempt.points===0?"Операция сохранена":"Резерв сохранён";}
 const plurals=new Intl.PluralRules("ru");
 const pointsUnit=value=>({one:"бонус",few:"бонуса",many:"бонусов",other:"бонусов"}[plurals.select(value)]);
 const pointsLabel=value=>amountFormat.format(value)+" "+pointsUnit(value);
@@ -52,19 +57,20 @@ function renderBalance(id,value){
 function view(name){document.querySelector("main").dataset.view=name;}
 function status(text,error=false){$("status").textContent=text;$("status").dataset.error=String(error);$("status").hidden=!text;}
 function controls(){
+  const personal=personalSelected(),spending=Boolean(quote&&canSpend()&&!attempt),applying=Boolean(quote&&!attempt&&(spending||personal));
   $("refresh").disabled=busy||!orderId;
-  $("apply").disabled=busy||dirty||!canSpend()||!validAmount()||Boolean(attempt);
-  $("points").disabled=busy||dirty||!canSpend()||Boolean(attempt);
-  $("apply").textContent=busy&&!attempt?"Применяем…":"Применить";
-  const spending=Boolean(quote&&canSpend()&&!attempt);
-  $("spend-form").hidden=!spending;$("apply").hidden=!spending;
+  $("apply").disabled=busy||dirty||!applying||!validAmount()||Boolean(attempt);
+  $("points").disabled=busy||dirty||!spending||Boolean(attempt);$("points").required=!personal;
+  $("apply-personal").disabled=busy||dirty||!hasPersonal()||Boolean(attempt);
+  $("apply").textContent=busy&&!attempt?"Применяем…":personal&&requestedPoints()===0?"Применить скидку":"Применить";
+  $("spend-form").hidden=!spending;$("apply").hidden=!applying;
   $("verify").hidden=!attempt?.id||(attempt.state==="committed"&&attempt.verified===true);
-  $("refresh").setAttribute("aria-busy",String(busy));
-  $("spend-form").setAttribute("aria-busy",String(busy));
-  $("maximum-button").disabled=$("points").disabled||!quote?.quote.max_spend_points;
+  $("refresh").setAttribute("aria-busy",String(busy));$("spend-form").setAttribute("aria-busy",String(busy));
+  $("maximum-button").disabled=$("points").disabled||!projection()?.max_spend_points;
   $("verify").disabled=busy||!attempt;
   $("resume").hidden=!resumeRequired||!attempt?.id||attempt.recoverable!==true;
   $("resume").disabled=busy||dirty||!resumeAuthorized||$("resume").hidden;
+  $("resume").textContent=attempt?.apply_personal?"Продолжить применение":"Продолжить списание";
 }
 function hostRequest(name,extra={},responseName){
   return new Promise((resolve,reject)=>{
@@ -97,19 +103,20 @@ async function api(path,options={}){
   return value;
 }
 function explain(error){
-  if(error.message==="host_rejected")return "МойСклад отклонил скидку. Резерв сохранён — нужен администратор.";
+  if(error.message==="host_rejected")return "МойСклад отклонил скидку. "+preservedOperation()+" — нужен администратор.";
   if(error.status===401)return "Сессия истекла. Нажмите «Обновить».";
   if(error.status===403)return error.code==="moysklad_permissions_required"?"Нет доступа к данным МойСклад. Проверьте подключение решения.":"Нет доступа к бонусам. Обратитесь к администратору.";
   if(error.status===409)return error.code==="program_not_configured"?"Программа ещё не настроена. Нужен администратор.":
-    error.stage==="resume"?"Не удалось продолжить списание. Резерв сохранён — обновите данные или обратитесь к администратору.":
+    error.stage==="resume"?"Не удалось продолжить "+(attempt?.apply_personal?"применение":"списание")+". "+preservedOperation()+" — обновите данные или обратитесь к администратору.":
     "Заказ или баланс изменился. Обновите данные.";
   if(error.status===422){
     const fallback=error.stage==="load"?"Не удалось проверить данные заказа. Нужен администратор.":
-      (error.stage==="verify"||error.stage==="resume")?"Не удалось проверить сохранённое списание. Резерв сохранён — нужен администратор.":
+      (error.stage==="verify"||error.stage==="resume")?"Не удалось проверить сохранённое "+(attempt?.apply_personal?"применение скидки":"списание")+". "+preservedOperation()+" — нужен администратор.":
       error.stage==="session"?"Не удалось подключить сессию. Обновите виджет.":
       "Не удалось проверить заказ перед списанием. Обновите данные.";
     // Verification already has a reservation: never suggest changing its customer or positions.
-    return (["verify","resume"].includes(error.stage)?fallback:(documentErrors[error.reason]||fallback))+(error.trace?" Код BP-"+error.trace+".":"");
+    const reason=error.reason==="discount_not_representable"&&personalSelected()?"Эту скидку нельзя применить точно. Нужен администратор.":documentErrors[error.reason];
+    return (["verify","resume"].includes(error.stage)?fallback:(reason||fallback))+(error.trace?" Код BP-"+error.trace+".":"");
   }
   return attempt?"Связь прервана. Нажмите «Обновить».":"Не удалось загрузить бонусы. Нажмите «Обновить».";
 }
@@ -122,21 +129,22 @@ async function authenticate(generation){
   token=session.token;
 }
 function showPending(value){
-  attempt=value;quote=null;view("pending");$("summary").hidden=true;$("pending").hidden=false;
-  const done=value.state==="committed"&&value.verified===true;
+  attempt=value;quote=null;view("pending");$("summary").hidden=true;$("pending").hidden=false;$("personal-row").hidden=true;
+  const done=value.state==="committed"&&value.verified===true,personal=value.apply_personal===true;
   if(done){resumeRequired=false;resumeAuthorized=false;resumeSaveRevision=null;}
   else if(value.recovered||value.verified===false)resumeRequired=true;
   $("pending").dataset.state=done?"done":value.verified===false?"review":"waiting";
-  $("pending-title").textContent=done?"Списано":!value.id?"Проверьте операцию":
+  $("pending-title").textContent=done?(personal?"Скидка применена":"Списано"):!value.id?"Проверьте операцию":
     value.verified===false?"Проверьте сохранение":value.recovered?"Проверяем сохранение":"Сохраните заказ";
   $("pending-text").textContent=!value.id?"Ответ не получен":
-    pointsLabel(value.points)+(done?"":" в резерве");
+    personal?"Скидка клиента: −"+money(value.personal_discount_minor):pointsLabel(value.points)+(done?"":" в резерве");
+  $("pending-bonus").hidden=!value.id||!personal||value.points<=0;
+  $("pending-bonus").textContent=personal&&value.points>0?pointsLabel(value.points)+(done?" списано":" в резерве"):"";
   $("pending-note").textContent=done?"Заказ сохранён и проверен.":
-    !value.id?"Обновите данные. Не применяйте бонусы повторно.":
-    resumeRequired&&value.recoverable===true?"Сохраните заказ в МойСклад, затем продолжите списание.":
+    !value.id?"Обновите данные. Не применяйте "+(personal?"скидку":"бонусы")+" повторно.":
+    resumeRequired&&value.recoverable===true?"Сохраните заказ в МойСклад, затем продолжите "+(personal?"применение скидки.":"списание."):
     value.verified===false?"Сохраните заказ. Если сумма отличается — нужен администратор.":
-    value.recovered?"Сверяем операцию с заказом.":
-    "Нажмите «Сохранить» в МойСклад.";
+    value.recovered?"Сверяем операцию с заказом.":"Нажмите «Сохранить» в МойСклад.";
   status("");controls();
 }
 function renderQuote(value){
@@ -144,24 +152,20 @@ function renderQuote(value){
   $("order-label").textContent=value.name?"Заказ №"+value.name:"Заказ покупателя";
   renderBalance("balance",value.quote.balance);
   const reserved=Number.isSafeInteger(value.quote.available)&&value.quote.available<value.quote.balance;
-  $("available-note").hidden=!reserved;
-  $("available-note").textContent=reserved?"В резерве: "+amountFormat.format(value.quote.balance-value.quote.available):"";
-  renderBalance("maximum",value.quote.max_spend_points);
-  $("limit-block").hidden=!canSpend();
-  const empty=value.quote.balance===0;
-  $("balances").hidden=false;
-  $("basis").textContent="Товары для расчёта: "+money(value.eligible_minor)+".";
-  $("points").max=String(value.quote.max_spend_points);
-  const earn=value.quote.potential_earn_points;
-  $("earning").hidden=!value.can_prepare||Boolean(value.quote.blocked_reason)||!Number.isSafeInteger(earn)||earn<=0;
-  $("earn-value").textContent=$("earning").hidden?"":"+"+pointsLabel(earn);
-  view(empty?"empty":"ready");
+  $("available-note").hidden=!reserved;$("available-note").textContent=reserved?"В резерве: "+amountFormat.format(value.quote.balance-value.quote.available):"";
+  $("balances").hidden=false;$("apply-personal").checked=hasPersonal();
+  view(value.quote.balance===0?"empty":"ready");
+  quoteStatus();updatePayable();
+}
+function quoteStatus(){
+  if(!quote)return;
+  const value=quote,personal=personalSelected();
   status(dirty?"Сохраните изменения в заказе.":
     !value.can_prepare?"Программа ещё не настроена. Нужен администратор.":
     value.quote.blocked_reason?(readOnlyMessages[value.quote.blocked_reason]||"Списание приостановлено. Нужен администратор."):
-    value.quote.max_spend_points===0?(value.eligible_minor===0?"В заказе только услуги — бонусы не списываются.":
-      empty?"":"Бонусы пока недоступны. Проверьте резервы."):"");
-  updatePayable();
+    value.personal_discount?.blocked_reason==="discount_not_representable"?"Персональная скидка не рассчитана точно. "+(canSpend()?"Бонусы можно списать отдельно.":"Нужен администратор."):
+    !personal&&value.quote.max_spend_points===0?(value.eligible_minor===0?"В заказе только услуги — бонусы не списываются.":
+      value.quote.balance===0?"":"Бонусы пока недоступны. Проверьте резервы."):"");
 }
 async function refresh(){
   if(!orderId||busy)return;
@@ -181,12 +185,26 @@ async function refresh(){
   finally{finishBusy(generation);}
 }
 function updatePayable(){
-  const raw=$("points").value,points=enteredPoints(),valid=validAmount();
-  const invalid=raw!==""&&!valid;
-  $("points").setAttribute("aria-invalid",String(invalid));
-  $("amount-hint").hidden=!invalid;
-  $("amount-hint").textContent=invalid?"От 1 до "+amountFormat.format(quote?.quote.max_spend_points??0)+", целыми бонусами.":"";
-  $("payable").textContent=quote?money(quote.total_minor-(valid?points*100:0)):"";
+  const raw=$("points").value,points=requestedPoints(),valid=validAmount(),value=projection(),personal=personalSelected();
+  const invalid=raw!==""&&!valid&&canSpend();
+  $("points").setAttribute("aria-invalid",String(invalid));$("amount-hint").hidden=!invalid;
+  $("amount-hint").textContent=invalid?"От "+(personal?"0":"1")+" до "+amountFormat.format(value?.max_spend_points??0)+", целыми бонусами.":"";
+  $("personal-row").hidden=!hasPersonal();document.querySelector("main").dataset.personal=String(hasPersonal());
+  $("personal-limit").hidden=!hasPersonal()||!canSpend();$("personal-limit").textContent=hasPersonal()&&canSpend()?"до "+amountFormat.format(value.max_spend_points):"";
+  if(quote){
+    const p=quote.personal_discount;
+    $("personal-rate").textContent=hasPersonal()?amountFormat.format(p.rate_bps/100)+"%":"";
+    $("personal-value").textContent=hasPersonal()?personal?"−"+money(p.discount_minor):money(0):"";
+    $("personal-conditions").hidden=!hasPersonal();$("personal-conditions").textContent=hasPersonal()?
+      "Персональная скидка: "+amountFormat.format(p.rate_bps/100)+"%. "+(p.allow_bonus_stack?"Бонусы списываются после скидки.":"Бонусы вместе со скидкой не списываются."):"";
+    renderBalance("maximum",value.max_spend_points);$("limit-block").hidden=!canSpend();$("points").max=String(value.max_spend_points);
+    $("basis").textContent="Товары для расчёта: "+money(personal?p.eligible_minor_after:quote.eligible_minor)+".";
+    const earn=value.potential_earn_points;
+    $("earning").hidden=!quote.can_prepare||Boolean(value.blocked_reason)||!Number.isSafeInteger(earn)||earn<=0;
+    $("earn-value").textContent=$("earning").hidden?"":"+"+pointsLabel(earn);
+    const total=BigInt(personal?p.total_minor_after:quote.total_minor);
+    $("payable").textContent=money(total-(valid?BigInt(points)*100n:0n));
+  }else $("payable").textContent="";
   controls();
 }
 function finishBusy(generation){
@@ -201,22 +219,23 @@ function finishBusy(generation){
 }
 async function apply(event){
   event.preventDefault();
-  if(busy||dirty||attempt||!canSpend())return;
-  const raw=$("points").value,points=Number(raw);
-  if(!/^[0-9]+$/.test(raw)||!Number.isSafeInteger(points)||points<1||points>quote.quote.max_spend_points){
+  if(busy||dirty||attempt||(!canSpend()&&!personalSelected()))return;
+  const points=requestedPoints(),personal=personalSelected(),personalPreview=quote?.personal_discount;
+  if(!validAmount()){
     status("Введите целое число в пределах лимита.",true);return;
   }
   const generation=epoch,id=orderId,revision=draftRevision;
   busy=true;controls();requestId=requestId||crypto.randomUUID();
   try{
-    const result=await api("/api/widget/orders/"+id+"/prepare",{method:"POST",
-      body:JSON.stringify({points,request_id:requestId,source_hash:quote.saved_source_hash})});
+    const payload={points,request_id:requestId,source_hash:quote.saved_source_hash};
+    if(personal)Object.assign(payload,{apply_personal:true,expected_policy_version:personalPreview.policy_version,expected_assignment_version:personalPreview.assignment_version});
+    const result=await api("/api/widget/orders/"+id+"/prepare",{method:"POST",body:JSON.stringify(payload)});
     if(generation!==epoch)return;
     attempt=result;
     if(revision!==draftRevision||dirty||!result.update_state){
-      resumeRequired=true;showPending(result);status("Заказ изменился. Резерв сохранён — проверьте операцию.",true);return;
+      resumeRequired=true;showPending(result);status("Заказ изменился. "+preservedOperation()+" — проверьте операцию.",true);return;
     }
-    status("Применяем бонусы…");
+    status(personal?"Применяем скидку…":"Применяем бонусы…");
     await hostRequest("UpdateRequest",{updateState:result.update_state},"UpdateResponse");
     if(generation!==epoch)return;
     dirty=true;showPending(result);
@@ -235,7 +254,7 @@ async function apply(event){
       }else{
         // A lost prepare response may already have reserved points.
         // Preserve uncertainty and never dispatch a second mutation blindly.
-        attempt=attempt||{state:"verifying",points};
+        attempt=attempt||{state:"verifying",points,...(personal?{apply_personal:true,personal_discount_minor:personalPreview.discount_minor,personal_rate_bps:personalPreview.rate_bps}:{})};
         resumeRequired=true;resumeAuthorized=false;resumeSaveRevision=null;showPending(attempt);
       }
       status(explain(error),true);
@@ -270,9 +289,9 @@ async function resume(){
     if(generation!==epoch)return;
     if(revision!==draftRevision||dirty||!result.update_state){
       resumeRequired=true;showPending(result);
-      status("Заказ изменился. Резерв сохранён — проверьте операцию.",true);return;
+      status("Заказ изменился. "+preservedOperation()+" — проверьте операцию.",true);return;
     }
-    status("Продолжаем списание…");
+    status(attempt.apply_personal?"Продолжаем применение…":"Продолжаем списание…");
     await hostRequest("UpdateRequest",{updateState:result.update_state},"UpdateResponse");
     if(generation!==epoch)return;
     dirty=true;resumeRequired=false;showPending(result);
@@ -300,7 +319,7 @@ window.addEventListener("message",event=>{
     epoch++;openMessage=message.messageId;orderId=null;token=null;quote=null;attempt=null;requestId=null;
     dirty=false;busy=false;draftRevision=0;savedWhileBusy=false;resumeRequired=false;resumeAuthorized=false;resumeSaveRevision=null;
     for(const pending of waiting.values()){clearTimeout(pending.timer);pending.reject(new Error("document_changed"));}
-    waiting.clear();$("summary").hidden=true;$("pending").hidden=true;$("points").value="";$("order-label").textContent="";$("amount-hint").textContent="";$("payable").textContent="";$("points").setAttribute("aria-invalid","false");
+    waiting.clear();$("summary").hidden=true;$("pending").hidden=true;$("points").value="";$("apply-personal").checked=false;$("personal-row").hidden=true;$("pending-bonus").hidden=true;$("order-label").textContent="";$("amount-hint").textContent="";$("payable").textContent="";$("points").setAttribute("aria-invalid","false");
     view("loading");status("Загружаем бонусы…");controls();
     if(message.extensionPoint==="document.customerorder.edit")
       parent.postMessage({name:"OpenFeedback",correlationId:message.messageId,messageId:++sequence},HOST);
@@ -322,7 +341,8 @@ window.addEventListener("message",event=>{
 $("refresh").addEventListener("click",refresh);
 $("spend-form").addEventListener("submit",apply);
 $("points").addEventListener("input",()=>{requestId=null;updatePayable();});
-$("maximum-button").addEventListener("click",()=>{$("points").value=String(quote.quote.max_spend_points);requestId=null;updatePayable();});
+$("maximum-button").addEventListener("click",()=>{$("points").value=String(projection().max_spend_points);requestId=null;updatePayable();});
+$("apply-personal").addEventListener("change",()=>{requestId=null;quoteStatus();updatePayable();});
 $("verify").addEventListener("click",verify);
 $("resume").addEventListener("click",resume);
 controls();

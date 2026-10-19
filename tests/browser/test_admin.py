@@ -22,7 +22,7 @@ class BrowserTests(unittest.TestCase):
         self.page=self.context.new_page()
         self.host=HOST
         self.pending=[dict(CASE)]
-        self.decisions=[]
+        self.decisions=[];self.hold_returns=False;self.held_returns=None
         self.context.route("**/*",self.route)
 
     def tearDown(self):
@@ -50,7 +50,10 @@ class BrowserTests(unittest.TestCase):
                 self.decisions.append(route.request.post_data_json)
                 self.pending=[]
                 return route.fulfill(json={"state":"waived"})
-            return route.fulfill(json={"items":self.pending,"next_cursor":None})
+            data={"items":list(self.pending),"next_cursor":None}
+            if self.hold_returns:
+                self.hold_returns=False;self.held_returns=(route,data);return
+            return route.fulfill(json=data)
         file=ROOT/"web"/("returns.html" if path=="/returns" else path.lstrip("/"))
         if file.is_file():
             mime="text/html" if file.suffix==".html" else ("text/css" if file.suffix==".css" else "text/javascript")
@@ -170,3 +173,25 @@ class BrowserTests(unittest.TestCase):
         body=self.page.frames[1].locator("body").inner_text()
         self.assertNotIn("private-token-value",body)
         self.assertFalse(frame.get_by_role("button",name="Обновить",exact=True).is_visible())
+
+
+    def test_refresh_disables_previous_return_actions_without_enabling_insufficient_balance(self):
+        self.open();self.hold_returns=True
+        with self.page.expect_request("https://widget.test/api/admin/returns?state=pending"):
+            self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.assertFalse(self.frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).is_enabled())
+        self.page.frames[1].evaluate("document.querySelector('#cases .actions button:last-child').click()")
+        self.assertFalse(self.frame.get_by_role("dialog").is_visible())
+        self.assertEqual(self.decisions,[])
+        self.assertIsNotNone(self.held_returns)
+        held,data=self.held_returns
+        with self.page.expect_response("https://widget.test/api/admin/returns?state=pending") as response:
+            held.fulfill(json=data)
+        response.value.finished()
+        self.frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).click()
+        self.assertFalse(self.frame.get_by_role("button",name="Отменить начисление",exact=True).is_enabled())
+        self.frame.get_by_label("Причина решения").fill("Возврат согласован")
+        self.frame.get_by_role("button",name="Подтвердить",exact=True).click()
+        self.frame.get_by_text("Возвратов в этом разделе нет.",exact=True).wait_for()
+        self.assertEqual(self.decisions,[{"decision":"waive","reason":"Возврат согласован"}])
+

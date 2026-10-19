@@ -3,7 +3,7 @@ from bonuspro.adapters.postgres.ledger import uuid_value,NotFound
 
 COUNT_LIMIT=1001
 ATTENTION_FIELDS=("provider_errors","documents_to_review","unresolved_issues",
-                  "stale_redemptions","delayed_jobs")
+                  "stale_redemptions","stale_personal_discounts","delayed_jobs")
 
 def evaluate(row):
     now=row["checked_at"];heartbeat=row["heartbeat_at"];cursor=row.get("scan_until")
@@ -26,8 +26,8 @@ def evaluate(row):
         status="provider_documents";label="Не удалось проверить заказы: "+str(attention["provider_errors"])
     elif attention["documents_to_review"] or attention["unresolved_issues"]:
         status="documents_review";label="Проверьте документы в разделе «Возвраты и сверка»"
-    elif attention["stale_redemptions"]:
-        status="unverified_redemptions";label="Проверьте неподтверждённые списания в разделе «Возвраты и сверка»"
+    elif attention["stale_redemptions"] or attention["stale_personal_discounts"]:
+        status="unverified_redemptions";label="Проверьте неподтверждённые скидки и списания в разделе «Возвраты и сверка»"
     elif attention["delayed_jobs"]:
         status="queue_delayed";label="Есть заказы, обработка которых задержалась"
     checks=[
@@ -60,6 +60,13 @@ class Readiness:
                   (SELECT count(*) FROM (SELECT 1 FROM bonuspro.reservations r
                     WHERE r.tenant_id=i.tenant_id AND state='verifying'
                       AND created_at<clock_timestamp()-interval '15 minutes' LIMIT 1001) q) AS stale_redemptions,
+                  (SELECT count(*) FROM (SELECT 1 FROM bonuspro.personal_discount_applications a
+                    WHERE a.tenant_id=i.tenant_id AND a.state='verifying'
+                      AND a.created_at<clock_timestamp()-interval '15 minutes'
+                      AND NOT EXISTS(SELECT 1 FROM bonuspro.reservations r
+                        WHERE r.tenant_id=a.tenant_id AND r.id=a.redemption_id AND r.state='verifying'
+                          AND r.created_at<clock_timestamp()-interval '15 minutes')
+                    LIMIT 1001) q) AS stale_personal_discounts,
                   (SELECT count(*) FROM (SELECT 1 FROM bonuspro.jobs j
                     WHERE j.tenant_id=i.tenant_id AND state IN ('queued','running')
                       AND created_at<clock_timestamp()-interval '15 minutes' LIMIT 1001) q) AS delayed_jobs

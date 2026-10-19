@@ -192,6 +192,188 @@ class OrderTests(unittest.TestCase):
         with self.assertRaises(InvalidDocument) as error:self.read().plan(190)
         self.assertEqual(error.exception.reason,"discount_not_representable")
 
+    def test_fractional_lines_cannot_pool_different_rounded_amounts_per_unit(self):
+        product=ref("product")
+        self.lines=[dict(id=str(uuid4()),assortment=product,price=10000,
+                        quantity=Decimal(quantity),discount=0,vat=0)
+                    for quantity in ("1.000049","1.009951")]
+        self.doc["sum"]=20100
+        saved=self.read()
+        self.assertEqual([line.amount for line in saved.lines],[10000,10100])
+        with self.assertRaises(InvalidDocument) as error:saved.plan(201)
+        self.assertEqual(error.exception.reason,"discount_not_representable")
+
+    def test_price_fallback_cannot_pool_different_bonus_amounts_per_unit(self):
+        product=ref("product")
+        self.lines=[dict(id=str(uuid4()),assortment=product,price=20010,
+                        quantity=quantity,discount=10,vat=0) for quantity in (1,2)]
+        self.doc["sum"]=54027
+        # Both rows would keep 10% off and save price 19084. Their original
+        # amounts per unit agree, but the bonus allocations are 833 and 1667
+        # minor units, which cannot be pooled over quantities one and two.
+        with self.assertRaises(InvalidDocument) as error:self.read().plan(25)
+        self.assertEqual(error.exception.reason,"discount_not_representable")
+
+    def test_different_quantities_with_equal_per_unit_allocations_may_pool(self):
+        product=ref("product")
+        self.lines=[dict(id=str(uuid4()),assortment=product,price=10000,
+                        quantity=quantity,discount=0,vat=0) for quantity in (1,2)]
+        self.doc["sum"]=30000
+        plan=self.read().plan(300)
+        self.assertEqual(plan["after"]["total_minor"],0)
+        self.assertEqual(plan["update_state"]["positions"],
+                         [{"id":line["id"],"discount":100.0} for line in self.lines])
+
+    def test_ineligible_services_do_not_require_equal_per_unit_allocations(self):
+        service=ref("service")
+        self.lines.extend(dict(id=str(uuid4()),assortment=service,price=10000,
+                               quantity=Decimal(quantity),discount=0,vat=0)
+                          for quantity in ("1.000049","1.009951"))
+        self.doc["sum"]=1220100
+        plan=self.read().plan(1000)
+        self.assertEqual([line for line in plan["after"]["lines"] if line["kind"]=="service"],
+                         [line for line in plan["before"]["lines"] if line["kind"]=="service"])
+        self.assertEqual(plan["after"]["total_minor"],1120100)
+
+    def test_unchanged_goods_group_does_not_require_equal_per_unit_allocations(self):
+        first=ref("product")
+        self.lines=[dict(id=str(uuid4()),assortment=first,price=10000,
+                        quantity=Decimal(quantity),discount=0,vat=0)
+                    for quantity in ("0.199951","0.200049")]
+        self.lines.append(dict(id=str(uuid4()),assortment=ref("product"),price=1000000,
+                               quantity=1,discount=0,vat=0))
+        self.doc["sum"]=1004000
+        saved=self.read()
+        plan=saved.plan(1)
+        self.assertEqual(plan["after"]["total_minor"],1003900)
+        self.assertEqual(plan["update_state"]["positions"],[
+            {"id":self.lines[0]["id"]},{"id":self.lines[1]["id"]},
+            {"id":self.lines[2]["id"],"discount":0.01}])
+        before={line["id"]:line for line in plan["before"]["lines"]}
+        after={line["id"]:line for line in plan["after"]["lines"]}
+        for line in self.lines[:2]:
+            self.assertEqual(after[line["id"]],before[line["id"]])
+
+    def test_personal_skip_only_preserves_goods_with_an_existing_discount(self):
+        self.lines[0].update(price=10000,discount=10)
+        extra={**copy.deepcopy(self.lines[0]),"id":str(uuid4()),"assortment":ref("product"),"discount":0}
+        self.lines.insert(1,extra)
+        self.doc["sum"]=219000
+        saved=self.read()
+        before=saved.financial()
+        projected,records=saved.personal_discount(2000,"skip")
+        self.assertEqual(projected.snapshot.total_minor,217000)
+        self.assertEqual(projected.snapshot.eligible_minor,17000)
+        self.assertEqual([line.amount for line in projected.lines],[9000,8000,200000])
+        self.assertEqual(records,[
+            dict(id=self.lines[0]["id"],ordinary_discount_bps=1000,personal_rate_bps=2000,
+                 policy="skip",before_minor=9000,personal_basis_minor=9000,personal_discount_minor=0),
+            dict(id=extra["id"],ordinary_discount_bps=0,personal_rate_bps=2000,
+                 policy="skip",before_minor=10000,personal_basis_minor=8000,personal_discount_minor=2000)])
+        self.assertEqual(projected.lines[-1],saved.lines[-1])
+        self.assertEqual(saved.financial(),before)
+
+    def test_personal_best_and_sequential_use_the_agreed_ordinary_discount_bases(self):
+        self.lines[0].update(price=10000,discount=10)
+        self.doc["sum"]=209000
+        saved=self.read()
+        for policy,amount,bps,delta in (("best",8000,2000,1000),("sequential",7200,2800,1800)):
+            with self.subTest(policy=policy):
+                projected,records=saved.personal_discount(2000,policy)
+                self.assertEqual(projected.lines[0].amount,amount)
+                self.assertEqual(projected.lines[0].discount_bps,bps)
+                self.assertEqual(projected.snapshot.total_minor,200000+amount)
+                self.assertEqual(projected.snapshot.eligible_minor,amount)
+                self.assertEqual(records[0]["ordinary_discount_bps"],1000)
+                self.assertEqual(records[0]["personal_basis_minor"],amount)
+                self.assertEqual(records[0]["personal_discount_minor"],delta)
+        projected,records=saved.personal_discount(500,"best")
+        self.assertEqual(projected.financial(),saved.financial())
+        self.assertEqual(records[0]["personal_discount_minor"],0)
+
+    def test_personal_sequential_rounds_the_saved_net_line_amount_first(self):
+        self.lines[0].update(price=10001,quantity=Decimal("0.5"))
+        self.doc["sum"]=205001
+        saved=self.read()
+        best,_=saved.personal_discount(5000,"best")
+        sequential,_=saved.personal_discount(5000,"sequential")
+        self.assertEqual(best.lines[0].amount,2500)
+        self.assertEqual(sequential.lines[0].amount,2501)
+        for policy in ("skip","best","sequential"):
+            projected,records=saved.personal_discount(0,policy)
+            self.assertEqual(projected.financial(),saved.financial())
+            self.assertEqual(records[0]["personal_discount_minor"],0)
+
+    def test_personal_projection_preserves_supported_goods_packs_tax_and_order_metadata(self):
+        saved=self.read()
+        pack=str(uuid4())
+        goods=tuple(replace(saved.lines[0],id=str(uuid4()),kind=kind,assortment=str(uuid4()),
+                            price=Decimal(10000),vat=Decimal(16),vat_enabled=True,pack=pack)
+                    for kind in ("product","variant","bundle"))
+        saved=replace(saved,lines=goods+(saved.lines[-1],),vat_enabled=True,
+            marker="existing-marker",discount_blocked_reason="order_has_marker",
+            snapshot=replace(saved.snapshot,total_minor=230000,eligible_minor=30000,
+                             cancelled=True,paid_minor=1,shipped_minor=1))
+        projected,records=saved.personal_discount(2000,"best")
+        self.assertEqual([line.amount for line in projected.lines],[8000,8000,8000,200000])
+        self.assertEqual([line.pack for line in projected.lines[:3]],[pack]*3)
+        self.assertTrue(all(line.vat==16 and line.vat_enabled for line in projected.lines[:3]))
+        self.assertEqual(projected.lines[-1],saved.lines[-1])
+        self.assertEqual((projected.marker,projected.name,projected.discount_blocked_reason),
+                         (saved.marker,saved.name,saved.discount_blocked_reason))
+        self.assertEqual(projected.snapshot,replace(saved.snapshot,total_minor=224000,eligible_minor=24000))
+        self.assertEqual(len(records),3)
+
+    def test_personal_sequential_uses_exact_integral_price_fallback_and_readback(self):
+        self.lines[0].update(price=9999000,discount=Decimal("10.01"))
+        self.doc["sum"]=9198100
+        saved=self.read()
+        projected,records=saved.personal_discount(2001,"sequential")
+        changed=projected.lines[0]
+        self.assertEqual((changed.price,changed.discount_bps,changed.amount),(Decimal(7998200),1001,7197580))
+        self.assertEqual(changed.price,changed.price.to_integral_value())
+        self.assertEqual(records[0]["personal_discount_minor"],1800520)
+        self.assertEqual(projected.snapshot.total_minor,7397580)
+        self.lines[0]["price"]=7998200
+        self.doc["sum"]=7397580
+        self.assertEqual(self.read().financial(),projected.financial())
+
+    def test_personal_unrepresentable_target_fails_without_changing_the_saved_order(self):
+        self.lines[0].update(price=10001,quantity=3,discount=10)
+        self.doc["sum"]=227003
+        saved=self.read()
+        before=saved.financial()
+        # Saved ordinary net 27003 * 66.67% rounds to 18003. Neither
+        # percentage steps nor integral prices retaining 10% reach that value.
+        with self.assertRaises(InvalidDocument) as error:saved.personal_discount(3333,"sequential")
+        self.assertEqual(error.exception.reason,"discount_not_representable")
+        self.assertEqual(saved.financial(),before)
+
+    def test_personal_projection_may_merge_personal_bases_before_bonus_allocation(self):
+        product=ref("product")
+        self.lines=[dict(id=str(uuid4()),assortment=product,price=10000,
+                        quantity=1,discount=discount,vat=0) for discount in (0,10)]
+        self.doc["sum"]=19000
+        projected,records=self.read().personal_discount(2000,"best")
+        self.assertEqual(projected.snapshot.total_minor,16000)
+        self.assertEqual([record["personal_discount_minor"] for record in records],[2000,1000])
+        plan=projected.plan(1)
+        self.assertEqual(plan["before"],projected.financial())
+        self.assertEqual(plan["after"]["total_minor"],15900)
+
+    def test_personal_rate_and_policy_contract_are_bounded(self):
+        saved=self.read()
+        for rate in (-1,True,1.0,10001):
+            with self.subTest(rate=rate),self.assertRaises(ValueError):
+                saved.personal_discount(rate,"best")
+        for policy in (None,"",False,[],{},"unknown"):
+            with self.subTest(policy=policy),self.assertRaises(ValueError):
+                saved.personal_discount(1000,policy)
+        projected,records=saved.personal_discount(10000,"best")
+        self.assertEqual(projected.snapshot.eligible_minor,0)
+        self.assertEqual(projected.snapshot.total_minor,200000)
+        self.assertEqual(records[0]["personal_basis_minor"],0)
+
     def test_plans_match_exhaustive_integral_price_and_percentage_representations(self):
         base=self.read()
         for price in (10001,11111,19999):

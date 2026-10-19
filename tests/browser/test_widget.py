@@ -25,6 +25,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.context=self.browser.new_context(viewport={"width":1000,"height":800})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
         self.resumes=[];self.reject_resume=None;self.lose_resume=False;self.change_during_resume=False;self.change_during_verify=False;self.save_during_resume=False;self.resume_hash="b"*64;self.resume_allowed=True
+        self.personal=None;self.prepared_personal=False
         self.order_error_details={};self.reject_prepare_details={};self.verify_error=None;self.verify_error_details={};self.prepared_points=1000
         self.order_error_code="unavailable";self.total_minor=1200000;self.eligible_minor=1000000;self.quote_overrides={};self.order_error=None;self.session_count=0;self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False;self.reject_prepare=None;self.save_during_prepare=False;self.host_error=False
     def tearDown(self):
@@ -47,7 +48,7 @@ class WidgetBrowserTests(unittest.TestCase):
         if path.endswith("/prepare"):
             self.prepares.append(route.request.post_data_json)
             if self.reject_prepare:return route.fulfill(status=self.reject_prepare,json={"error":"operation rejected",**self.reject_prepare_details})
-            self.prepared=True;self.prepared_points=route.request.post_data_json["points"]
+            self.prepared=True;self.prepared_points=route.request.post_data_json["points"];self.prepared_personal=route.request.post_data_json.get("apply_personal",False)
             if self.save_during_prepare:
                 self.saved=True
                 self.page.evaluate("send({name:'Save',messageId:131,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
@@ -55,7 +56,7 @@ class WidgetBrowserTests(unittest.TestCase):
             if self.delay_change:
                 self.page.evaluate("send({name:'Change',messageId:120,objectState:{}})")
             return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":self.prepared_points,"state":"verifying",
-                "update_state":{"positions":[{"id":"line","discount":self.prepared_points/100}],"attributes":[{"id":"marker","value":"proof"}]},"replayed":False,"recoverable":True})
+                "update_state":self.prepared_update(),"replayed":False,"recoverable":True,**self.personal_operation()})
         if path.endswith("/resume"):
             self.resumes.append(route.request.post_data_json)
             if self.reject_resume:return route.fulfill(status=self.reject_resume,json={"error":"operation conflict","reason":"customer_missing"})
@@ -65,7 +66,7 @@ class WidgetBrowserTests(unittest.TestCase):
             if self.save_during_resume:
                 self.page.evaluate("send({name:'Save',messageId:152,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
             return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":self.prepared_points,"state":"verifying","recoverable":True,
-                "update_state":{"positions":[{"id":"line","discount":self.prepared_points/100}],"attributes":[{"id":"marker","value":"proof"}]}})
+                "update_state":self.prepared_update(),**self.personal_operation()})
         if path.endswith("/verify"):
             self.verifies+=1
             if self.change_during_verify:
@@ -73,17 +74,37 @@ class WidgetBrowserTests(unittest.TestCase):
             if self.verify_error:return route.fulfill(status=self.verify_error,json={"error":"unsupported_saved_order",**self.verify_error_details})
             return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":self.prepared_points,
                 "state":"committed" if self.saved else "verifying","verified":self.saved,"recoverable":not self.saved and self.resume_allowed,
-                **({} if self.saved or not self.resume_allowed else {"resume_source_hash":self.resume_hash})})
+                **({} if self.saved or not self.resume_allowed else {"resume_source_hash":self.resume_hash}),**self.personal_operation()})
         if path.startswith("/api/widget/orders/"):
             if self.order_error:return route.fulfill(status=self.order_error,json={"error":self.order_error_code,**self.order_error_details})
             if self.prepared and path.endswith(ORDER):
-                return route.fulfill(json={"redemption":{"id":"attempt","order_id":ORDER,"points":self.prepared_points,"state":"verifying","recoverable":True}})
+                return route.fulfill(json={"redemption":{"id":"attempt","order_id":ORDER,"points":self.prepared_points,"state":"verifying","recoverable":True,**self.personal_operation()}})
             return route.fulfill(json={"name":"0001","saved_source_hash":"a"*64,"eligible_minor":self.eligible_minor,"total_minor":self.total_minor,
-                "can_prepare":self.quote_overrides.get("can_prepare",True),"quote":{"balance":5000,"max_spend_points":3000,"blocked_reason":None,"potential_earn_points":500,**self.quote_overrides.get("quote",{})}})
+                "can_prepare":self.quote_overrides.get("can_prepare",True),"quote":{"balance":5000,"max_spend_points":3000,"blocked_reason":None,"potential_earn_points":500,**self.quote_overrides.get("quote",{})},**({"personal_discount":self.personal} if self.personal else {})})
         file=ROOT/"web"/("widget.html" if path=="/widget" else path.lstrip("/"))
         if file.is_file():
             return route.fulfill(content_type={".html":"text/html",".css":"text/css",".js":"text/javascript"}[file.suffix],body=file.read_text())
         return route.fulfill(status=404)
+
+    def personal_operation(self):
+        return {"apply_personal":True,"application_id":"attempt","personal_discount_minor":self.personal["discount_minor"],
+                "personal_rate_bps":self.personal["rate_bps"]} if self.prepared_personal else {}
+    def prepared_update(self):
+        positions=([{"id":"line","price":self.personal["eligible_minor_after"]-self.prepared_points*100},{"id":"delivery"}]
+                   if self.prepared_personal else [{"id":"line","discount":self.prepared_points/100}])
+        return {"positions":positions,"attributes":[{"id":"marker","value":"proof"}]}
+    def configure_personal(self,stack=False,empty=False):
+        if empty:self.quote_overrides={"quote":{"balance":0,"available":0,"max_spend_points":0}}
+        self.personal={"enabled":True,"policy_version":7,"assignment_version":3,"rate_bps":2000,
+                       "external_policy":"best","allow_bonus_stack":stack,"discount_minor":200000,
+                       "total_minor_after":1000000,"eligible_minor_after":800000,"can_apply":True,
+                       "quote":{"balance":0 if empty else 5000,"available":0 if empty else 5000,"reserved":0,
+                                "max_spend_points":2400 if stack and not empty else 0,"blocked_reason":None,
+                                "potential_earn_points":400,"payable_minor":1000000,"source_hash":"c"*64}}
+    def open_personal(self):
+        self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
+        self.frame.get_by_label("Скидка клиента 20%",exact=True).wait_for()
+
     def open(self):
         self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
         self.frame.get_by_text(re.compile(r"5\s?000 бонусов")).wait_for()
@@ -792,6 +813,112 @@ class WidgetBrowserTests(unittest.TestCase):
         self.frame.locator("#pending[data-state=done]").wait_for()
         self.assertEqual(self.page.evaluate("updates.length"),1)
         self.assertEqual(len(self.prepares),1)
+
+
+    def test_personal_only_zero_balance_applies_once_and_waits_for_saved_verification(self):
+        self.configure_personal(empty=True);self.open_personal()
+        self.assertFalse(self.frame.locator("#spend-form").is_visible())
+        self.assertEqual("".join(self.frame.locator("#personal-value").inner_text().split()),"−2000₸")
+        self.assertEqual("".join(self.frame.locator("#payable").inner_text().split()),"10000₸")
+        self.frame.get_by_role("button",name="Применить скидку",exact=True).click()
+        self.frame.get_by_role("heading",name="Сохраните заказ",exact=True).wait_for()
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual({k:self.prepares[0][k] for k in ("points","apply_personal","expected_policy_version","expected_assignment_version","source_hash")},
+                         {"points":0,"apply_personal":True,"expected_policy_version":7,"expected_assignment_version":3,"source_hash":"a"*64})
+        self.assertEqual(self.page.evaluate("updates[0].updateState.positions"),[{"id":"line","price":800000},{"id":"delivery"}])
+        self.assertFalse(self.frame.locator("#pending-bonus").is_visible())
+        self.assertNotIn("резерв",self.frame.locator("#pending").inner_text())
+        self.assertEqual(self.verifies,0)
+        self.saved=True
+        self.page.evaluate("send({name:'Save',messageId:180,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.get_by_role("heading",name="Скидка применена",exact=True).wait_for()
+        self.assertEqual(self.frame.locator("#pending").get_attribute("data-state"),"done")
+        self.assertNotIn("Списано",self.frame.locator("#pending").inner_text())
+        self.assertEqual(len(self.prepares),1);self.assertEqual(self.verifies,1)
+
+    def test_combined_personal_and_bonus_use_discounted_limit_and_one_update(self):
+        self.configure_personal(stack=True);self.open_personal()
+        field=self.frame.get_by_label("Списать бонусы",exact=True)
+        self.assertEqual(field.get_attribute("max"),"2400")
+        field.fill("500")
+        self.assertEqual("".join(self.frame.locator("#payable").inner_text().split()),"9500₸")
+        self.assertEqual("".join(self.frame.locator("#earn-value").inner_text().split()),"+400бонусов")
+        self.frame.get_by_role("button",name="Применить",exact=True).click()
+        self.frame.get_by_text("500 бонусов в резерве",exact=True).wait_for()
+        self.assertEqual(len(self.prepares),1);self.assertEqual(self.prepares[0]["points"],500)
+        self.assertTrue(self.prepares[0]["apply_personal"])
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+        self.assertEqual(self.page.evaluate("updates[0].updateState.positions"),[{"id":"line","price":750000},{"id":"delivery"}])
+        self.saved=True
+        self.page.evaluate("send({name:'Save',messageId:181,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.get_by_role("heading",name="Скидка применена",exact=True).wait_for()
+        self.frame.get_by_text("500 бонусов списано",exact=True).wait_for()
+
+    def test_personal_opt_out_restores_original_bonus_quote_and_legacy_prepare(self):
+        self.configure_personal();self.open_personal()
+        self.frame.get_by_label("Скидка клиента 20%",exact=True).uncheck()
+        field=self.frame.get_by_label("Списать бонусы",exact=True)
+        self.assertEqual(field.get_attribute("max"),"3000")
+        self.assertTrue(self.frame.locator("#apply").is_disabled())
+        field.fill("1000")
+        self.assertEqual("".join(self.frame.locator("#payable").inner_text().split()),"11000₸")
+        self.frame.get_by_role("button",name="Применить",exact=True).click()
+        self.frame.get_by_text(re.compile(r"1\s?000 бонусов в резерве")).wait_for()
+        self.assertNotIn("apply_personal",self.prepares[0])
+        self.assertEqual(self.prepares[0]["source_hash"],"a"*64)
+
+    def test_lost_personal_prepare_recovers_same_application_only_after_current_save(self):
+        self.configure_personal(empty=True);self.lose=True;self.open_personal()
+        self.frame.get_by_role("button",name="Применить скидку",exact=True).click()
+        self.frame.get_by_text("Обновите данные. Не применяйте скидку повторно.",exact=True).wait_for()
+        self.assertNotIn("резерв",self.frame.locator("#pending").inner_text())
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.get_by_role("button",name="Продолжить применение",exact=True).wait_for()
+        self.assertTrue(self.frame.get_by_role("button",name="Продолжить применение",exact=True).is_disabled())
+        self.page.evaluate("send({name:'Save',messageId:182,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.get_by_role("button",name="Продолжить применение",exact=True).click()
+        self.frame.get_by_role("heading",name="Сохраните заказ",exact=True).wait_for()
+        self.assertEqual(len(self.prepares),1);self.assertEqual(len(self.resumes),1)
+        self.assertEqual(self.resumes[0],{"attempt_id":"attempt","source_hash":self.resume_hash})
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+        self.assertEqual(self.page.evaluate("updates[0].updateState.positions"),[{"id":"line","price":800000},{"id":"delivery"}])
+
+    def test_personal_prepare_conflict_requires_new_quote_and_current_versions(self):
+        self.configure_personal(empty=True);self.reject_prepare=409;self.open_personal()
+        self.frame.get_by_role("button",name="Применить скидку",exact=True).click()
+        self.frame.get_by_text("Заказ или баланс изменился. Обновите данные.",exact=True).wait_for()
+        self.assertFalse(self.frame.locator("#pending").is_visible())
+        self.assertEqual(self.page.evaluate("updates.length"),0);self.assertEqual(len(self.prepares),1)
+        self.personal["policy_version"]=8;self.reject_prepare=None
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.get_by_role("button",name="Применить скидку",exact=True).click()
+        self.frame.get_by_role("heading",name="Сохраните заказ",exact=True).wait_for()
+        self.assertEqual(self.prepares[1]["expected_policy_version"],8)
+        self.assertNotEqual(self.prepares[0]["request_id"],self.prepares[1]["request_id"])
+
+    def test_personal_projection_failure_keeps_original_bonus_spending_available(self):
+        self.configure_personal();self.personal.update(can_apply=False,blocked_reason="discount_not_representable")
+        self.open()
+        self.frame.get_by_text("Персональная скидка не рассчитана точно. Бонусы можно списать отдельно.",exact=True).wait_for()
+        self.assertFalse(self.frame.locator("#personal-row").is_visible())
+        self.apply()
+        self.frame.get_by_text(re.compile(r"1\s?000 бонусов в резерве")).wait_for()
+        self.assertNotIn("apply_personal",self.prepares[0])
+
+    def test_personal_combined_primary_action_fits_widget_at_all_supported_widths(self):
+        self.configure_personal(stack=True);self.open_personal()
+        for width in (320,360,400,520,760):
+            with self.subTest(width=width):
+                self.page.set_viewport_size({"width":width,"height":720})
+                self.page.evaluate("document.querySelector('iframe').style.height='380px'")
+                self.page.frames[1].evaluate("()=>new Promise(requestAnimationFrame)")
+                metrics=self.page.frames[1].evaluate("""()=>{
+                    const main=document.querySelector('main').getBoundingClientRect(),button=document.querySelector('#apply').getBoundingClientRect();
+                    return {body:document.body.getBoundingClientRect().height,bottom:button.bottom,height:button.height};
+                }""")
+                self.assertLessEqual(metrics["body"],380);self.assertLessEqual(metrics["bottom"],380)
+                self.assertGreaterEqual(metrics["height"],40)
+                self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
 
 if __name__=="__main__":unittest.main()
 

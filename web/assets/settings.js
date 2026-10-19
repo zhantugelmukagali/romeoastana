@@ -28,6 +28,8 @@ function busy(value) {
   $("more").disabled=value;
   $("setup-widget").disabled=value;
   $("refresh-automation").disabled=value;
+  $("personal-policy-form").querySelectorAll("input,select,textarea,button").forEach(x=>x.disabled=value||(!policyLoaded&&x.id!=="reload-personal-policy"));
+  $("save-personal-policy").disabled=value||!policyLoaded||policyConflict;$("more-personal-policy").disabled=value;
 }
 async function api(path,options={}) {
   let response;
@@ -62,7 +64,7 @@ async function load() {
   await history();
 }
 async function connect(){
-  $("retry").hidden=true;$("workspace").hidden=true;session=null;pending=null;$("activation-status").textContent="";busy(true);
+  $("retry").hidden=true;$("workspace").hidden=true;session=null;pending=null;policyPending=null;policyLoaded=false;policyConflict=false;$("activation-status").textContent="";busy(true);
   status("Подключаемся к МойСклад…");
   try {
     const token=await requestContext();
@@ -72,7 +74,8 @@ async function connect(){
     session=(await response.json()).token;
     const user=await api("/api/me");
     if(user.role!=="admin")throw new Error("Этот раздел доступен администратору МойСклад.");
-    await load();await updateReadiness();$("workspace").hidden=false;
+    await load();try{await loadPolicy();}catch(error){policyStatus("Не удалось загрузить настройки скидок. "+error.message,true);}
+    await updateReadiness();$("workspace").hidden=false;
   } catch(error){status(error.message,true);$("retry").hidden=false;}
   finally {busy(false);}
 }
@@ -97,8 +100,6 @@ $("rules-form").addEventListener("submit",async event=>{
 $("reload").onclick=async()=>{if(working)return;busy(true);try{await load();}catch(e){status(e.message,true);}finally{busy(false);}};
 $("more").onclick=async()=>{if(working)return;busy(true);try{await history(true);}catch(e){status(e.message,true);}finally{busy(false);}};
 $("earn").oninput=preview;$("spend").oninput=preview;$("retry").onclick=connect;
-connect();
-
 $("setup-widget").onclick=async()=>{
   if(working)return;busy(true);$("setup-status").textContent="Проверяем подключение…";
   try{
@@ -148,7 +149,7 @@ async function automationStatus(){
   if(config?.heartbeat_at&&Date.now()-Date.parse(config.heartbeat_at)>600000)
     $("automation-details").append(node("p","Обработка не обновлялась более 10 минут. Проверьте фоновый обработчик."));
   for(const item of data.unverified||[]){
-    const line=node("p","Ожидает подтверждения: "+item.points+" бонусов · ");
+    const line=node("p",item.points===0?"Персональная скидка — ожидает подтверждения · ":"Ожидает подтверждения: "+item.points+" бонусов · ");
     const link=node("a","Открыть заказ");link.href="https://online.moysklad.ru/app/#customerorder/edit?id="+encodeURIComponent(item.order_id);
     link.target="_blank";link.rel="noopener noreferrer";line.append(link);$("automation-details").append(line);
   }
@@ -208,3 +209,69 @@ $("refresh-readiness").onclick=async()=>{
 };
 
 $("example-total").addEventListener("input",preview);
+
+const policyPath="/api/admin/personal-discounts/policy";
+const policyLabels={skip:"Персональная скидка не применяется при скидке в позиции",best:"Выбирается больший процент скидки",sequential:"Скидки применяются последовательно"};
+let policyVersion=0,policyPending=null,policyCursor=null,policyLoaded=false,policyConflict=false;
+function policyStatus(message,error=false){
+  $("personal-policy-status").textContent=message;$("personal-policy-status").classList.toggle("error",error);
+}
+function policyPreview(){
+  const examples={skip:"10 000 ₸ − 10% = 9 000 ₸. Персональные 20% не применяются.",
+    best:"10 000 ₸ − 20% = 8 000 ₸. Выбран больший процент: 20% вместо 10%.",
+    sequential:"10 000 ₸ × 90% × 80% = 7 200 ₸. Персональные 20% применяются после скидки 10%."};
+  $("personal-example").textContent="Пример: цена 10 000 ₸, скидка позиции 10%, персональная 20%. "+examples[$("personal-external").value];
+  $("personal-stack-note").textContent=$("personal-stack").checked?
+    "Лимит списания рассчитывается от товаров после персональной скидки.":
+    "При применении персональной скидки списать бонусы нельзя.";
+}
+async function policyHistory(append=false){
+  const data=await api(policyPath+"/history"+(append&&policyCursor?"?before="+encodeURIComponent(policyCursor):""));
+  if(!append)$("personal-policy-history").replaceChildren();
+  for(const item of data.items){
+    const entry=node("article","");
+    entry.append(node("strong","Версия "+item.version+" · "+(item.enabled?"Включены":"Выключены")),
+      node("p",policyLabels[item.external_policy]+". Бонусы вместе со скидкой: "+(item.allow_bonus_stack?"да":"нет")+"."),
+      node("p",item.reason),node("p",new Date(item.created_at).toLocaleString("ru-RU")+" · Сотрудник: "+item.actor_id));
+    $("personal-policy-history").append(entry);
+  }
+  if(!$("personal-policy-history").childElementCount)$("personal-policy-history").append(node("p","Настройки персональных скидок ещё не менялись."));
+  policyCursor=data.next_cursor;$("more-personal-policy").hidden=!policyCursor;
+}
+async function loadPolicy(){
+  const {current}=await api(policyPath);
+  policyVersion=current?.version||0;policyPending=null;policyConflict=false;policyLoaded=true;
+  $("personal-enabled").checked=current?.enabled===true;$("personal-external").value=current?.external_policy||"skip";
+  $("personal-stack").checked=current?.allow_bonus_stack===true;$("personal-policy-reason").value="";
+  policyPreview();policyStatus("Персональные скидки "+(current?.enabled?"включены.":"выключены.")+" Версия "+policyVersion+".");
+  try{await policyHistory();}catch(e){policyStatus("Настройки загружены. Историю не удалось обновить. "+e.message,true);}
+}
+$("personal-policy-form").addEventListener("submit",async event=>{
+  event.preventDefault();if(working||!policyLoaded||policyConflict)return;
+  const reason=$("personal-policy-reason").value.trim();
+  if(!reason){policyStatus("Укажите причину изменения.",true);return;}
+  const payload={enabled:$("personal-enabled").checked,external_policy:$("personal-external").value,
+    allow_bonus_stack:$("personal-stack").checked,expected_version:policyVersion,reason};
+  const signature=JSON.stringify(payload);
+  if(!policyPending||policyPending.signature!==signature)policyPending={signature,id:crypto.randomUUID()};
+  busy(true);policyStatus("Сохраняем настройки скидок…");
+  try{
+    const {current}=await api(policyPath,{method:"PUT",body:JSON.stringify({...payload,request_id:policyPending.id})});
+    policyVersion=current.version;policyPending=null;$("personal-policy-reason").value="";
+    policyStatus("Настройки скидок сохранены. Версия "+policyVersion+".");
+    try{await policyHistory();}catch{policyStatus("Настройки скидок сохранены. Историю не удалось обновить.",true);}
+  }catch(e){
+    if(e.conflict){policyPending=null;policyConflict=true;policyStatus("Настройки скидок изменились. Загрузите актуальные настройки и проверьте значения.",true);}
+    else policyStatus(e.message,true);
+  }finally{busy(false);}
+});
+$("reload-personal-policy").onclick=async()=>{
+  if(working)return;busy(true);try{await loadPolicy();}catch(e){policyStatus(e.message,true);}finally{busy(false);}
+};
+$("more-personal-policy").onclick=async()=>{
+  if(working)return;busy(true);try{await policyHistory(true);}catch(e){policyStatus(e.message,true);}finally{busy(false);}
+};
+$("personal-external").onchange=policyPreview;$("personal-stack").onchange=policyPreview;
+policyPreview();
+
+connect();

@@ -1,4 +1,4 @@
-"""Compatible cabinet deployment with an isolated, guarded 0013-to-0014 upgrade."""
+"""Compatible cabinet deployment with isolated, guarded upgrades through schema 0015."""
 import argparse,json,os,re,stat,subprocess
 from datetime import datetime,timezone
 from pathlib import Path
@@ -132,7 +132,7 @@ def migration_owner(database):
     return owner["role"]
 
 def guarded_schema_sql(body,*,expected,result,owner,pre_owner=""):
-    if (expected,result) not in (("0013","0014"),("0014","0013")):
+    if (expected,result) not in (("0013","0014"),("0014","0013"),("0014","0015"),("0015","0014")):
         raise UpdateFailed("Unsupported schema transition")
     return ("BEGIN;\nSET LOCAL lock_timeout='5s';\nSET LOCAL statement_timeout='60s';\n"
             "LOCK TABLE public.alembic_version IN EXCLUSIVE MODE;\n"
@@ -147,7 +147,7 @@ def apply_rebinding_migration(database,source):
     if not sql.strip():raise UpdateFailed("Exact compatible migration is required")
     database_sql(database,guarded_schema_sql(sql,expected="0013",result="0014",owner=migration_owner(database)))
 
-def rollback_rebinding_migration():
+def rollback_rebinding_migration(database="bonuspro"):
     # This is an unpublished pre-traffic DDL rollback, never an application
     # downgrade or a financial database restore. A single audit row forbids it.
     pre_owner="""
@@ -170,7 +170,49 @@ def rollback_rebinding_migration():
         DROP TABLE bonuspro.order_customer_rebindings;
         ALTER TABLE bonuspro.order_contexts DROP COLUMN binding_revision;
     """
-    database_sql("bonuspro",guarded_schema_sql(body,expected="0014",result="0013",owner=migration_owner("bonuspro"),pre_owner=pre_owner))
+    database_sql(database,guarded_schema_sql(body,expected="0014",result="0013",owner=migration_owner(database),pre_owner=pre_owner))
+
+
+PERSONAL_DISCOUNT_TABLES=("personal_discount_policy_versions","customer_personal_discount_versions",
+                          "personal_discount_applications","personal_discount_voids")
+
+def apply_personal_discount_migration(database,source):
+    body=(source/"migrations/versions/0015_personal_discounts.sql").read_text()
+    if not body.strip():raise UpdateFailed("Exact compatible personal-discount migration is required")
+    database_sql(database,guarded_schema_sql(body,expected="0014",result="0015",owner=migration_owner(database)))
+
+def rollback_personal_discount_migration(source,database="bonuspro"):
+    body=(source/"migrations/versions/0015_personal_discounts.down.sql").read_text()
+    if not body.strip():raise UpdateFailed("Exact compatible personal-discount rollback is required")
+    locks="".join("LOCK TABLE bonuspro."+name+" IN ACCESS EXCLUSIVE MODE;\n" for name in PERSONAL_DISCOUNT_TABLES)
+    occupied=" OR ".join("EXISTS(SELECT 1 FROM bonuspro."+name+")" for name in PERSONAL_DISCOUNT_TABLES)
+    # FORCE RLS must not hide another tenant's policy, assignment, application or
+    # void. Lock/check globally as postgres before selecting the migration owner.
+    pre_owner=locks+"DO $$ BEGIN IF "+occupied+" THEN RAISE EXCEPTION 'Personal discount history prevents schema rollback'; END IF; END $$;\n"
+    database_sql(database,guarded_schema_sql(body,expected="0015",result="0014",
+                 owner=migration_owner(database),pre_owner=pre_owner))
+
+def apply_compatible_migrations(database,source):
+    observed=database_schema(database)
+    if observed=="0013":
+        apply_rebinding_migration(database,source)
+        observed=database_schema(database)
+    if observed=="0014":
+        apply_personal_discount_migration(database,source)
+        observed=database_schema(database)
+    if observed!="0015":raise UpdateFailed("Unexpected compatible upgrade schema")
+
+def rollback_compatible_migrations(source,original_schema,database="bonuspro"):
+    if original_schema not in ("0013","0014"):
+        raise UpdateFailed("Unsupported original compatible schema")
+    observed=database_schema(database)
+    if observed=="0015":
+        rollback_personal_discount_migration(source,database)
+        observed=database_schema(database)
+    if original_schema=="0013" and observed=="0014":
+        rollback_rebinding_migration(database)
+        observed=database_schema(database)
+    if observed!=original_schema:raise UpdateFailed("Original schema could not be restored")
 
 def financial_counts(database):
     return json.loads(database_sql(database,"""
@@ -180,6 +222,11 @@ def financial_counts(database):
           'reservations',(SELECT count(*) FROM bonuspro.reservations),
           'accruals',(SELECT count(*) FROM bonuspro.order_accruals))
     """,capture=True))
+
+
+def personal_discount_counts(database):
+    return json.loads(database_sql(database,"SELECT json_build_object("+",".join(
+        "'"+name+"',(SELECT count(*) FROM bonuspro."+name+")" for name in PERSONAL_DISCOUNT_TABLES)+")",capture=True))
 
 def validate_restored_journal(database):
     database_sql(database,"""
@@ -207,12 +254,14 @@ def verify_restore(backup,source):
             subprocess.run(["docker","exec","-i",DB_CONTAINER,"pg_restore","-U","postgres","-d",name,
                             "--exit-on-error"],stdin=dump,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                            check=True,timeout=600)
-        if database_schema(name)!="0013":raise UpdateFailed("Restored backup has an unexpected schema")
+        if database_schema(name) not in ("0013","0014"):raise UpdateFailed("Restored backup has an unexpected schema")
         validate_restored_journal(name)
         before=financial_counts(name)
-        apply_rebinding_migration(name,source)
-        if database_schema(name)!="0014" or before!=financial_counts(name):
+        apply_compatible_migrations(name,source)
+        if database_schema(name)!="0015" or before!=financial_counts(name):
             raise UpdateFailed("Isolated migration changed financial record counts")
+        if any(personal_discount_counts(name).values()):
+            raise UpdateFailed("Isolated migration unexpectedly created personal-discount history")
         validate_restored_journal(name)
     finally:
         if created:
@@ -267,6 +316,8 @@ def upgrade_schema_and_switch(root,source,image,*,verify=verify_public):
     env=root/".env.release"
     if env.is_symlink():raise UpdateFailed("Release environment must be a regular file")
     old=env.read_text();original=env.stat();new=replacement(old,image)
+    original_schema=database_schema()
+    if original_schema not in ("0013","0014"):raise UpdateFailed("Compatible upgrade must start from schema 0013 or 0014")
     states=service_states()
     backup=protected_backup(root)
     try:
@@ -278,9 +329,9 @@ def upgrade_schema_and_switch(root,source,image,*,verify=verify_public):
     try:
         stopped=True
         stop_for_upgrade(states)
-        if database_schema()!="0013":raise UpdateFailed("Schema changed before the maintenance window")
+        if database_schema()!=original_schema:raise UpdateFailed("Schema changed before the maintenance window")
         dump_database(backup/"database.pre-upgrade.dump")
-        apply_rebinding_migration("bonuspro",source)
+        apply_compatible_migrations("bonuspro",source)
         atomic_write(env,new,original)
         run(compose(root,"config","--quiet"))
         run(compose(root,"up","-d","--no-build","--no-deps","--force-recreate",
@@ -301,19 +352,19 @@ def upgrade_schema_and_switch(root,source,image,*,verify=verify_public):
                     current=service_states()
                     if current.get(name):run(["docker","stop","--timeout","120",name])
             observed=database_schema()
-            if observed=="0014":
+            if observed!=original_schema:
                 if any(service_states().values()):raise UpdateFailed("Release traffic prevents schema rollback")
-                rollback_rebinding_migration()
-            elif observed!="0013":raise UpdateFailed("Unexpected schema during rollback")
+                rollback_compatible_migrations(source,original_schema)
+            if database_schema()!=original_schema:raise UpdateFailed("Unexpected schema during rollback")
             atomic_write(env,old,original)
             if stopped:restore_previous_services(root,states)
         except Exception:
             # If the schema could not be proven old, never restart an old image.
             try:
-                if database_schema()=="0014":atomic_write(env,new,original)
+                if database_schema()!=original_schema:atomic_write(env,new,original)
             except Exception:pass
             raise UpdateFailed("UPDATE_ROLLBACK_BLOCKED: services require inspection; no financial history was restored or erased. Backup: "+str(backup)) from None
-        raise UpdateFailed("UPDATE_FAILED: schema 0013 and previous services restored. Backup: "+str(backup)) from None
+        raise UpdateFailed("UPDATE_FAILED: schema "+original_schema+" and previous services restored. Backup: "+str(backup)) from None
     return backup
 
 def main():
@@ -322,21 +373,21 @@ def main():
     os.umask(0o077);root=args.root.resolve();source=Path(__file__).resolve().parents[1]
     try:
         schema=database_schema()
-        if schema not in ("0013","0014") or 'revision != [("0014",)]' not in (source/"backend/bonuspro/api/app.py").read_text():
-            raise UpdateFailed("Compatible schema-0014 source and an existing schema 0013/0014 release are required; no migration was attempted")
+        if schema not in ("0013","0014","0015") or 'revision != [("0015",)]' not in (source/"backend/bonuspro/api/app.py").read_text():
+            raise UpdateFailed("Compatible schema-0015 source and an existing schema 0013/0014/0015 release are required; no migration was attempted")
         sha=source_revision(source)
         image="bonuspro:"+sha[:12]
         run(["docker","build","--pull","-t",image,str(source)])
         run(["docker","run","--rm","--network","none","--read-only","--cap-drop","ALL",
              "--security-opt","no-new-privileges:true",image,"python","-c",
              "from bonuspro.adapters.postgres.portal import Portal; from pathlib import Path; assert Path('/app/web/assets/portal.js').read_bytes()"])
-        if schema=="0013":
+        if schema in ("0013","0014"):
             backup=upgrade_schema_and_switch(root,source,image)
             print("Protected backup and isolated migration verified: "+str(backup))
         else:
             switch(root,source,image)
         print("CABINET_READY: "+image+" · https://loyalty.addwise.kz/admin")
-        print("Schema 0014 is confirmed. Credentials and financial journal history were preserved.")
+        print("Schema 0015 is confirmed. Credentials and financial journal history were preserved.")
         print("Run start_processing.py to confirm the updated automatic worker.")
     except UpdateFailed as error:raise SystemExit(str(error))
     except Exception:raise SystemExit("UPDATE_FAILED: no successful cabinet update was confirmed") from None
