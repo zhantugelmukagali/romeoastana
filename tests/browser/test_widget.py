@@ -536,6 +536,20 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertEqual(len(self.prepares),1)
         self.assertEqual(self.page.evaluate("updates.length"),1)
 
+
+    def test_typed_verification_error_never_suggests_editing_a_reserved_order(self):
+        self.open();self.apply()
+        self.frame.locator("#pending").wait_for()
+        self.verify_error=422
+        self.verify_error_details={"reason":"customer_missing","trace_id":"ab12cd34ef56"}
+        self.frame.get_by_role("button",name="Проверить сохранение",exact=True).click()
+        self.frame.get_by_text("Не удалось проверить сохранённое списание. Резерв сохранён — нужен администратор. Код BP-ab12cd34ef56.",exact=True).wait_for()
+        self.assertNotIn("Выберите покупателя",self.frame.locator("#status").inner_text())
+        self.assertTrue(self.frame.locator("#pending").is_visible())
+        self.assertFalse(self.frame.locator("#apply").is_visible())
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+
 if __name__=="__main__":unittest.main()
 
 
