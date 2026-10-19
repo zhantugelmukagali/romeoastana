@@ -25,6 +25,7 @@ def targets(proof,*,rules: Rules,attempt=None):
     before={x["id"]:x for x in attempt["plan"]["before"]["lines"]} if attempt else {}
     spent=attempt["points"] if attempt else 0
     groups={}
+    original_signatures=defaultdict(set)
     for line in saved.lines:
         k=key(line)
         if k not in groups:
@@ -33,6 +34,14 @@ def targets(proof,*,rules: Rules,attempt=None):
         original_line=before.get(line.id)
         if attempt and not original_line:
             raise InvalidDocument("missing original sale position")
+        if original_line:
+            # Old plans may have merged distinct original prices/discounts into
+            # one saved basket key. A partial return cannot identify which
+            # original earning base and bonus allocation actually came back.
+            original_signatures[k].add((
+                original_line["kind"],original_line["assortment"],Decimal(original_line["price"]),
+                original_line["discount_bps"],Decimal(original_line["vat"]),
+                original_line["vat_enabled"],original_line["pack"]))
         amount=rounded(Decimal(original_line["price"])*Decimal(original_line["quantity"])*
                        (10000-original_line["discount_bps"])/10000) if original_line else line.amount
         if amount<line.amount:
@@ -44,6 +53,8 @@ def targets(proof,*,rules: Rules,attempt=None):
     for k,quantity in returned.items():
         if k not in groups or quantity>groups[k][0]:
             raise InvalidDocument("return exceeds original sale quantities")
+        if 0<quantity<groups[k][0] and len(original_signatures[k])>1:
+            raise InvalidDocument("partial return cannot identify original sale allocations")
     remaining=Fraction(0);refund_minor=Fraction(0)
     for k,(quantity,original,discount) in groups.items():
         if k[0] not in GOODS:

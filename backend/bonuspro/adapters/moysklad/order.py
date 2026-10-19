@@ -1,4 +1,4 @@
-"""Authoritative saved-order normalization and exact, two-decimal discount plans.
+"""Authoritative saved-order normalization and exact discount/price plans.
 
 No browser amount is trusted. Unsupported tax/rounding/assortment cases fail closed.
 The UpdateRequest plan must be saved by MoySklad and read back before posting points.
@@ -100,12 +100,36 @@ class SavedOrder:
                         hi=mid
                 changed=replace(line,discount_bps=lo)
                 if changed.amount != target:
-                    raise InvalidDocument("discount cannot represent requested points exactly",reason="discount_not_representable")
+                    # Keep the ordinary discount and use an integral minor-unit
+                    # price only when the provider percentage grid cannot fit.
+                    lo,hi=0,int(line.price)
+                    while lo<hi:
+                        mid=(lo+hi+1)//2
+                        candidate=replace(line,price=Decimal(mid).normalize())
+                        if candidate.amount>target:
+                            hi=mid-1
+                        else:
+                            lo=mid
+                    changed=replace(line,price=Decimal(lo).normalize())
+                    if changed.amount != target:
+                        raise InvalidDocument("discount cannot represent requested points exactly",reason="discount_not_representable")
             result.append(changed)
             update={"id":line.id}
             if changed.discount_bps!=line.discount_bps:
                 update["discount"]=changed.discount_bps/100  # wire Float; all decisions use integers
+            if changed.price!=line.price:
+                update["price"]=int(changed.price)
             updates.append(update)
+        # Returns identify groups by the saved financial signature. Neither
+        # percentage nor price changes may pool different original allocations.
+        def signature(value):
+            return (value.kind,value.assortment,value.price,value.discount_bps,
+                    value.vat,value.vat_enabled,value.pack)
+        groups={}
+        for original,changed in zip(self.lines,result):
+            groups.setdefault(signature(changed),set()).add(signature(original))
+        if any(len(originals)>1 for originals in groups.values()):
+            raise InvalidDocument("discount would merge distinct return allocations",reason="discount_not_representable")
         after=replace(self,lines=tuple(result),
                       snapshot=replace(self.snapshot,total_minor=self.snapshot.total_minor-points*100,
                                        eligible_minor=self.snapshot.eligible_minor-points*100))
