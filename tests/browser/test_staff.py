@@ -58,7 +58,7 @@ class StaffBrowserTests(unittest.TestCase):
         held,data=self.held_operators
         with self.page.expect_response("https://widget.test/api/admin/operators") as response:
             held.fulfill(json=data)
-        response.value.finished()
+        response.value.json()
         self.page.frames[1].evaluate("()=>new Promise(requestAnimationFrame)")
         self.assertTrue(f.get_by_role("button",name="Отозвать доступ",exact=True).is_visible())
         self.assertEqual(f.get_by_role("button",name="Разрешить доступ",exact=True).count(),0)

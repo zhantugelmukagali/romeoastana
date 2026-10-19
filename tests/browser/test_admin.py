@@ -187,7 +187,7 @@ class BrowserTests(unittest.TestCase):
         held,data=self.held_returns
         with self.page.expect_response("https://widget.test/api/admin/returns?state=pending") as response:
             held.fulfill(json=data)
-        response.value.finished()
+        response.value.json()
         self.frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).click()
         self.assertFalse(self.frame.get_by_role("button",name="Отменить начисление",exact=True).is_enabled())
         self.frame.get_by_label("Причина решения").fill("Возврат согласован")

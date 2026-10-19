@@ -128,7 +128,7 @@ class PersonalDiscountAPITests(unittest.TestCase):
 
     def test_anonymous_staff_wrong_origin_and_revoked_sessions_cannot_write(self):
         reads=len(self.provider_reads)
-        for headers,status in (({},401),(self.auth("worker"),403),
+        for headers,status in (({"Origin":"https://testserver"},401),({},403),(self.auth("worker"),403),
                                ({**self.headers,"Origin":"https://evil.test"},403)):
             self.assertEqual(self.client.put(self.policy,headers=headers,json=self.policy_body()).status_code,status)
             self.assertEqual(self.client.put(self.assignment,headers=headers,json=self.assignment_body()).status_code,status)
