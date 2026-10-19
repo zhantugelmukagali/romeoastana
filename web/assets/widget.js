@@ -103,7 +103,8 @@ function explain(error){
       error.stage==="verify"?"Не удалось проверить сохранённое списание. Резерв сохранён — нужен администратор.":
       error.stage==="session"?"Не удалось подключить сессию. Обновите виджет.":
       "Не удалось проверить заказ перед списанием. Обновите данные.";
-    return (documentErrors[error.reason]||fallback)+(error.trace?" Код BP-"+error.trace+".":"");
+    // Verification already has a reservation: never suggest changing its customer or positions.
+    return (error.stage==="verify"?fallback:(documentErrors[error.reason]||fallback))+(error.trace?" Код BP-"+error.trace+".":"");
   }
   return attempt?"Связь прервана. Нажмите «Обновить».":"Не удалось загрузить бонусы. Нажмите «Обновить».";
 }
