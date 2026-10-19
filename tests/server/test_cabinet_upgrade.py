@@ -98,14 +98,14 @@ class SchemaUpgradeTests(unittest.TestCase):
     def test_audit_history_blocks_ddl_rollback_and_old_service_restart(self):
         result=self.exercise(local_failure=True,rollback_blocked=True)
         self.assertIn("UPDATE_ROLLBACK_BLOCKED",result["error"])
-        self.assertEqual(result["schema"],"0014");self.assertNotEqual(result["env"],result["old"])
+        self.assertEqual(result["schema"],"0015");self.assertNotEqual(result["env"],result["old"])
         self.assertNotIn("restore_previous",result["events"])
         self.assertFalse(any(result["states"].values()))
 
     def test_any_public_exposure_forbids_automatic_schema_downgrade(self):
         result=self.exercise(public_failure=True)
         self.assertIn("UPDATE_NOT_CONFIRMED",result["error"])
-        self.assertEqual(result["schema"],"0014");self.assertNotEqual(result["env"],result["old"])
+        self.assertEqual(result["schema"],"0015");self.assertNotEqual(result["env"],result["old"])
         self.assertNotIn("ddl_rollback",result["events"])
         self.assertNotIn("restore_previous",result["events"])
 
