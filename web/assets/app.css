@@ -3,11 +3,11 @@
 h1{font-size:23px;line-height:1.25;letter-spacing:-.35px;margin:0 0 5px;font-weight:600}h2{font-size:16px;line-height:1.4;margin:0 0 10px;font-weight:600}h3{font-size:14px}p{margin:10px 0}
 header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}header>div{min-width:0}
 a{color:var(--primary);text-decoration:none}a:hover{text-decoration:underline;text-underline-offset:3px}
-button,input,textarea{font:inherit}button,.button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:7px 12px;border:1px solid #cdd3dc;border-radius:5px;background:#fff;color:#344054;cursor:pointer;font-size:13px;font-weight:500;line-height:1.4}
+button,input,textarea,select{font:inherit}button,.button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:36px;padding:7px 12px;border:1px solid #cdd3dc;border-radius:5px;background:#fff;color:#344054;cursor:pointer;font-size:13px;font-weight:500;line-height:1.4}
 button:hover:not(:disabled),.button:hover{background:#f3f5f8;border-color:#aeb8c6;text-decoration:none}button:disabled{opacity:.5;cursor:not-allowed}
 button.primary,.button.primary{background:var(--primary);border-color:var(--primary);color:#fff}button.primary:hover:not(:disabled),.button.primary:hover{background:#1d52b0}
-button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #b8cff7;outline-offset:2px}button[aria-pressed=true]{background:#edf3ff;color:#204f9b;border-color:#bfcfeb}
-input,textarea{min-width:0;max-width:100%;border:1px solid #cdd3dc;border-radius:5px;padding:9px 11px;background:#fff}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px solid var(--primary);outline-offset:2px}button[aria-pressed=true]{background:#edf3ff;color:#204f9b;border-color:#bfcfeb}
+input,textarea,select{min-width:0;max-width:100%;border:1px solid #818da0;border-radius:5px;padding:9px 11px;background:#fff}
 textarea{width:100%;resize:vertical}input[type=checkbox]{accent-color:var(--primary)}
 label{display:block;margin:16px 0 7px;font-weight:500}nav,.actions{display:flex;flex-wrap:wrap;gap:8px}main nav{margin:18px 0}
 .hint,.identifier,.muted{color:var(--muted);font-size:12px}.identifier{overflow-wrap:anywhere}.badge{color:#18703d;font-weight:500}
@@ -20,7 +20,7 @@ dialog{width:min(600px,calc(100% - 24px));max-height:calc(100dvh - 32px);overflo
 dialog::backdrop{background:#17212f66}dialog .actions{justify-content:flex-end;margin-top:20px}
 html:has(body.with-shell){height:100%;overflow:hidden}body.with-shell{height:100vh;height:100dvh;overflow:hidden}
 .app-content{position:fixed;inset:0 0 0 var(--nav);overflow:auto;overscroll-behavior-y:contain;overflow-anchor:none;scrollbar-gutter:stable;-webkit-overflow-scrolling:touch}
-.app-content>main{min-height:100%}.app-content:focus-visible{outline:2px solid #b8cff7;outline-offset:-2px}
+.app-content>main{min-height:100%}.app-content:focus-visible{outline:2px solid var(--primary);outline-offset:-2px}
 .app-sidebar{position:fixed;inset:0 auto 0 0;z-index:30;width:var(--nav);overflow:auto;display:flex;flex-direction:column;gap:0;padding:18px 10px;background:#fff;border-right:1px solid var(--border)}
 .app-brand{display:flex;align-items:center;gap:9px;min-height:30px;margin:0 18px 20px 7px;color:#253447;font-size:18px;font-weight:600;white-space:nowrap}.app-brand:hover{text-decoration:none}
 .brand-mark{display:grid;place-items:center;flex-shrink:0;width:27px;height:28px;border-radius:4px;background:var(--primary);color:#fff;font-size:19px;font-weight:600}

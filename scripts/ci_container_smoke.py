@@ -40,6 +40,11 @@ def check_compatible_upgrade(command):
         update.dump_database(backup/"database.dump")
         update.verify_restore(backup,source)
     assert update.database_schema()=="0013"
+    update.apply_compatible_migrations("bonuspro",source)
+    assert update.database_schema()=="0015"
+    update.rollback_compatible_migrations(source,"0013")
+    assert update.database_schema()=="0013"
+    assert update.financial_counts("bonuspro")==before
     update.apply_rebinding_migration("bonuspro",source)
     assert update.database_schema()=="0014"
     update.rollback_rebinding_migration()
@@ -74,7 +79,37 @@ def check_compatible_upgrade(command):
     assert update.database_sql("bonuspro","SELECT count(*) FROM bonuspro.order_customer_rebindings",capture=True)=="1"
     assert update.financial_counts("bonuspro")==before
     update.validate_restored_journal("bonuspro")
-    print("Compatible 0013 upgrade: protected dump restore, exact migration, empty rollback, and audit-history rollback refusal passed.")
+    # A schema-0014 customer may already have immutable rebinding history.
+    # Its personal-discount upgrade/rollback must preserve that history.
+    with tempfile.TemporaryDirectory() as directory:
+        backup=Path(directory)
+        update.dump_database(backup/"database.dump")
+        update.verify_restore(backup,source)
+    assert update.database_schema()=="0014"
+    update.apply_personal_discount_migration("bonuspro",source)
+    assert update.database_schema()=="0015"
+    update.rollback_compatible_migrations(source,"0014")
+    assert update.database_schema()=="0014"
+    assert update.database_sql("bonuspro","SELECT count(*) FROM bonuspro.order_customer_rebindings",capture=True)=="1"
+    update.apply_personal_discount_migration("bonuspro",source)
+    update.database_sql("bonuspro",
+        "BEGIN;SET LOCAL ROLE bonuspro_runtime;"
+        "SELECT set_config('bonuspro.tenant_id','"+tenant+"',true);"
+        "INSERT INTO bonuspro.personal_discount_policy_versions "
+        "(tenant_id,version,enabled,external_policy,allow_bonus_stack,request_id,request_hash,actor_id,reason) "
+        "VALUES ('"+tenant+"',1,true,'skip',false,'ffffffff-ffff-4fff-8fff-fffffffffff1','"+("f"*64)+"','"+actor+"','Synthetic personal policy');COMMIT;")
+    try:
+        update.rollback_personal_discount_migration(source)
+    except update.UpdateFailed:
+        pass
+    else:
+        raise AssertionError("Rollback erased personal-discount configuration hidden by FORCE RLS")
+    assert update.database_schema()=="0015"
+    assert update.database_sql("bonuspro","SELECT count(*) FROM bonuspro.personal_discount_policy_versions",capture=True)=="1"
+    assert update.database_sql("bonuspro","SELECT count(*) FROM bonuspro.order_customer_rebindings",capture=True)=="1"
+    assert update.financial_counts("bonuspro")==before
+    update.validate_restored_journal("bonuspro")
+    print("Compatible 0013/0014 upgrades through 0015: protected restore, exact migrations, empty rollback, runtime RLS and history rollback refusal passed.")
 
 def main():
     if os.environ.get("GITHUB_ACTIONS")!="true":

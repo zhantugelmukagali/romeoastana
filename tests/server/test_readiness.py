@@ -34,6 +34,7 @@ class ReadinessTests(unittest.TestCase):
                              ("documents_to_review","documents_review"),
                              ("unresolved_issues","documents_review"),
                              ("stale_redemptions","unverified_redemptions"),
+                             ("stale_personal_discounts","unverified_redemptions"),
                              ("delayed_jobs","queue_delayed")):
             report=evaluate({**row,field:1})
             self.assertFalse(report["ready"])

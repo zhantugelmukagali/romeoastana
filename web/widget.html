@@ -11,14 +11,15 @@
 <section id="summary" hidden>
 <dl id="balances"><div><dt>Баланс клиента</dt><dd id="balance" aria-live="polite">—</dd><small id="available-note" hidden></small></div>
 <div id="limit-block"><dt>Можно списать</dt><dd id="maximum">—</dd></div></dl>
-<form id="spend-form" hidden><label for="points">Списать бонусы</label>
-<div class="controls"><div class="amount-field"><input id="points" name="points" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="0" aria-describedby="amount-hint" required></div>
+<div id="personal-row" class="personal-row" hidden><label for="apply-personal"><input id="apply-personal" type="checkbox"><span>Скидка клиента <span id="personal-rate"></span></span></label><output id="personal-value" for="apply-personal"></output></div>
+<form id="spend-form" hidden><div class="spend-heading"><label for="points">Списать бонусы</label><span id="personal-limit" hidden></span></div>
+<div class="controls"><div class="amount-field"><input id="points" name="points" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="0" aria-describedby="amount-hint personal-limit" required></div>
 <button id="maximum-button" type="button">Максимум</button></div>
 <p id="amount-hint" role="status" hidden></p></form>
 <div id="payable-row" class="total"><span>К оплате</span><output id="payable" for="points" aria-live="polite"></output></div>
 <button id="apply" type="submit" form="spend-form" hidden>Применить</button>
 <div id="earning" class="earning" hidden><div><span>К начислению</span><strong id="earn-value"></strong></div><p>После оплаты и отгрузки</p></div>
-<details id="conditions"><summary>Условия<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg></summary><div class="conditions-body"><p>1 бонус = 1 ₸. Доставка и услуги не участвуют.</p><p id="basis"></p></div></details>
+<details id="conditions"><summary>Условия<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m5 6 3 3 3-3"/></svg></summary><div class="conditions-body"><p>1 бонус = 1 ₸. Доставка и услуги не участвуют.</p><p id="basis"></p><p id="personal-conditions" hidden></p></div></details>
 </section>
-<section id="pending" hidden aria-live="polite"><h2 id="pending-title"></h2><p id="pending-text"></p><p id="pending-note"></p><button id="verify" type="button">Проверить сохранение</button><button id="resume" type="button" hidden disabled>Продолжить списание</button></section>
+<section id="pending" hidden aria-live="polite"><h2 id="pending-title"></h2><p id="pending-text"></p><p id="pending-bonus" hidden></p><p id="pending-note"></p><button id="verify" type="button">Проверить сохранение</button><button id="resume" type="button" hidden disabled>Продолжить списание</button></section>
 </main></body></html>

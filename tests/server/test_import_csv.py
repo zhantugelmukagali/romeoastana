@@ -16,4 +16,12 @@ class CSVTests(unittest.TestCase):
                      "name,balance\nTest,2",header+"\n".join(str(uuid4())+",1" for _ in range(101))):
             with self.assertRaises(ImportInvalid):parse_csv(body)
 
+    def test_unterminated_header_quote_is_a_safe_import_error(self):
+        with self.assertRaisesRegex(ImportInvalid,"структура CSV"):
+            parse_csv('"counterparty_id,bonus_balance\n')
+
+    def test_invalid_unicode_text_is_a_safe_import_error(self):
+        with self.assertRaisesRegex(ImportInvalid,"UTF-8"):
+            parse_csv("counterparty_id,bonus_balance\n\ud800,1")
+
 if __name__=="__main__":unittest.main()

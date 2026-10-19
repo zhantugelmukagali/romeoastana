@@ -7,6 +7,7 @@ const labels={credit:"Начисление",opening:"Перенос остатк
 let session=null,connecting=false,summary=null,screen="overview",connectionEpoch=0;
 let customerOffset=null,activityCursor=null,customerQuery="",customersBusy=false,activityBusy=false;
 let customersLoaded=false,activityLoaded=false,searchEpoch=0,profileEpoch=0,profileId=null,profileCursor=null,profileBusy=false;
+let personalAssignment=null,personalPending=null,personalSaving=false,personalConflict=false,personalArchived=false;
 const node=(tag,text,cls)=>{const n=document.createElement(tag);n.textContent=text;if(cls)n.className=cls;return n;};
 function status(text,error=false){$("status").textContent=text;$("status").classList.toggle("error",error);}
 async function api(path,options={}){
@@ -19,7 +20,15 @@ async function api(path,options={}){
   if(response.status===401){connectionEpoch++;session=null;$("workspace").hidden=true;$("retry").hidden=false;throw new Error("Сеанс завершён. Подключитесь снова.");}
   if(response.status===403)throw new Error("Кабинет доступен администратору. Проверьте права и доступ к МойСклад.");
   if(response.status===404)throw new Error("Клиент или страница истории больше не доступны. Обновите данные.");
-  if(!response.ok)throw new Error("Не удалось загрузить данные. Повторите попытку.");
+  if(response.status===409){
+    let payload={};try{payload=await response.json();}catch{}
+    if(generation!==connectionEpoch)throw new Error("Подключение обновилось. Повторите загрузку.");
+    const archived=payload.error==="customer_archived";
+    const error=new Error(archived?"Клиент в архиве МойСклад. Восстановите его в МойСклад и откройте карточку заново.":
+      "Скидка уже изменена. Загрузите актуальную скидку и проверьте значения.");
+    error.conflict=!archived;error.archived=archived;throw error;
+  }
+  if(!response.ok)throw new Error("Не удалось выполнить действие. Проверьте значения и повторите.");
   const data=await response.json();
   if(generation!==connectionEpoch)throw new Error("Подключение обновилось. Повторите загрузку.");
   return data;
@@ -107,6 +116,9 @@ async function profileHistory(generation,append=false){
   activityRows($("customer-history"),data.items,append);profileCursor=data.next_cursor;$("more-customer-history").hidden=!profileCursor;
 }
 async function openCustomer(id){
+  if(personalSaving)return;
+  personalAssignment=null;personalPending=null;personalConflict=false;personalArchived=false;$("customer-personal-form").hidden=true;$("edit-customer-personal").disabled=true;
+  $("customer-personal-value").textContent="—";$("customer-personal-policy").textContent="";$("customer-personal-audit").textContent="";personalStatus("");$("reload-customer-personal").hidden=true;
   const generation=++profileEpoch;profileId=id;profileCursor=null;
   $("customer-name").textContent="Загружаем клиента…";$("customer-phone").textContent="";$("customer-available").textContent="—";
   $("customer-reserved").textContent="";$("customer-history").replaceChildren();$("more-customer-history").hidden=true;
@@ -114,6 +126,7 @@ async function openCustomer(id){
   if(!$("customer-dialog").open)$("customer-dialog").showModal();
   try{
     const data=await api("/api/admin/customers/"+encodeURIComponent(id));if(generation!==profileEpoch)return;
+    renderPersonalAssignment(data.personal_discount);
     $("customer-name").textContent=data.name||"Клиент без имени";$("customer-phone").textContent=data.phone;
     $("customer-available").textContent=number(data.available);
     $("customer-reserved").textContent="Баланс "+number(data.balance)+" · В резерве "+number(data.reserved);
@@ -155,11 +168,92 @@ async function connect(){
 $("search-form").onsubmit=e=>{e.preventDefault();const query=$("customer-search").value.trim();if(query&&query.length<2){$("customer-status").textContent="Введите минимум два символа.";return;}customerQuery=query;searchEpoch++;void customers();};
 $("more-customers").onclick=()=>void customers(true);$("more-activity").onclick=()=>void activity(true);
 $("more-customer-history").onclick=async()=>{if(profileBusy)return;profileBusy=true;const generation=profileEpoch;$("more-customer-history").disabled=true;try{await profileHistory(generation,true);}catch(e){if(generation===profileEpoch)$("profile-status").textContent=e.message;}finally{profileBusy=false;$("more-customer-history").disabled=false;}};
-$("close-customer").onclick=()=>{$("customer-dialog").close();profileEpoch++;};
+$("close-customer").onclick=()=>{if(!personalSaving){$("customer-dialog").close();profileEpoch++;}};
+$("customer-dialog").addEventListener("cancel",event=>{if(personalSaving)event.preventDefault();});
 $("customer-dialog").addEventListener("close",()=>{profileEpoch++;});
 $("widget-help").onclick=()=>$("help-dialog").showModal();$("close-help").onclick=()=>$("help-dialog").close();
 $("refresh").onclick=()=>void refresh();$("retry").onclick=()=>void connect();
 window.addEventListener("hashchange",showScreen);window.addEventListener("pagehide",()=>{session=null;profileEpoch++;connectionEpoch++;});
+
+function personalStatus(message,error=false){
+  $("customer-personal-status").textContent=message;$("customer-personal-status").classList.toggle("error",error);
+}
+function renderPersonalAssignment(value){
+  if(!value||!Number.isInteger(value.version)||!(value.rate_bps===null||(Number.isInteger(value.rate_bps)&&value.rate_bps>=0&&value.rate_bps<=10000))){
+    personalAssignment=null;$("customer-personal-value").textContent="Не удалось загрузить скидку";$("edit-customer-personal").disabled=true;
+    $("reload-customer-personal").hidden=false;return;
+  }
+  personalAssignment=value;const rate=value.rate_bps;
+  $("customer-personal-value").textContent=rate===null?"Не назначена":fmt.format(rate/100)+"%"+(rate===0?" · скидка отключена для клиента":"");
+  $("customer-personal-policy").textContent=typeof personalAssignment.enabled!=="boolean"?
+    "Обновите карточку, чтобы проверить состояние программы.":
+    !personalAssignment.enabled?"Персональные скидки выключены в настройках программы.":
+    rate===null?"Назначьте процент, чтобы использовать скидку в заказе.":
+    rate===0?"Для клиента задана скидка 0%.":
+    "Применяется в виджете нового заказа по правилам персональных скидок.";
+  $("customer-personal-audit").textContent=personalAssignment.reason?"Последнее изменение: "+personalAssignment.reason+
+    (personalAssignment.created_at?" · "+date(personalAssignment.created_at):""):"";
+  $("edit-customer-personal").disabled=false;
+}
+function personalFormControls(){
+  $("customer-personal-form").querySelectorAll("input,textarea,select,button").forEach(control=>control.disabled=personalSaving||personalArchived);
+  const hasRate=$("customer-personal-mode").value==="rate";
+  $("customer-personal-rate-field").hidden=!hasRate;$("customer-personal-rate").disabled=personalSaving||personalArchived||!hasRate;
+  $("customer-personal-rate").required=hasRate;
+  $("save-customer-personal").disabled=personalSaving||personalConflict||personalArchived;
+  $("reload-customer-personal").disabled=personalSaving;$("edit-customer-personal").disabled=personalSaving||personalArchived||!personalAssignment;
+  $("close-customer").disabled=personalSaving;
+}
+$("edit-customer-personal").onclick=()=>{
+  if(personalSaving||personalArchived||!personalAssignment)return;
+  $("customer-personal-mode").value=personalAssignment.rate_bps===null?"none":"rate";
+  $("customer-personal-rate").value=(personalAssignment.rate_bps??0)/100;$("customer-personal-reason").value="";
+  $("customer-personal-form").hidden=false;personalStatus("");personalFormControls();$("customer-personal-mode").focus();
+};
+$("customer-personal-mode").onchange=personalFormControls;
+$("cancel-customer-personal").onclick=()=>{if(!personalSaving){$("customer-personal-form").hidden=true;personalStatus("");}};
+$("reload-customer-personal").onclick=async()=>{
+  if(personalSaving||!profileId)return;const generation=profileEpoch,id=profileId;
+  personalSaving=true;personalFormControls();personalStatus("Загружаем актуальную скидку…");
+  try{
+    const data=await api("/api/admin/customers/"+encodeURIComponent(id));if(generation!==profileEpoch)return;
+    renderPersonalAssignment(data.personal_discount);personalPending=null;personalConflict=false;$("customer-personal-form").hidden=true;
+    $("reload-customer-personal").hidden=true;personalStatus("Актуальная скидка загружена.");
+  }catch(e){if(generation===profileEpoch)personalStatus(e.message,true);}
+  finally{personalSaving=false;personalFormControls();}
+};
+$("customer-personal-form").addEventListener("submit",async event=>{
+  event.preventDefault();if(personalSaving||personalConflict||personalArchived||!personalAssignment||!profileId)return;
+  let rate=null;
+  if($("customer-personal-mode").value==="rate"){
+    const raw=$("customer-personal-rate").value.trim();
+    if(!/^\d{1,3}(\.\d{1,2})?$/.test(raw)){personalStatus("Укажите процент от 0 до 100, максимум два знака после запятой.",true);return;}
+    const [whole,fraction=""]=raw.split(".");rate=Number(whole)*100+Number(fraction.padEnd(2,"0"));
+    if(rate>10000){personalStatus("Процент не может превышать 100.",true);return;}
+  }
+  const reason=$("customer-personal-reason").value.trim();if(!reason){personalStatus("Укажите причину изменения скидки.",true);return;}
+  const payload={rate_bps:rate,expected_version:personalAssignment.version,reason},signature=JSON.stringify(payload);
+  if(!personalPending||personalPending.signature!==signature)personalPending={signature,id:crypto.randomUUID()};
+  const generation=profileEpoch,id=profileId;personalSaving=true;personalFormControls();personalStatus("Сохраняем скидку…");
+  try{
+    const {current}=await api("/api/admin/customers/"+encodeURIComponent(id)+"/personal-discount",
+      {method:"PUT",body:JSON.stringify({...payload,request_id:personalPending.id})});
+    if(generation!==profileEpoch)return;
+    renderPersonalAssignment(current);personalPending=null;$("customer-personal-form").hidden=true;$("reload-customer-personal").hidden=false;
+    personalStatus("Скидка сохранена. Версия "+current.version+".");
+    try{
+      const fresh=await api("/api/admin/customers/"+encodeURIComponent(id));if(generation!==profileEpoch)return;
+      renderPersonalAssignment(fresh.personal_discount);$("reload-customer-personal").hidden=true;
+    }catch{if(generation===profileEpoch)personalStatus("Скидка сохранена. Обновите карточку, чтобы проверить действующее правило.",true);}
+  }catch(e){
+    if(generation===profileEpoch){
+      if(e.conflict){personalPending=null;personalConflict=true;$("reload-customer-personal").hidden=false;}
+      if(e.archived){personalPending=null;personalArchived=true;$("reload-customer-personal").hidden=true;}
+      personalStatus(e.message,true);
+    }
+  }finally{personalSaving=false;personalFormControls();}
+});
+
 showScreen();void connect();
 
 function findCustomer(){

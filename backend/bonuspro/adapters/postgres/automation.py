@@ -113,6 +113,13 @@ class Automation:
             "JOIN bonuspro.reservations r ON r.tenant_id=a.tenant_id AND r.id=a.id WHERE a.tenant_id=%s AND a.order_id=%s "
             "AND r.state IN ('verifying','committed')",
             (tenant,s.order_id)).fetchone()
+        from bonuspro.adapters.postgres.personal_applications import PersonalApplications
+        personal=PersonalApplications.existing_in(conn,tenant,s.order_id)
+        if personal:
+            if saved.marker!=personal["marker"] or saved.financial()!=personal["plan"]["after"]:
+                self.outcome_in(conn,tenant,s.order_id,"redemption_pending")
+                return
+            PersonalApplications(self.ledger).confirm_in(conn,tenant,personal,saved,worker=True)
         bonus_minor=0
         if attempt:
             if saved.marker!=attempt["marker"] or saved.financial()!=attempt["plan"]["after"] :
@@ -121,7 +128,7 @@ class Automation:
             self.ledger.confirm_discount_in(conn,tenant,str(attempt["id"]),proof=VerifiedDiscount(
                 s.order_id,attempt["quote_hash"],attempt["points"]*100,s.revision))
             bonus_minor=attempt["points"]*100
-        elif saved.marker:
+        elif saved.marker and not personal:
             if context:
                 self.ledger._wallet_lock(conn,tenant,str(context["wallet_id"]))
                 self.issue_in(conn,tenant,s.order_id,str(context["wallet_id"]),"unrecognized_bonus_marker",proof.evidence_hash)
@@ -239,7 +246,10 @@ class Automation:
                 attempts=conn.execute("SELECT a.plan FROM bonuspro.redemption_attempts a JOIN bonuspro.redemption_voids v "
                     "ON v.tenant_id=a.tenant_id AND v.reservation_id=a.id WHERE a.tenant_id=%s AND a.order_id=%s",
                     (tenant,issue["order_id"])).fetchall()
-                original_ok=any(row["plan"]["before"]==proof.saved.financial() for row in attempts)
+                personal=conn.execute("SELECT a.plan FROM bonuspro.personal_discount_applications a "
+                    "JOIN bonuspro.personal_discount_voids v ON v.tenant_id=a.tenant_id AND v.application_id=a.id "
+                    "WHERE a.tenant_id=%s AND a.order_id=%s",(tenant,issue["order_id"])).fetchall()
+                original_ok=any(row["plan"]["before"]==proof.saved.financial() for row in attempts+personal)
             if not original_ok or proof.outcome=="document_review":
                 raise Conflict("document is still inconsistent")
             if time.monotonic()>proof.deadline:raise Conflict("expired correction proof")
@@ -269,12 +279,13 @@ class Automation:
                 history=conn.execute("""
                     SELECT EXISTS(SELECT 1 FROM bonuspro.reservations WHERE tenant_id=%s AND order_id=%s)
                     OR EXISTS(SELECT 1 FROM bonuspro.redemption_attempts WHERE tenant_id=%s AND order_id=%s)
+                    OR EXISTS(SELECT 1 FROM bonuspro.personal_discount_applications WHERE tenant_id=%s AND order_id=%s)
                     OR EXISTS(SELECT 1 FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s)
                     OR EXISTS(SELECT 1 FROM bonuspro.settlement_events WHERE tenant_id=%s AND order_id=%s)
                     OR EXISTS(SELECT 1 FROM bonuspro.settlement_cases WHERE tenant_id=%s AND order_id=%s)
                     OR EXISTS(SELECT 1 FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND order_id=%s)
                     AS present
-                """,(tenant,order)*6).fetchone()["present"]
+                """,(tenant,order)*7).fetchone()["present"]
                 if not history:
                     self.outcome_in(conn,tenant,order,"cancelled",expected_hint)
                     conn.execute("UPDATE bonuspro.order_monitors SET next_due=LEAST(next_due,now()+interval '5 minutes') "
@@ -304,7 +315,11 @@ class Automation:
                                "AND created_at<clock_timestamp()-interval '15 minutes'",(tenant,)).fetchone()["n"]
             pending=conn.execute("SELECT count(*) AS n FROM bonuspro.settlement_cases WHERE tenant_id=%s AND state='pending'",(tenant,)).fetchone()["n"]
             queue=conn.execute("SELECT min(created_at) AS oldest FROM bonuspro.jobs WHERE tenant_id=%s AND state IN ('queued','running')",(tenant,)).fetchone()["oldest"]
-            unknown=conn.execute("SELECT id,order_id,points,created_at FROM bonuspro.reservations WHERE tenant_id=%s AND state='verifying' ORDER BY created_at LIMIT 50",(tenant,)).fetchall()
+            unknown=conn.execute("SELECT id,order_id,points,created_at FROM ("
+                "SELECT id,order_id,points,created_at FROM bonuspro.reservations WHERE tenant_id=%s AND state='verifying' "
+                "UNION ALL SELECT id,order_id,points,created_at FROM bonuspro.personal_discount_applications "
+                "WHERE tenant_id=%s AND state='verifying' AND points=0) operations ORDER BY created_at LIMIT 50",
+                (tenant,tenant)).fetchall()
         from bonuspro.adapters.postgres.signals import Signals
         return dict(synchronization=Signals(self.ledger).status(tenant),configuration=self.state(tenant),orders={r["outcome"]:r["n"] for r in counts},
                     jobs={r["state"]:r["n"] for r in jobs},issues=issues,

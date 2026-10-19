@@ -9,6 +9,7 @@
 <section id="workspace" hidden>
 <nav class="settings-tabs" role="tablist" aria-label="Разделы настроек">
 <button type="button" role="tab" id="tab-rules" aria-controls="rules-panel" aria-selected="true">Правила</button>
+<button type="button" role="tab" id="tab-personal" aria-controls="personal-panel" aria-selected="false" tabindex="-1">Персональные скидки</button>
 <button type="button" role="tab" id="tab-connection" aria-controls="connection-panel" aria-selected="false" tabindex="-1">Подключение</button>
 <button type="button" role="tab" id="tab-history" aria-controls="history-panel" aria-selected="false" tabindex="-1">История изменений</button>
 </nav>
@@ -26,6 +27,21 @@
 <label for="example-total">Покупка на сумму, ₸ <input id="example-total" type="text" inputmode="numeric" value="10000" autocomplete="off"></label>
 <dl class="example-results"><div><dt>Начислится бонусов</dt><dd id="example-earn">—</dd></div><div><dt>Лимит списания</dt><dd id="example-spend">—</dd></div></dl>
 <p id="preview">При достаточном балансе. Начисление — после оплаты и отгрузки.</p></section>
+</div>
+
+<div id="personal-panel" class="settings-panel" role="tabpanel" aria-labelledby="tab-personal" hidden>
+<form id="personal-policy-form">
+<label><input id="personal-enabled" type="checkbox"> Использовать персональные скидки</label>
+<p class="hint">Процент назначается в карточке клиента. Только товары, без доставки и услуг.</p>
+<label for="personal-external">Если в позиции уже есть скидка</label>
+<select id="personal-external"><option value="skip">Не применять персональную скидку</option><option value="best">Выбирать больший процент</option><option value="sequential">Применять последовательно</option></select>
+<p id="personal-example" class="hint" aria-live="polite"></p>
+<label><input id="personal-stack" type="checkbox"> Разрешить списание бонусов вместе с персональной скидкой</label>
+<p id="personal-stack-note" class="hint"></p>
+<label for="personal-policy-reason">Причина изменения персональных скидок</label><textarea id="personal-policy-reason" maxlength="500" rows="2" required></textarea>
+<div class="rules-actions"><button id="save-personal-policy" class="primary" type="submit" disabled>Сохранить настройки скидок</button><button id="reload-personal-policy" type="button">Загрузить настройки скидок</button></div>
+</form><p id="personal-policy-status" role="status" aria-live="polite"></p>
+<section aria-label="История настроек персональных скидок"><h2>История настроек скидок</h2><div id="personal-policy-history"></div><button id="more-personal-policy" type="button" hidden>Показать ещё настроек скидок</button></section>
 </div>
 <div id="connection-panel" class="settings-panel" role="tabpanel" aria-labelledby="tab-connection" hidden><section class="readiness-card" aria-label="Состояние подключения"><div class="readiness-heading"><h2>Подключение программы</h2><button id="refresh-readiness" type="button">Обновить статус</button></div><p id="readiness-state" role="status" aria-live="polite">Проверяем подключение…</p><ul id="readiness-list"></ul></section><section id="widget-settings" aria-label="Подключение виджета"><h2>Виджет в заказе</h2>
 <p>Подключите виджет перед запуском программы.</p>

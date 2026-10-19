@@ -22,6 +22,7 @@ class DeliveryTests(unittest.TestCase):
                     ready_for_live_acceptance=False,failures=[dict(stage="widget",code="widget_not_configured")])
         def run(args,**kwargs):
             calls.append(args)
+            if len(calls)==2:self.assertEqual(kwargs["timeout"],900)
             return SimpleNamespace(returncode=1 if args[0]=="docker" else 0,stdout=json.dumps(report))
         with tempfile.TemporaryDirectory() as directory,patch("builtins.print") as output:
             root=Path(directory)

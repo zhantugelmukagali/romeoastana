@@ -30,4 +30,11 @@ class ImportAPITests(unittest.TestCase):
         r=self.client.post("/api/admin/imports/preview",headers=self.headers(),json={"csv_text":"bad"})
         self.assertEqual(r.status_code,422,r.text)
 
+    def test_malformed_csv_header_is_a_validation_error_without_partial_import(self):
+        response=self.client.post("/api/admin/imports/preview",headers=self.headers(),
+                                  json={"csv_text":'"counterparty_id,bonus_balance\n'})
+        self.assertEqual(response.status_code,422,response.text)
+        self.assertEqual(response.json()["error"],"invalid_import")
+        self.assertEqual(self.fx.count("ledger_transactions"),0)
+
 if __name__=="__main__":unittest.main()

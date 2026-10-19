@@ -69,3 +69,21 @@ button:focus-visible,summary:focus-visible{outline:2px solid #3b5bcc;outline-off
 @keyframes spin{to{transform:rotate(360deg)}}
 @media(max-width:340px){.widget-heading{display:block;padding-top:0}#order-label{display:block}header{margin-bottom:8px}main{padding:10px}dl{padding-bottom:10px;margin-bottom:10px}.earning{margin-top:10px;padding-top:8px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+
+.personal-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 8px;min-height:24px}
+.personal-row label{display:flex;min-height:24px;align-items:center;gap:6px;margin:0;font-size:12px;line-height:18px;min-width:0}
+.personal-row input{display:inline-block;width:16px;height:16px;min-height:0;padding:0;flex-shrink:0;accent-color:#3b5bcc}
+.personal-row output{font-size:13px;font-weight:500;text-align:right;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+#pending-bonus{margin:0 0 8px;font-size:13px;color:#344054;font-variant-numeric:tabular-nums}
+main[data-personal=true] dl{gap:3px;margin-bottom:6px;padding-bottom:6px}
+main[data-personal=true] #balance{font-size:18px}
+main[data-personal=true] #limit-block{display:none}
+main[data-personal=true] header{margin-bottom:6px}
+main[data-personal=true] .earning{margin-top:8px;padding-top:6px}
+main[data-personal=true] #maximum-button{min-height:36px}
+main[data-personal=true] input:not([type=checkbox]){min-height:34px;padding:6px 10px}
+main[data-personal=true] #payable{font-size:20px}
+.personal-row input:focus-visible{outline:2px solid #3b5bcc;outline-offset:2px}
+
+.spend-heading{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+#personal-limit{color:#596579;font-size:11px;text-align:right;font-variant-numeric:tabular-nums}

@@ -19,7 +19,7 @@ tabs.forEach((tab,index)=>{
 });
 function fromHash(){
  const id=location.hash.slice(1);
- if(["widget-settings","launch-settings","processing-settings"].includes(id))select("connection-panel");
- else if(id==="history")select("history-panel");
+ const panel=document.getElementById(id)?.closest('[role="tabpanel"]');
+ if(panel)select(panel.id);
 }
 select("rules-panel");fromHash();window.addEventListener("hashchange",fromHash);

@@ -20,12 +20,17 @@ function link(order){
   a.target="_blank";a.rel="noopener noreferrer";return a;
 }
 function open(item,action){
+  if(busy||submitting)return;
   selected={item,action};$("reason").value="";$("error").textContent="";
-  $("title").textContent=action==="release"?"Освободить резерв отменённого заказа?":action==="issue"?"Проверить исправление?":action==="apply"?"Выполнить пересчёт?":"Сохранить бонусы клиенту?";
-  $("impact").textContent=action==="release"?"Закройте все вкладки этого заказа. Отмените проведение заказа без скидки, оплат и отгрузок. Сервер освободит резерв только после проверки исходных цен и отсутствия бонусной метки, не ранее 15 минут после запроса. Если скидка уже сохранена, освобождение запрещено.":action==="issue"?"Сервер заново проверит документ. Блокировка снимется только после подтверждения исправления.":
+  const personalOnly=action==="release"&&item.points===0;
+  $("title").textContent=personalOnly?"Отменить применение персональной скидки?":action==="release"?"Освободить резерв отменённого заказа?":action==="issue"?"Проверить исправление?":action==="apply"?"Выполнить пересчёт?":"Сохранить бонусы клиенту?";
+  $("impact").textContent=personalOnly?"Закройте все вкладки этого заказа. Отмените проведение заказа без скидки, оплат и отгрузок. Сервер закроет неподтверждённое применение только после проверки исходных цен и отсутствия бонусной метки, не ранее 15 минут после запроса. Если скидка уже сохранена, отмена запрещена.":action==="release"?"Закройте все вкладки этого заказа. Отмените проведение заказа без скидки, оплат и отгрузок. Сервер освободит резерв только после проверки исходных цен и отсутствия бонусной метки, не ранее 15 минут после запроса. Если скидка уже сохранена, освобождение запрещено.":action==="issue"?"Сервер заново проверит документ. Блокировка снимется только после подтверждения исправления.":
     action==="apply"?"Изменение баланса: "+signed(item.total_delta)+" бонусов. Зарезервированные бонусы не затрагиваются.":
     "Отрицательные корректировки по этому решению будут прощены клиенту. Положительные корректировки сохранятся. Решение записывается в историю.";
   $("decision").showModal();$("reason").focus();
+}
+function actionButton(label,run,disabled=false){
+  const button=node("button",label);button.dataset.allowed=String(!disabled);button.disabled=busy||disabled;button.onclick=run;return button;
 }
 function render(item){
   const card=node("article","");card.className="case";
@@ -36,16 +41,17 @@ function render(item){
     node("p","Свободно: "+fmt.format(item.available)+" бонусов"));
   if(item.state==="pending"){
     const actions=node("div","");actions.className="actions";
-    const apply=node("button","Выполнить пересчёт");apply.disabled=item.total_delta < -item.available;
-    apply.onclick=()=>open(item,"apply");actions.append(apply);
-    const waive=node("button","Сохранить бонусы клиенту");waive.onclick=()=>open(item,"waive");actions.append(waive);
+    const insufficient=item.total_delta < -item.available;
+    const apply=actionButton("Выполнить пересчёт",()=>open(item,"apply"),insufficient);actions.append(apply);
+    const waive=actionButton("Сохранить бонусы клиенту",()=>open(item,"waive"));actions.append(waive);
     card.append(actions);
-    if(apply.disabled)card.append(node("p","Для пересчёта не хватает свободных бонусов. Отрицательный баланс запрещён."));
+    if(insufficient)card.append(node("p","Для пересчёта не хватает свободных бонусов. Отрицательный баланс запрещён."));
   }else card.append(node("p",item.reason||"Документ изменился; прежнее решение больше не требуется."));
   return card;
 }
 function controls(value){busy=value;$("refresh").disabled=value;$("more").disabled=value;
-  document.querySelectorAll("[data-state]").forEach(x=>x.disabled=value);}
+  document.querySelectorAll("[data-state]").forEach(x=>x.disabled=value);
+  document.querySelectorAll("[data-allowed]").forEach(x=>x.disabled=value||x.dataset.allowed==="false");}
 async function load(append=false){
   if(busy||submitting)return;controls(true);status("Проверяем состояние…");
   try{
@@ -57,14 +63,16 @@ async function load(append=false){
     for(const item of diagnostic.issues){
       const card=node("article","");card.className="case";
       card.append(link(item.order_id),node("p","Проверьте состав заказа, скидку и связанные документы. Списание по клиенту приостановлено."));
-      const button=node("button","Проверить исправление");button.onclick=()=>open(item,"issue");card.append(button);$("issues").append(card);
+      const button=actionButton("Проверить исправление",()=>open(item,"issue"));card.append(button);$("issues").append(card);
     }
     $("unverified").replaceChildren();
+    $("unverified").closest("section").querySelector("h2").textContent=(diagnostic.unverified||[]).some(item=>item.points===0)?"Неподтверждённые операции":"Неподтверждённые списания";
     for(const item of diagnostic.unverified||[]){
       const card=node("article","");card.className="case";
-      card.append(link(item.order_id),node("p","В резерве: "+fmt.format(item.points)+" бонусов"));
-      const button=node("button","Проверить отмену и освободить резерв");
-      button.onclick=()=>open(item,"release");card.append(button);$("unverified").append(card);
+      const personalOnly=item.points===0;
+      card.append(link(item.order_id),node("p",personalOnly?"Персональная скидка — ожидает подтверждения":"В резерве: "+fmt.format(item.points)+" бонусов"));
+      const button=actionButton(personalOnly?"Проверить отмену скидки":"Проверить отмену и освободить резерв",()=>open(item,"release"));
+      card.append(button);$("unverified").append(card);
     }
     if(!$("unverified").childElementCount)$("unverified").append(node("p","Неподтверждённых списаний нет."));
     if(!diagnostic.issues.length)$("issues").append(node("p","Расхождений нет."));

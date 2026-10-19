@@ -10,12 +10,12 @@ class DeliveryFailed(RuntimeError):pass
 
 def finish(root,source,tenant,*,runner=subprocess.run):
     tenant=str(UUID(tenant));root=Path(root);source=Path(source)
-    print("1/3 Обновляем приложение и проверяем восстановление копии.",flush=True)
+    print("1/3 Обновляем программу бонусов и скидок, проверяем восстановление копии.",flush=True)
     runner([sys.executable,str(source/"deploy/update_cabinet.py"),"--root",str(root)],
            check=True)
     print("2/3 Обновляем обработчик и ждём свежего результата.",flush=True)
     runner([sys.executable,str(source/"deploy/start_processing.py"),"--root",str(root),"--tenant",tenant],
-           check=True)
+           check=True,timeout=900)
     print("3/3 Проверяем реальные документы без изменения бонусов.",flush=True)
     result=runner(["docker","exec","bonuspro-release-app-1","python","-m","bonuspro.releasecheck",
                    "--tenant",tenant],check=False,capture_output=True,text=True,timeout=120)
