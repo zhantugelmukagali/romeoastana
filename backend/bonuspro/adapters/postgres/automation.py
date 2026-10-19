@@ -237,14 +237,45 @@ class Automation:
                          "WHERE tenant_id=%s AND id=%s AND resolved_at IS NULL",(actor,reason,tenant,identity))
         return {"resolved":True}
 
-    def invalid(self,tenant,order,reason):
+    def invalid(self,tenant,order,reason,*,missing_order=False,job=None):
+        tenant,order=map(uuid_value,(tenant,order))
         with self.ledger.transaction(tenant) as conn:
+            # Match the normal completion lock order and fence the observation
+            # before it can alter a monitor on behalf of an expired job owner.
+            if job is not None:
+                job_id,lease_id=map(uuid_value,(job["id"],job["lease_id"]))
+                current=conn.execute("SELECT id FROM bonuspro.jobs WHERE tenant_id=%s AND id=%s "
+                    "AND state='running' AND lease_id=%s AND lease_until>clock_timestamp() FOR UPDATE",
+                    (tenant,job_id,lease_id)).fetchone()
+                if not current:raise Conflict("job lease expired or replaced")
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("installation/"+tenant,))
+            self.ledger._key_lock(conn,tenant,"settings")
+            self.ledger._key_lock(conn,tenant,"order/"+order)
+            if missing_order:
+                # Same conservative predicate as the migration's private owner
+                # function; all history states count, including released attempts
+                # and resolved reviews. No financial history is deleted or released.
+                history=conn.execute("""
+                    SELECT EXISTS(SELECT 1 FROM bonuspro.reservations WHERE tenant_id=%s AND order_id=%s)
+                    OR EXISTS(SELECT 1 FROM bonuspro.redemption_attempts WHERE tenant_id=%s AND order_id=%s)
+                    OR EXISTS(SELECT 1 FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s)
+                    OR EXISTS(SELECT 1 FROM bonuspro.settlement_events WHERE tenant_id=%s AND order_id=%s)
+                    OR EXISTS(SELECT 1 FROM bonuspro.settlement_cases WHERE tenant_id=%s AND order_id=%s)
+                    OR EXISTS(SELECT 1 FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND order_id=%s)
+                    AS present
+                """,(tenant,order)*6).fetchone()["present"]
+                if not history:
+                    conn.execute("UPDATE bonuspro.order_monitors SET outcome='cancelled',checked_at=now(),"
+                        "next_due=now()+interval '5 minutes' WHERE tenant_id=%s AND order_id=%s",(tenant,order))
+                    if job is not None:self.jobs.complete_in(conn,tenant,job_id,lease_id)
+                    return True
             prior=conn.execute("SELECT wallet_id FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s",
                                (tenant,order)).fetchone()
             if prior:
                 self.ledger._wallet_lock(conn,tenant,str(prior["wallet_id"]))
                 self.issue_in(conn,tenant,order,str(prior["wallet_id"]),reason,"unavailable")
             self.outcome_in(conn,tenant,order,"provider_error")
+            return False
 
     def cooldown(self,tenant,seconds,error):
         with self.ledger.transaction(tenant) as conn:

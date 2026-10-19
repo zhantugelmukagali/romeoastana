@@ -1,9 +1,9 @@
 """Start the existing schema-0014 tenant worker without changing keys or financial setup."""
 import argparse,json,os,re,time
-from datetime import datetime
+from datetime import datetime,timezone
 from pathlib import Path
 from uuid import UUID
-from update_cabinet import run,compose
+from update_cabinet import run,compose,atomic_write
 
 class ProcessingFailed(RuntimeError):pass
 
@@ -47,7 +47,33 @@ def wait_for_report(fetch,started_after,*,timeout=60,clock=time.monotonic,pause=
 
 def worker_override(tenant):
     tenant=str(UUID(tenant))
-    return '# Managed by BonusPro start_processing.py\nservices:\n  worker:\n    environment:\n      BONUSPRO_TENANT_ID: "'+tenant+'"\n    healthcheck:\n      test: [CMD, python, -m, bonuspro.worker, --health]\n      interval: 15s\n      timeout: 5s\n      start_period: 45s\n      retries: 6\n'
+    return '# Managed by BonusPro start_processing.py\nservices:\n  worker:\n    environment:\n      BONUSPRO_TENANT_ID: "'+tenant+'"\n    healthcheck:\n      test: [CMD, python, -m, bonuspro.worker, --health]\n      interval: 15s\n      timeout: 5s\n      start_period: 600s\n      retries: 6\n'
+
+def start_worker(command):
+    # One bounded cycle can read discovery plus four 90-second document graphs.
+    # Keep liveness tied to a completed cycle while allowing that documented work.
+    run(command+["up","-d","--no-build","--no-deps","--wait","--wait-timeout","720","worker"],timeout=900)
+
+def ensure_worker_override(path,tenant):
+    text=worker_override(tenant)
+    if path.is_symlink():raise ProcessingFailed("Worker override must be a regular file")
+    backup=None
+    if path.exists():
+        current=path.read_text()
+        if current==text:return None
+        legacy=text.replace("start_period: 600s","start_period: 45s")
+        if current!=legacy:
+            raise ProcessingFailed("Existing worker override differs; inspect before replacing")
+        backup=path.with_name(path.name+".before-health-"+datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")+"-"+str(os.getpid()))
+        fd=os.open(backup,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,"w") as stream:
+            stream.write(current);stream.flush();os.fsync(stream.fileno())
+        atomic_write(path,text,path.stat())
+    else:
+        fd=os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
+        with os.fdopen(fd,"w") as stream:
+            stream.write(text);stream.flush();os.fsync(stream.fileno())
+    return backup
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument("--root",type=Path,default=Path("/home/ubuntu/bonuspro-release"));parser.add_argument("--tenant");args=parser.parse_args()
@@ -71,12 +97,8 @@ def main():
             previous=next((x.split("=",1)[1] for x in env if x.startswith("BONUSPRO_TENANT_ID=")),"")
             if previous and previous!=tenant:raise ProcessingFailed("Existing worker belongs to a different account")
         override=root/"compose.processing.yaml"
-        if override.is_symlink():raise ProcessingFailed("Worker override must be a regular file")
-        text=worker_override(tenant)
-        if override.exists() and override.read_text()!=text:raise ProcessingFailed("Existing worker override differs; inspect before replacing")
-        if not override.exists():
-            fd=os.open(override,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600)
-            with os.fdopen(fd,"w") as stream:stream.write(text);stream.flush();os.fsync(stream.fileno())
+        override_backup=ensure_worker_override(override,tenant)
+        if override_backup:print("Managed worker health settings updated; backup: "+str(override_backup))
         command=compose(root,"-f",str(override),"--profile","automation")
         run(command+["config","--quiet"])
         code=("import json;from bonuspro.settings import Settings;from bonuspro.adapters.postgres.ledger import Ledger;"
@@ -85,7 +107,7 @@ def main():
         def report():
             return json.loads(run(["docker","exec","bonuspro-release-app-1","python","-c",code],capture=True))
         started_after=report()["checked_at"]
-        run(command+["up","-d","--no-build","--no-deps","--wait","--wait-timeout","180","worker"])
+        start_worker(command)
         print("Waiting for a new processing cycle; existing orders are checked without changing program setup.",flush=True)
         result=wait_for_report(report,started_after)
         print(json.dumps(result,ensure_ascii=False,indent=2))

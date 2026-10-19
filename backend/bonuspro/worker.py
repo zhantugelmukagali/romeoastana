@@ -77,8 +77,15 @@ class Worker:
                         raise
                     except (InvalidDocument,EntityMissing) as error:
                         reason="provider_document_missing" if isinstance(error,EntityMissing) else "invalid_credited_document"
-                        self.automation.invalid(self.tenant,str(job["entity_id"]),reason)
-                        self.fail_job(job,"invalid_document",permanent=True)
+                        missing_order=(isinstance(error,EntityMissing) and
+                            error.requested_kind=="customerorder" and error.requested_id==str(job["entity_id"]))
+                        try:
+                            harmless=self.automation.invalid(self.tenant,str(job["entity_id"]),reason,
+                                                             missing_order=missing_order,job=job)
+                        except Conflict:
+                            self.fail_job(job,"conflict",delay=5)
+                        else:
+                            if not harmless:self.fail_job(job,"invalid_document",permanent=True)
                     except (AuthenticationFailed,AccessDenied):
                         self.fail_job(job,"provider_unavailable",delay=300)
                         raise
