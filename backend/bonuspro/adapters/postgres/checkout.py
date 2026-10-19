@@ -6,6 +6,7 @@ amounts. Preview is informational, not a reservation and not authorization to de
 """
 from dataclasses import asdict, dataclass
 from uuid import uuid4
+from psycopg.errors import CheckViolation
 
 from bonuspro.domain.finance import Rules, natural, quote, spend_limit
 from bonuspro.adapters.postgres.ledger import (
@@ -121,13 +122,13 @@ class Checkout:
         source_hash = fingerprint(asdict(snapshot))
         with self.ledger.transaction(tenant) as conn:
             if authorize:authorize(conn)
+            # Match worker/prepare: installation must precede settings and order.
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("installation/"+tenant,))
             # Configuration selection and new enrolment cannot race with a settings change.
             self.ledger._key_lock(conn,tenant,"settings")
             self.ledger._key_lock(conn,tenant,"order/"+snapshot.order_id)
             context = conn.execute("SELECT * FROM bonuspro.order_contexts WHERE tenant_id=%s AND order_id=%s",
                                    (tenant,snapshot.order_id)).fetchone()
-            if context and str(context["counterparty_id"]) != snapshot.counterparty_id:
-                raise Conflict("order customer changed; reconciliation required")
             if context:
                 row = conn.execute("SELECT * FROM bonuspro.rule_versions WHERE tenant_id=%s AND version=%s",
                                    (tenant,context["rule_version"])).fetchone()
@@ -149,12 +150,21 @@ class Checkout:
                              "VALUES (%s,%s,%s)",(tenant,snapshot.counterparty_id,wallet))
             else:
                 wallet = str(link["wallet_id"])
+            if context:
+                try:
+                    context=conn.execute("SELECT * FROM bonuspro.rebind_order_customer(%s,%s,%s,%s,%s)",
+                        (snapshot.order_id,snapshot.counterparty_id,source_hash,snapshot.revision,actor)).fetchone()
+                except CheckViolation:
+                    raise Conflict("order customer changed after financial activity; reconciliation required") from None
             self.ledger._wallet_lock(conn,tenant,wallet)
             if context is None:
-                conn.execute("INSERT INTO bonuspro.order_contexts "
-                             "(tenant_id,order_id,counterparty_id,wallet_id,rule_version,initial_source_hash,enrolled_by) "
-                             "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                             (tenant,snapshot.order_id,snapshot.counterparty_id,wallet,row["version"],source_hash,actor))
+                try:
+                    conn.execute("INSERT INTO bonuspro.order_contexts "
+                                 "(tenant_id,order_id,counterparty_id,wallet_id,rule_version,initial_source_hash,enrolled_by,binding_revision) "
+                                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                                 (tenant,snapshot.order_id,snapshot.counterparty_id,wallet,row["version"],source_hash,actor,snapshot.revision))
+                except CheckViolation:
+                    raise Conflict("order already has financial activity for another wallet; reconciliation required") from None
             from bonuspro.adapters.postgres.automation import Automation
             Automation.hint_in(conn,tenant,snapshot.order_id)
             funds = self.ledger._snapshot(conn,tenant,wallet)

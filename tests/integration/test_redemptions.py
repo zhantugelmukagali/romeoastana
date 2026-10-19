@@ -22,7 +22,7 @@ class RedemptionTests(unittest.TestCase):
                             "Install","synthetic")
         self.checkout.save_rules(self.tenant,earn_bps=500,spend_bps=3000,delivery_policy="exclude",
                     expected_version=0,request_id=str(uuid4()),actor_id=self.actor,reason="initial")
-        self.saved=SavedOrder(OrderSnapshot(self.tenant,self.order,self.customer,"rev-1","KZT",1200000,1000000),
+        self.saved=SavedOrder(OrderSnapshot(self.tenant,self.order,self.customer,"2026-10-14 10:00:00.000","KZT",1200000,1000000),
              (Line(str(uuid4()),"product",str(uuid4()),Decimal(1),Decimal(1000000),0,Decimal(0),False,None),
               Line(str(uuid4()),"service",str(uuid4()),Decimal(1),Decimal(200000),0,Decimal(0),False,None)),
              str(uuid4()),True,False,None,"0001")
@@ -137,6 +137,59 @@ class RedemptionTests(unittest.TestCase):
             candidate=replace(saved,snapshot=replace(saved.snapshot,**{field:1}))
             self.assertFalse(self.redemptions.confirm_saved(self.tenant,candidate)["verified"])
         self.assertEqual(self.ledger.snapshot(self.tenant,self.wallet),dict(balance=5000,reserved=1000,available=4000))
+
+
+    def test_lost_prepare_can_resume_same_plan_after_saved_revision_advances(self):
+        prepared=self.prepare()
+        # Saving the unchanged document advances its revision; it does not change
+        # which wallet, amount or absolute discount plan the attempt represents.
+        saved=replace(self.saved,snapshot=replace(self.saved.snapshot,revision="saved-before-recovery"))
+        checked=self.redemptions.confirm_saved(self.tenant,saved)
+        self.assertFalse(checked["verified"])
+        self.assertEqual(checked["resume_source_hash"],saved.source_hash)
+        recovered=self.redemptions.resume(self.tenant,saved,attempt_id=prepared["id"],
+                                         expected_source=checked["resume_source_hash"])
+        self.assertEqual(recovered["id"],prepared["id"])
+        self.assertEqual(recovered["update_state"],prepared["update_state"])
+        self.assertEqual(self.ledger.snapshot(self.tenant,self.wallet),
+                         dict(balance=5000,reserved=1000,available=4000))
+        repeated=self.redemptions.resume(self.tenant,saved,attempt_id=prepared["id"],
+                                        expected_source=checked["resume_source_hash"])
+        self.assertEqual(repeated["update_state"],prepared["update_state"])
+        with self.ledger.transaction(self.tenant) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) AS n FROM bonuspro.redemption_attempts").fetchone()["n"],1)
+        persisted=self.persisted(prepared)
+        self.assertTrue(self.redemptions.confirm_saved(self.tenant,persisted)["verified"])
+        with self.assertRaises(Conflict):
+            self.redemptions.resume(self.tenant,saved,attempt_id=prepared["id"],
+                                    expected_source=checked["resume_source_hash"])
+
+    def test_resume_rejects_changed_revision_attempt_customer_and_financial_state(self):
+        prepared=self.prepare()
+        checked=self.redemptions.confirm_saved(self.tenant,self.saved)
+        candidates=(
+            replace(self.saved,snapshot=replace(self.saved.snapshot,revision="changed-after-verification")),
+            replace(self.saved,snapshot=replace(self.saved.snapshot,counterparty_id=str(uuid4()))),
+            replace(self.saved,snapshot=replace(self.saved.snapshot,paid_minor=1)),
+            replace(self.saved,snapshot=replace(self.saved.snapshot,shipped_minor=1)),
+            replace(self.saved,snapshot=replace(self.saved.snapshot,cancelled=True)),
+            replace(self.saved,discount_blocked_reason="linked_documents_present"),
+            replace(self.saved,marker="unexpected-marker"),
+            replace(self.saved,lines=(replace(self.saved.lines[0],quantity=Decimal(2)),self.saved.lines[1])),
+        )
+        for candidate in candidates:
+            with self.subTest(candidate=candidate),self.assertRaises(Conflict):
+                self.redemptions.resume(self.tenant,candidate,attempt_id=prepared["id"],
+                                        expected_source=checked["resume_source_hash"])
+            if candidate.snapshot.revision==self.saved.snapshot.revision:
+                verification=self.redemptions.confirm_saved(self.tenant,candidate)
+                self.assertFalse(verification["recoverable"])
+                self.assertNotIn("resume_source_hash",verification)
+        with self.assertRaises(Conflict):
+            self.redemptions.resume(self.tenant,self.saved,attempt_id=str(uuid4()),
+                                    expected_source=checked["resume_source_hash"])
+        self.assertEqual(self.ledger.snapshot(self.tenant,self.wallet),
+                         dict(balance=5000,reserved=1000,available=4000))
 
 if __name__=="__main__":unittest.main()
 

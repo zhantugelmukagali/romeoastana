@@ -19,7 +19,7 @@ class CheckoutTests(unittest.TestCase):
         with psycopg.connect(os.environ["TEST_ADMIN_DSN"]) as conn:
             assert conn.info.dbname=="bonuspro_ci"
             conn.execute("INSERT INTO bonuspro.tenants(id) VALUES (%s)",(self.tenant,))
-        self.doc=OrderSnapshot(self.tenant,self.order,self.customer,"revision-1","KZT",1_100_000,1_000_000)
+        self.doc=OrderSnapshot(self.tenant,self.order,self.customer,"2026-10-14 10:00:00.000","KZT",1_100_000,1_000_000)
 
     def save(self, expected=0, earn=500, request=None):
         return self.checkout.save_rules(self.tenant,earn_bps=earn,spend_bps=3000,delivery_policy="exclude",
@@ -109,9 +109,13 @@ class CheckoutTests(unittest.TestCase):
         with self.ledger.transaction(self.tenant) as conn:
             self.assertEqual(conn.execute("SELECT count(*) AS n FROM bonuspro.order_contexts").fetchone()["n"],0)
 
-    def test_changed_customer_requires_reconciliation(self):
+    def test_changed_customer_before_order_activity_uses_the_new_wallet(self):
         self.save();wallet=self.preview()["wallet_id"];self.credit(wallet)
-        with self.assertRaises(Conflict):self.preview(doc=replace(self.doc,counterparty_id=str(uuid4())))
+        customer=str(uuid4())
+        result=self.preview(doc=replace(self.doc,counterparty_id=customer,revision="2026-10-19 10:01:00.000"))
+        self.assertNotEqual(result["wallet_id"],wallet)
+        self.assertEqual(result["counterparty_id"],customer)
+        self.assertEqual(result["balance"],0)
         self.assertEqual(self.ledger.snapshot(self.tenant,wallet)["balance"],5000)
 
     def test_tenant_isolation_and_foreign_source_rejection(self):

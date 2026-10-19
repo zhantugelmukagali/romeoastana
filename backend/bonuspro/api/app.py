@@ -24,7 +24,7 @@ from bonuspro.adapters.postgres.returns import Returns
 from bonuspro.adapters.postgres.checkout import Checkout
 from bonuspro.adapters.postgres.portal import Portal
 from bonuspro.adapters.postgres.readiness import Readiness
-from bonuspro.adapters.postgres.redemptions import Redemptions,SetupInProgress
+from bonuspro.adapters.postgres.redemptions import Redemptions,SetupInProgress,ProgramNotConfigured
 from bonuspro.adapters.postgres.automation import Automation
 from bonuspro.adapters.postgres.imports import Imports
 from bonuspro.adapters.postgres.activation import ActivationService
@@ -151,6 +151,12 @@ class RedemptionRequest(BaseModel):
     source_hash: str = Field(pattern="^[0-9a-f]{64}$")
 
 
+class ResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attempt_id: UUID
+    source_hash: str = Field(min_length=64,max_length=64,pattern="^[0-9a-f]{64}$")
+
+
 class SecurityHeaders:
     """Add headers directly to ASGI response-start; never wrap or consume its body."""
     def __init__(self, app):
@@ -228,7 +234,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         allowed=("vat_mode_missing","vat_mode_unsupported","customer_missing","currency_unsupported","exchange_rate_unsupported","positions_missing","positions_limit","position_precision_unsupported","totals_mismatch","linked_documents_present","order_has_marker","discount_not_representable","saved_order_invalid","invalid_request")
         if reason not in allowed:reason="saved_order_invalid"
         path=request.url.path
-        stage="prepare" if path.endswith("/prepare") else "verify" if path.endswith("/verify") else "load"
+        stage="prepare" if path.endswith("/prepare") else "verify" if path.endswith("/verify") else "resume" if path.endswith("/resume") else "load"
         trace=uuid4().hex[:12]
         logging.getLogger("bonuspro.widget").warning("WIDGET_REJECT reason=%s stage=%s trace=BP-%s",reason,stage,trace)
         return JSONResponse({"error":error_code,"reason":reason,"stage":stage,"trace_id":trace},status_code=422)
@@ -249,6 +255,10 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     @app.exception_handler(ImportInvalid)
     async def invalid_import(request,error):
         return JSONResponse({"error":"invalid_import","message":str(error)},status_code=422)
+
+    @app.exception_handler(ProgramNotConfigured)
+    async def program_not_configured(request,error):
+        return JSONResponse({"error":"program_not_configured"},status_code=409)
 
     @app.exception_handler(Conflict)
     async def conflict(request, error):
@@ -304,9 +314,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         try:
             with psycopg.connect(config.database_url,connect_timeout=3) as conn:
                 conn.execute("SET LOCAL statement_timeout='3s'")
-                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events'),to_regclass('bonuspro.import_batches'),to_regclass('bonuspro.opening_balances'),to_regclass('bonuspro.activation_requests'),to_regclass('bonuspro.activation_completions'),to_regclass('bonuspro.operator_permissions'),to_regclass('bonuspro.redemption_voids')").fetchone()
+                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events'),to_regclass('bonuspro.import_batches'),to_regclass('bonuspro.opening_balances'),to_regclass('bonuspro.activation_requests'),to_regclass('bonuspro.activation_completions'),to_regclass('bonuspro.operator_permissions'),to_regclass('bonuspro.redemption_voids'),to_regclass('bonuspro.order_customer_rebindings'),to_regprocedure('bonuspro.rebind_order_customer(uuid,uuid,text,text,uuid)')").fetchone()
                 revision = conn.execute("SELECT version_num FROM public.alembic_version").fetchall()
-                if not all(exists) or revision != [("0013",)]:
+                if not all(exists) or revision != [("0014",)]:
                     raise RuntimeError("missing schema")
             return {"status":"ready"}
         except (psycopg.Error,RuntimeError):
@@ -562,8 +572,8 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         if existing:
             return {"redemption":redemptions.public(existing)}
         marker=redemptions.binding(identity.tenant_id)
-        saved=read_order(document_client(identity),str(order_id),marker_id=marker,allow_fulfilled=True)
         rules=redemptions.rules_for_order(identity.tenant_id,str(order_id))
+        saved=read_order(document_client(identity),str(order_id),marker_id=marker,allow_fulfilled=True)
         operator_identity(request)
         value=checkout.preview(identity.tenant_id,saved.snapshot,requested_points=0,
                                actor_id=identity.user_id,eligibility_version=rules["version"],authorize=lambda conn:operators.check_in(conn,identity),
@@ -584,6 +594,20 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         operator_identity(request)
         return redemptions.prepare(identity.tenant_id,saved,points=body.points,
                     request_id=str(body.request_id),actor_id=identity.user_id,expected_source=body.source_hash,authorize=lambda conn:operators.check_in(conn,identity))
+
+    @app.post("/api/widget/orders/{order_id}/resume")
+    def widget_resume(order_id: UUID,body: ResumeRequest,request: Request):
+        same_origin(request)
+        identity=operator_identity(request)
+        marker=redemptions.binding(identity.tenant_id)
+        if not marker or repo.state(identity.tenant_id)["state"]!="Activated":
+            raise Conflict("widget setup or sales activation required")
+        # Strict reading rejects all links, even drafts. The service then checks
+        # the current saved revision against the proof returned by verification.
+        saved=read_order(document_client(identity),str(order_id),marker_id=marker)
+        operator_identity(request)
+        return redemptions.resume(identity.tenant_id,saved,attempt_id=str(body.attempt_id),
+                    expected_source=body.source_hash,authorize=lambda conn:operators.check_in(conn,identity))
 
     @app.post("/api/widget/orders/{order_id}/verify")
     def widget_verify(order_id: UUID,request: Request):

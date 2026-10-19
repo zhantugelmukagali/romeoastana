@@ -10,6 +10,72 @@ import tempfile
 def run(*args):
     subprocess.run(args,check=True,timeout=240)
 
+
+def check_compatible_upgrade(command):
+    """Exercise the production 0013 upgrade and rollback against disposable roles."""
+    source=Path.cwd()
+    if not (source/"migrations/versions/0014_order_rebinding.sql").is_file():
+        return  # Main branch has a separate newer schema and deployment path.
+    code=("import os;from alembic import command;from alembic.config import Config;"
+          "from bonuspro.settings import secret;"
+          "os.environ['DATABASE_MIGRATION_URL']=secret('DATABASE_MIGRATION_URL').replace('postgresql://','postgresql+psycopg://',1);"
+          "command.upgrade(Config('alembic.ini'),'0013')")
+    run(*command,"--profile","maintenance","run","--rm","migrate","python","-c",code)
+    import sys
+    sys.path.insert(0,str(source/"deploy"))
+    import update_cabinet as update
+    update.DB_CONTAINER="bonuspro-ci-container-db-1"
+    tenant="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+    wallet="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee1"
+    actor="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee2"
+    update.database_sql("bonuspro","INSERT INTO bonuspro.tenants(id) VALUES ('"+tenant+"')")
+    seed=("from bonuspro.settings import secret;from bonuspro.adapters.postgres.ledger import Ledger;"
+          "l=Ledger(secret('DATABASE_URL'));l.create_wallet('"+tenant+"','"+wallet+"');"
+          "l.credit('"+tenant+"','"+wallet+"',points=17,key='upgrade-restore',actor_id='"+actor+"',reason='Synthetic upgrade fixture')")
+    run(*command,"run","--rm","--no-deps","app","python","-c",seed)
+    before=update.financial_counts("bonuspro")
+    assert before["transactions"]==1 and before["postings"]==2
+    with tempfile.TemporaryDirectory() as directory:
+        backup=Path(directory)
+        update.dump_database(backup/"database.dump")
+        update.verify_restore(backup,source)
+    assert update.database_schema()=="0013"
+    update.apply_rebinding_migration("bonuspro",source)
+    assert update.database_schema()=="0014"
+    update.rollback_rebinding_migration()
+    assert update.database_schema()=="0013"
+    assert update.financial_counts("bonuspro")==before
+    update.apply_rebinding_migration("bonuspro",source)
+    # A FORCE RLS audit row belonging to another tenant must still prevent a
+    # downgrade. Checking as the owner with no tenant would otherwise hide it.
+    customer="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee3"
+    next_customer="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee4"
+    next_wallet="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee5"
+    order="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee6"
+    request="eeeeeeee-eeee-4eee-8eee-eeeeeeeeeee7"
+    update.database_sql("bonuspro",
+        "BEGIN;SELECT set_config('bonuspro.tenant_id','"+tenant+"',true);"
+        "INSERT INTO bonuspro.wallets(tenant_id,id) VALUES ('"+tenant+"','"+next_wallet+"');"
+        "INSERT INTO bonuspro.rule_versions(tenant_id,version,earn_bps,spend_bps,delivery_policy,request_id,request_hash,actor_id,reason) "
+        "VALUES ('"+tenant+"',1,500,3000,'exclude','"+request+"','"+("a"*64)+"','"+actor+"','Synthetic audit fixture');"
+        "INSERT INTO bonuspro.customer_wallets(tenant_id,counterparty_id,wallet_id) VALUES "
+        "('"+tenant+"','"+customer+"','"+wallet+"'),('"+tenant+"','"+next_customer+"','"+next_wallet+"');"
+        "INSERT INTO bonuspro.order_contexts(tenant_id,order_id,counterparty_id,wallet_id,rule_version,initial_source_hash,enrolled_by,binding_revision) "
+        "VALUES ('"+tenant+"','"+order+"','"+customer+"','"+wallet+"',1,'"+("a"*64)+"','"+actor+"','2026-10-19 10:00:00.000');"
+        "SET LOCAL ROLE bonuspro_runtime;"
+        "SELECT bonuspro.rebind_order_customer('"+order+"','"+next_customer+"','"+("a"*64)+"','2026-10-19 10:00:01.000','"+actor+"');COMMIT;")
+    try:
+        update.rollback_rebinding_migration()
+    except update.UpdateFailed:
+        pass
+    else:
+        raise AssertionError("Rollback erased rebinding history hidden by FORCE RLS")
+    assert update.database_schema()=="0014"
+    assert update.database_sql("bonuspro","SELECT count(*) FROM bonuspro.order_customer_rebindings",capture=True)=="1"
+    assert update.financial_counts("bonuspro")==before
+    update.validate_restored_journal("bonuspro")
+    print("Compatible 0013 upgrade: protected dump restore, exact migration, empty rollback, and audit-history rollback refusal passed.")
+
 def main():
     if os.environ.get("GITHUB_ACTIONS")!="true":
         raise SystemExit("This destructive cleanup script is restricted to disposable GitHub runners.")
@@ -37,6 +103,7 @@ def main():
         run(*command,"config","--quiet")
         run(*command,"up","-d","--wait","--wait-timeout","120","db")
         run(*command,"--profile","maintenance","run","--rm","bootstrap")
+        check_compatible_upgrade(command)
         run(*command,"--profile","maintenance","run","--rm","migrate")
         run(*command,"--profile","maintenance","run","--rm","migrate")
         run(*command,"up","-d","--wait","--wait-timeout","120","app")

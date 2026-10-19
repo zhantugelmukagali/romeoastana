@@ -52,4 +52,16 @@ class CabinetUpdateTests(unittest.TestCase):
                 revision=update.source_revision(root)
             self.assertRegex(revision,r"^[0-9a-f]{40}$")
 
+
+    def test_untracked_source_is_rejected_without_deleting_user_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory)
+            subprocess.run(["git","init","--quiet",str(root)],check=True)
+            subprocess.run(["git","-C",str(root),"-c","user.name=CI","-c","user.email=ci@example.test",
+                            "commit","--quiet","--allow-empty","-m","isolated fixture"],check=True)
+            pending=root/"backend/unreviewed.py";pending.parent.mkdir();pending.write_text("UNREVIEWED = True\n")
+            with self.assertRaises(update.UpdateFailed):
+                update.source_revision(root)
+            self.assertTrue(pending.exists())
+
 if __name__=="__main__":unittest.main()

@@ -131,6 +131,86 @@ class FulfillmentTests(unittest.TestCase):
         f.positions=lambda kind,id:copy.deepcopy([f.ship_lines[0] if id==first["id"] else f.ship_lines[1]])
         self.assertEqual(f.read().outcome,"eligible")
 
+    def test_documented_incoming_allocations_validate_without_paying_other_sales(self):
+        for payment_kind in ("paymentin","cashin"):
+            for unrelated_kind in ("purchasereturn","commissionreportin"):
+                with self.subTest(payment=payment_kind,allocation=unrelated_kind):
+                    f=Fixture()
+                    f.pay["meta"]["type"]=payment_kind
+                    f.pay["sum"]=1600000
+                    f.pay["operations"].append({**ref(unrelated_kind),"linkedSum":400000})
+                    proof=f.read()
+                    self.assertEqual(proof.outcome,"eligible")
+                    self.assertEqual(proof.paid_minor,1200000)
+                    # The payment total cannot stand in for this order's allocation.
+                    f.pay["operations"][0]["linkedSum"]=600000
+                    f.pay["operations"][1]["linkedSum"]=1000000
+                    proof=f.read()
+                    self.assertEqual(proof.outcome,"waiting_payment")
+                    self.assertEqual(proof.paid_minor,600000)
+                    f.pay["operations"][1]["linkedSum"]+=1
+                    with self.assertRaises(InvalidDocument):f.read()
+
+    def test_unposted_demand_allocation_still_blocks_cancellation_with_mixed_payment(self):
+        for payment_kind in ("paymentin","cashin"):
+            for unrelated_kind in ("purchasereturn","commissionreportin"):
+                with self.subTest(payment=payment_kind,allocation=unrelated_kind):
+                    f=Fixture()
+                    f.doc["applicable"]=False
+                    f.ship["applicable"]=False
+                    f.pay["meta"]["type"]=payment_kind
+                    f.pay["sum"]=1600000
+                    f.pay["operations"]=[{**ref("demand",f.demand),"linkedSum":1200000},
+                                         {**ref(unrelated_kind),"linkedSum":400000}]
+                    proof=f.read()
+                    self.assertEqual(proof.paid_minor,0)
+                    self.assertFalse(proof.cancel_safe)
+
+    def test_undocumented_incoming_allocation_types_stay_rejected(self):
+        for payment_kind in ("paymentin","cashin"):
+            for unrelated_kind in ("commissionreportout","prepayment"):
+                with self.subTest(payment=payment_kind,allocation=unrelated_kind):
+                    f=Fixture()
+                    f.pay["meta"]["type"]=payment_kind
+                    f.pay["sum"]=1600000
+                    f.pay["operations"].append({**ref(unrelated_kind),"linkedSum":400000})
+                    with self.assertRaises(InvalidDocument):f.read()
+
+    def test_disabled_vat_flags_may_differ_between_order_shipment_and_return(self):
+        from decimal import Decimal
+        for order_flag,shipment_flag,return_flag in ((False,None,True),(True,False,None),(None,False,False)):
+            with self.subTest(order=order_flag,shipment=shipment_flag,returned=return_flag):
+                f=Fixture()
+                for document,flag in ((f.doc,order_flag),(f.ship,shipment_flag)):
+                    if flag is None:document.pop("vatIncluded")
+                    else:document["vatIncluded"]=flag
+                proof=f.read()
+                self.assertEqual(proof.outcome,"eligible")
+                # Inert flags stay intact in immutable redemption-plan comparisons.
+                self.assertIs(proof.saved.financial()["vat_included"],True if order_flag is None else order_flag)
+                before=proof.saved.financial()
+                returned=f.return_goods(Decimal("0.5"))
+                if return_flag is None:returned.pop("vatIncluded",None)
+                else:returned["vatIncluded"]=return_flag
+                proof=f.read()
+                self.assertEqual(proof.outcome,"return_review")
+                self.assertTrue(proof.full_payment and proof.full_shipment)
+                self.assertEqual(proof.returned[0].quantity,Decimal("0.5"))
+                self.assertEqual(proof.saved.financial(),before)
+
+    def test_enabled_vat_modes_must_match_across_related_documents(self):
+        f=Fixture()
+        f.doc["vatEnabled"]=True
+        with self.assertRaisesRegex(InvalidDocument,"shipment tax mismatch"):f.read()
+        f.ship["vatEnabled"]=True
+        self.assertEqual(f.read().outcome,"eligible")
+        returned=f.return_goods()
+        returned["vatEnabled"]=False
+        with self.assertRaisesRegex(InvalidDocument,"return tax mismatch"):f.read()
+        returned["vatEnabled"]=True
+        returned["vatIncluded"]=False
+        with self.assertRaises(InvalidDocument):f.read()
+
 class DiscoveryTests(unittest.TestCase):
     def setUp(self):
         self.tenant=str(uuid4())

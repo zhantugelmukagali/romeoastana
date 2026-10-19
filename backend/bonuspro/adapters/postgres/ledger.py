@@ -176,6 +176,12 @@ class Ledger:
                 if existing["request_hash"] != request_hash:
                     raise Conflict("idempotency key reused with different data")
                 return str(existing["id"])
+            # Serialize an order binding change before taking its wallet lock.
+            self._key_lock(conn, tenant, "order/" + order)
+            context=conn.execute("SELECT wallet_id FROM bonuspro.order_contexts "
+                "WHERE tenant_id=%s AND order_id=%s",(tenant,order)).fetchone()
+            if context and str(context["wallet_id"])!=wallet:
+                raise Conflict("order customer binding changed")
             self._wallet_lock(conn, tenant, wallet)
             if conn.execute("SELECT 1 FROM bonuspro.return_cases WHERE tenant_id=%s AND wallet_id=%s "
                             "AND state='pending' LIMIT 1", (tenant, wallet)).fetchone():

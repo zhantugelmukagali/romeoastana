@@ -24,6 +24,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1000,"height":800})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
+        self.resumes=[];self.reject_resume=None;self.lose_resume=False;self.change_during_resume=False;self.change_during_verify=False;self.save_during_resume=False;self.resume_hash="b"*64;self.resume_allowed=True
         self.order_error_details={};self.reject_prepare_details={};self.verify_error=None;self.verify_error_details={};self.prepared_points=1000
         self.order_error_code="unavailable";self.total_minor=1200000;self.eligible_minor=1000000;self.quote_overrides={};self.order_error=None;self.session_count=0;self.prepares=[];self.verifies=0;self.prepared=False;self.saved=False;self.lose=False;self.delay_change=False;self.reject_prepare=None;self.save_during_prepare=False;self.host_error=False
     def tearDown(self):
@@ -54,16 +55,29 @@ class WidgetBrowserTests(unittest.TestCase):
             if self.delay_change:
                 self.page.evaluate("send({name:'Change',messageId:120,objectState:{}})")
             return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":self.prepared_points,"state":"verifying",
-                "update_state":{"positions":[{"id":"line","discount":self.prepared_points/100}],"attributes":[{"id":"marker","value":"proof"}]},"replayed":False})
+                "update_state":{"positions":[{"id":"line","discount":self.prepared_points/100}],"attributes":[{"id":"marker","value":"proof"}]},"replayed":False,"recoverable":True})
+        if path.endswith("/resume"):
+            self.resumes.append(route.request.post_data_json)
+            if self.reject_resume:return route.fulfill(status=self.reject_resume,json={"error":"operation conflict","reason":"customer_missing"})
+            if self.lose_resume:return route.abort()
+            if self.change_during_resume:
+                self.page.evaluate("send({name:'Change',messageId:151,objectState:{}})")
+            if self.save_during_resume:
+                self.page.evaluate("send({name:'Save',messageId:152,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+            return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":self.prepared_points,"state":"verifying","recoverable":True,
+                "update_state":{"positions":[{"id":"line","discount":self.prepared_points/100}],"attributes":[{"id":"marker","value":"proof"}]}})
         if path.endswith("/verify"):
             self.verifies+=1
+            if self.change_during_verify:
+                self.page.evaluate("send({name:'Change',messageId:153,objectState:{}})")
             if self.verify_error:return route.fulfill(status=self.verify_error,json={"error":"unsupported_saved_order",**self.verify_error_details})
             return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":self.prepared_points,
-                "state":"committed" if self.saved else "verifying","verified":self.saved})
+                "state":"committed" if self.saved else "verifying","verified":self.saved,"recoverable":not self.saved and self.resume_allowed,
+                **({} if self.saved or not self.resume_allowed else {"resume_source_hash":self.resume_hash})})
         if path.startswith("/api/widget/orders/"):
             if self.order_error:return route.fulfill(status=self.order_error,json={"error":self.order_error_code,**self.order_error_details})
             if self.prepared and path.endswith(ORDER):
-                return route.fulfill(json={"redemption":{"id":"attempt","order_id":ORDER,"points":self.prepared_points,"state":"verifying"}})
+                return route.fulfill(json={"redemption":{"id":"attempt","order_id":ORDER,"points":self.prepared_points,"state":"verifying","recoverable":True}})
             return route.fulfill(json={"name":"0001","saved_source_hash":"a"*64,"eligible_minor":self.eligible_minor,"total_minor":self.total_minor,
                 "can_prepare":self.quote_overrides.get("can_prepare",True),"quote":{"balance":5000,"max_spend_points":3000,"blocked_reason":None,"potential_earn_points":500,**self.quote_overrides.get("quote",{})}})
         file=ROOT/"web"/("widget.html" if path=="/widget" else path.lstrip("/"))
@@ -99,7 +113,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.frame.get_by_text("Обновите данные. Не применяйте бонусы повторно.",exact=True).wait_for()
         self.assertEqual(self.page.evaluate("updates.length"),0)
         self.frame.get_by_role("button",name="Обновить",exact=True).click()
-        self.frame.get_by_text("Сохраните заказ. Если сумма отличается — нужен администратор.",exact=True).wait_for()
+        self.frame.get_by_text("Сохраните заказ в МойСклад, затем продолжите списание.",exact=True).wait_for()
         self.assertEqual(len(self.prepares),1)
     def test_host_reuse_resets_points_and_state_between_orders(self):
         self.open();self.frame.get_by_label("Списать бонусы",exact=True).fill("1000")
@@ -549,6 +563,169 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertFalse(self.frame.locator("#apply").is_visible())
         self.assertEqual(len(self.prepares),1)
         self.assertEqual(self.page.evaluate("updates.length"),1)
+
+
+    def recover_lost_prepare(self):
+        self.lose=True;self.open();self.apply()
+        self.frame.get_by_text("Обновите данные. Не применяйте бонусы повторно.",exact=True).wait_for()
+        self.assertFalse(self.frame.locator("#resume").is_visible())
+        self.lose=False
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.get_by_text("Сохраните заказ в МойСклад, затем продолжите списание.",exact=True).wait_for()
+        self.frame.locator("#resume").wait_for()
+        self.assertTrue(self.frame.locator("#resume").is_disabled())
+
+    def save_for_resume(self):
+        with self.page.expect_request("**/api/widget/orders/"+ORDER+"/verify"):
+            self.page.evaluate("send({name:'Save',messageId:150,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.locator("#resume:not([disabled])").wait_for()
+
+    def test_lost_prepare_resumes_the_existing_plan_only_after_a_fresh_save(self):
+        self.recover_lost_prepare()
+        self.frame.get_by_role("button",name="Проверить сохранение",exact=True).click()
+        self.frame.locator("#verify:not([disabled])").wait_for()
+        self.assertTrue(self.frame.locator("#resume").is_disabled())
+        self.assertEqual(self.resumes,[])
+        self.save_for_resume()
+        self.frame.get_by_role("button",name="Продолжить списание",exact=True).click()
+        self.frame.get_by_role("heading",name="Сохраните заказ",exact=True).wait_for()
+        self.assertEqual(self.resumes,[{"attempt_id":"attempt","source_hash":"b"*64}])
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+        self.assertFalse(self.frame.locator("#apply").is_visible())
+        self.assertFalse(self.frame.locator("#resume").is_visible())
+        self.saved=True
+        self.page.evaluate("send({name:'Save',messageId:154,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.locator("#pending[data-state=done]").wait_for()
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.locator("#pending[data-state=done]").wait_for()
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(len(self.resumes),1)
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+
+    def test_change_during_recovery_verification_cannot_authorize_resume(self):
+        self.recover_lost_prepare()
+        self.change_during_verify=True
+        with self.page.expect_request("**/api/widget/orders/"+ORDER+"/verify"):
+            self.page.evaluate("send({name:'Save',messageId:150,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.locator("#verify:not([disabled])").wait_for()
+        self.assertTrue(self.frame.locator("#resume").is_disabled())
+        self.assertEqual(self.resumes,[])
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+        self.assertEqual(len(self.prepares),1)
+
+    def test_change_during_resume_never_dispatches_stale_positions(self):
+        self.recover_lost_prepare();self.save_for_resume()
+        self.change_during_resume=True
+        self.frame.get_by_role("button",name="Продолжить списание",exact=True).click()
+        self.frame.get_by_text("Заказ изменился. Резерв сохранён — проверьте операцию.",exact=True).wait_for()
+        self.assertTrue(self.frame.locator("#resume").is_disabled())
+        self.assertTrue(self.frame.locator("#pending").is_visible())
+        self.assertEqual(len(self.resumes),1)
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+
+    def test_save_during_resume_is_verified_without_dispatching_stale_positions(self):
+        self.recover_lost_prepare();self.save_for_resume()
+        verifies=self.verifies
+        self.save_during_resume=True
+        self.frame.get_by_role("button",name="Продолжить списание",exact=True).click()
+        self.frame.locator("#verify:not([disabled])").wait_for()
+        self.assertEqual(self.verifies,verifies+1)
+        self.assertTrue(self.frame.locator("#resume").is_disabled())
+        self.assertEqual(len(self.resumes),1)
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+
+    def test_resume_rejections_keep_the_reservation_and_require_another_save(self):
+        self.recover_lost_prepare()
+        for code in (400,401,403,404,409,422):
+            with self.subTest(status=code):
+                self.reject_resume=None
+                self.save_for_resume()
+                self.reject_resume=code
+                self.frame.get_by_role("button",name="Продолжить списание",exact=True).click()
+                self.frame.locator("#status[data-error=true]").wait_for()
+                self.assertTrue(self.frame.locator("#resume").is_disabled())
+                self.assertTrue(self.frame.locator("#pending").is_visible())
+                self.assertFalse(self.frame.locator("#apply").is_visible())
+                self.assertNotIn("Выберите покупателя",self.frame.locator("#status").inner_text())
+                self.assertEqual(self.page.evaluate("updates.length"),0)
+        self.assertEqual(len(self.resumes),6)
+        self.assertEqual(len(self.prepares),1)
+
+    def test_lost_resume_response_does_not_redispatch_without_another_saved_verification(self):
+        self.recover_lost_prepare();self.save_for_resume()
+        self.lose_resume=True
+        self.frame.get_by_role("button",name="Продолжить списание",exact=True).click()
+        self.frame.locator("#status[data-error=true]").wait_for()
+        self.assertTrue(self.frame.locator("#resume").is_disabled())
+        self.frame.get_by_role("button",name="Проверить сохранение",exact=True).click()
+        self.frame.locator("#verify:not([disabled])").wait_for()
+        self.assertTrue(self.frame.locator("#resume").is_disabled())
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.locator("#verify:not([disabled])").wait_for()
+        self.assertTrue(self.frame.locator("#resume").is_disabled())
+        self.assertEqual(len(self.resumes),1)
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+        self.lose_resume=False;self.save_for_resume()
+        self.frame.get_by_role("button",name="Продолжить списание",exact=True).click()
+        self.frame.get_by_role("heading",name="Сохраните заказ",exact=True).wait_for()
+        self.assertEqual(len(self.resumes),2)
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+
+    def test_new_open_consumes_the_previous_recovery_save_authorization(self):
+        self.recover_lost_prepare();self.save_for_resume()
+        with self.page.expect_request("**/api/widget/orders/"+ORDER+"/verify"):
+            self.page.evaluate("openOrder('"+ORDER+"')")
+        self.frame.locator("#verify:not([disabled])").wait_for()
+        self.assertTrue(self.frame.locator("#resume").is_disabled())
+        self.assertEqual(self.resumes,[])
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+
+    def test_resume_uses_the_latest_verified_source_after_a_new_save(self):
+        self.recover_lost_prepare();self.save_for_resume()
+        self.page.evaluate("send({name:'Change',messageId:155,objectState:{}})")
+        self.assertTrue(self.frame.locator("#resume").is_disabled())
+        self.resume_hash="c"*64;self.save_for_resume()
+        self.frame.get_by_role("button",name="Продолжить списание",exact=True).click()
+        self.frame.get_by_role("heading",name="Сохраните заказ",exact=True).wait_for()
+        self.assertEqual(self.resumes,[{"attempt_id":"attempt","source_hash":"c"*64}])
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+
+
+    def test_restoring_an_unsafe_mismatch_needs_only_one_new_save_before_resume(self):
+        self.resume_allowed=False;self.lose=True;self.open();self.apply()
+        self.frame.get_by_text("Обновите данные. Не применяйте бонусы повторно.",exact=True).wait_for()
+        self.lose=False
+        self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.frame.locator("#pending[data-state=review]").wait_for()
+        self.frame.locator("#verify:not([disabled])").wait_for()
+        self.assertFalse(self.frame.locator("#resume").is_visible())
+        # The current saved order is unsafe and has no resume source hash.
+        with self.page.expect_request("**/api/widget/orders/"+ORDER+"/verify"):
+            self.page.evaluate("send({name:'Save',messageId:156,extensionPoint:'document.customerorder.edit',objectId:'"+ORDER+"'})")
+        self.frame.locator("#verify:not([disabled])").wait_for()
+        self.assertFalse(self.frame.locator("#resume").is_visible())
+        self.assertEqual(self.resumes,[])
+        # Restoring the immutable original and saving once obtains fresh proof.
+        self.resume_allowed=True;self.resume_hash="d"*64
+        self.save_for_resume()
+        self.frame.get_by_role("button",name="Продолжить списание",exact=True).click()
+        self.frame.get_by_role("heading",name="Сохраните заказ",exact=True).wait_for()
+        self.assertEqual(self.resumes,[{"attempt_id":"attempt","source_hash":"d"*64}])
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+
+    def test_unconfigured_rules_409_shows_the_administrator_action(self):
+        self.order_error=409;self.order_error_code="program_not_configured"
+        self.page.goto("https://online.moysklad.ru/test-host");self.frame=self.page.frame_locator("iframe")
+        self.frame.get_by_text("Программа ещё не настроена. Нужен администратор.",exact=True).wait_for()
+        self.assertNotIn("Заказ или баланс изменился",self.frame.locator("#status").inner_text())
+        self.assertFalse(self.frame.locator("#apply").is_visible())
+        self.assertEqual(self.prepares,[])
 
 if __name__=="__main__":unittest.main()
 

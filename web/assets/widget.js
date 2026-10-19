@@ -4,6 +4,7 @@ import {HOST,isHostMessage} from "./host.js";
 const $=id=>document.getElementById(id);
 let sequence=0,epoch=0,openMessage=null,orderId=null,token=null,quote=null;
 let dirty=false,busy=false,attempt=null,requestId=null,draftRevision=0,savedWhileBusy=false;
+let resumeRequired=false,resumeAuthorized=false,resumeSaveRevision=null;
 const waiting=new Map();
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const documentErrors={
@@ -62,6 +63,8 @@ function controls(){
   $("spend-form").setAttribute("aria-busy",String(busy));
   $("maximum-button").disabled=$("points").disabled||!quote?.quote.max_spend_points;
   $("verify").disabled=busy||!attempt;
+  $("resume").hidden=!resumeRequired||!attempt?.id||attempt.recoverable!==true;
+  $("resume").disabled=busy||dirty||!resumeAuthorized||$("resume").hidden;
 }
 function hostRequest(name,extra={},responseName){
   return new Promise((resolve,reject)=>{
@@ -81,11 +84,11 @@ async function api(path,options={}){
     try{payload=await response.json();}catch{payload=null;}
     if(generation!==epoch)throw new Error("document_changed");
     const error=new Error("api_error");error.status=response.status;
-    error.stage=path.endsWith("/prepare")?"prepare":path.endsWith("/verify")?"verify":path.startsWith("/api/widget/orders/")?"load":"session";
+    error.stage=path.endsWith("/prepare")?"prepare":path.endsWith("/verify")?"verify":path.endsWith("/resume")?"resume":path.startsWith("/api/widget/orders/")?"load":"session";
     if(Object.hasOwn(documentErrors,payload?.reason)&&
        (payload.reason!=="discount_not_representable"||error.stage==="prepare"))error.reason=payload.reason;
     if(typeof payload?.trace_id==="string"&&/^[a-f0-9]{12}$/.test(payload.trace_id))error.trace=payload.trace_id;
-    if(["moysklad_permissions_required","operator_access_required"].includes(payload?.error))error.code=payload.error;
+    if(["moysklad_permissions_required","operator_access_required","program_not_configured"].includes(payload?.error))error.code=payload.error;
     if(response.status===401)token=null;
     throw error;
   }
@@ -97,14 +100,16 @@ function explain(error){
   if(error.message==="host_rejected")return "МойСклад отклонил скидку. Резерв сохранён — нужен администратор.";
   if(error.status===401)return "Сессия истекла. Нажмите «Обновить».";
   if(error.status===403)return error.code==="moysklad_permissions_required"?"Нет доступа к данным МойСклад. Проверьте подключение решения.":"Нет доступа к бонусам. Обратитесь к администратору.";
-  if(error.status===409)return "Заказ или баланс изменился. Обновите данные.";
+  if(error.status===409)return error.code==="program_not_configured"?"Программа ещё не настроена. Нужен администратор.":
+    error.stage==="resume"?"Не удалось продолжить списание. Резерв сохранён — обновите данные или обратитесь к администратору.":
+    "Заказ или баланс изменился. Обновите данные.";
   if(error.status===422){
     const fallback=error.stage==="load"?"Не удалось проверить данные заказа. Нужен администратор.":
-      error.stage==="verify"?"Не удалось проверить сохранённое списание. Резерв сохранён — нужен администратор.":
+      (error.stage==="verify"||error.stage==="resume")?"Не удалось проверить сохранённое списание. Резерв сохранён — нужен администратор.":
       error.stage==="session"?"Не удалось подключить сессию. Обновите виджет.":
       "Не удалось проверить заказ перед списанием. Обновите данные.";
     // Verification already has a reservation: never suggest changing its customer or positions.
-    return (error.stage==="verify"?fallback:(documentErrors[error.reason]||fallback))+(error.trace?" Код BP-"+error.trace+".":"");
+    return (["verify","resume"].includes(error.stage)?fallback:(documentErrors[error.reason]||fallback))+(error.trace?" Код BP-"+error.trace+".":"");
   }
   return attempt?"Связь прервана. Нажмите «Обновить».":"Не удалось загрузить бонусы. Нажмите «Обновить».";
 }
@@ -119,6 +124,8 @@ async function authenticate(generation){
 function showPending(value){
   attempt=value;quote=null;view("pending");$("summary").hidden=true;$("pending").hidden=false;
   const done=value.state==="committed"&&value.verified===true;
+  if(done){resumeRequired=false;resumeAuthorized=false;resumeSaveRevision=null;}
+  else if(value.recovered||value.verified===false)resumeRequired=true;
   $("pending").dataset.state=done?"done":value.verified===false?"review":"waiting";
   $("pending-title").textContent=done?"Списано":!value.id?"Проверьте операцию":
     value.verified===false?"Проверьте сохранение":value.recovered?"Проверяем сохранение":"Сохраните заказ";
@@ -126,13 +133,14 @@ function showPending(value){
     pointsLabel(value.points)+(done?"":" в резерве");
   $("pending-note").textContent=done?"Заказ сохранён и проверен.":
     !value.id?"Обновите данные. Не применяйте бонусы повторно.":
+    resumeRequired&&value.recoverable===true?"Сохраните заказ в МойСклад, затем продолжите списание.":
     value.verified===false?"Сохраните заказ. Если сумма отличается — нужен администратор.":
     value.recovered?"Сверяем операцию с заказом.":
     "Нажмите «Сохранить» в МойСклад.";
   status("");controls();
 }
 function renderQuote(value){
-  quote=value;attempt=null;$("summary").hidden=false;$("pending").hidden=true;
+  quote=value;attempt=null;resumeRequired=false;resumeAuthorized=false;resumeSaveRevision=null;$("summary").hidden=false;$("pending").hidden=true;
   $("order-label").textContent=value.name?"Заказ №"+value.name:"Заказ покупателя";
   renderBalance("balance",value.quote.balance);
   const reserved=Number.isSafeInteger(value.quote.available)&&value.quote.available<value.quote.balance;
@@ -157,7 +165,7 @@ function renderQuote(value){
 }
 async function refresh(){
   if(!orderId||busy)return;
-  const generation=epoch,id=orderId;busy=true;quote=null;$("summary").hidden=true;$("pending").hidden=true;
+  const generation=epoch,id=orderId;busy=true;quote=null;resumeAuthorized=false;resumeSaveRevision=null;$("summary").hidden=true;$("pending").hidden=true;
   view("loading");status("Загружаем бонусы…");controls();
   try{
     await authenticate(generation);
@@ -206,7 +214,7 @@ async function apply(event){
     if(generation!==epoch)return;
     attempt=result;
     if(revision!==draftRevision||dirty||!result.update_state){
-      showPending(result);status("Заказ изменился. Резерв сохранён — проверьте операцию.",true);return;
+      resumeRequired=true;showPending(result);status("Заказ изменился. Резерв сохранён — проверьте операцию.",true);return;
     }
     status("Применяем бонусы…");
     await hostRequest("UpdateRequest",{updateState:result.update_state},"UpdateResponse");
@@ -228,7 +236,7 @@ async function apply(event){
         // A lost prepare response may already have reserved points.
         // Preserve uncertainty and never dispatch a second mutation blindly.
         attempt=attempt||{state:"verifying",points};
-        showPending(attempt);
+        resumeRequired=true;resumeAuthorized=false;resumeSaveRevision=null;showPending(attempt);
       }
       status(explain(error),true);
     }
@@ -236,15 +244,44 @@ async function apply(event){
 }
 async function verify(){
   if(busy||!orderId||!attempt)return;
-  const generation=epoch,id=orderId;
+  const generation=epoch,id=orderId,revision=draftRevision;
+  const savedForResume=resumeSaveRevision===revision;
+  resumeAuthorized=false;
   busy=true;controls();
   try{
     await authenticate(generation);if(generation!==epoch)return;
     const result=await api("/api/widget/orders/"+id+"/verify",{method:"POST"});
     if(generation!==epoch)return;
     showPending(result);
+    resumeAuthorized=savedForResume&&resumeSaveRevision===revision&&draftRevision===revision&&!dirty&&
+      result.recoverable===true&&typeof result.resume_source_hash==="string"&&/^[a-f0-9]{64}$/.test(result.resume_source_hash);
   }catch(error){if(generation===epoch)status(explain(error),true);}
   finally{finishBusy(generation);}
+}
+async function resume(){
+  if(busy||dirty||!resumeAuthorized||!resumeRequired||!attempt?.id||attempt.recoverable!==true)return;
+  const generation=epoch,id=orderId,revision=draftRevision;
+  const body={attempt_id:attempt.id,source_hash:attempt.resume_source_hash};
+  // A Save and matching authoritative verification authorize one explicit request.
+  resumeAuthorized=false;resumeSaveRevision=null;busy=true;controls();
+  try{
+    await authenticate(generation);if(generation!==epoch)return;
+    const result=await api("/api/widget/orders/"+id+"/resume",{method:"POST",body:JSON.stringify(body)});
+    if(generation!==epoch)return;
+    if(revision!==draftRevision||dirty||!result.update_state){
+      resumeRequired=true;showPending(result);
+      status("Заказ изменился. Резерв сохранён — проверьте операцию.",true);return;
+    }
+    status("Продолжаем списание…");
+    await hostRequest("UpdateRequest",{updateState:result.update_state},"UpdateResponse");
+    if(generation!==epoch)return;
+    dirty=true;resumeRequired=false;showPending(result);
+  }catch(error){
+    if(generation===epoch){resumeRequired=true;showPending(attempt);status(explain(error),true);}
+  }finally{
+    if(generation===epoch){resumeAuthorized=false;resumeSaveRevision=null;}
+    finishBusy(generation);
+  }
 }
 window.addEventListener("message",event=>{
   if(!isHostMessage(event)||!event.data||typeof event.data!=="object")return;
@@ -261,7 +298,7 @@ window.addEventListener("message",event=>{
   if(message.name==="Open"&&Number.isSafeInteger(message.messageId)){
     if(openMessage===message.messageId)return;
     epoch++;openMessage=message.messageId;orderId=null;token=null;quote=null;attempt=null;requestId=null;
-    dirty=false;busy=false;draftRevision=0;savedWhileBusy=false;
+    dirty=false;busy=false;draftRevision=0;savedWhileBusy=false;resumeRequired=false;resumeAuthorized=false;resumeSaveRevision=null;
     for(const pending of waiting.values()){clearTimeout(pending.timer);pending.reject(new Error("document_changed"));}
     waiting.clear();$("summary").hidden=true;$("pending").hidden=true;$("points").value="";$("order-label").textContent="";$("amount-hint").textContent="";$("payable").textContent="";$("points").setAttribute("aria-invalid","false");
     view("loading");status("Загружаем бонусы…");controls();
@@ -272,10 +309,12 @@ window.addEventListener("message",event=>{
     }
     orderId=message.objectId;void refresh();
   }else if(message.name==="Change"&&orderId){
-    draftRevision++;dirty=true;controls();
+    draftRevision++;dirty=true;resumeAuthorized=false;resumeSaveRevision=null;controls();
     if(!attempt)status("Сохраните изменения в заказе.");
   }else if(message.name==="Save"&&message.objectId===orderId&&message.extensionPoint==="document.customerorder.edit"){
     dirty=false;draftRevision++;
+    resumeAuthorized=false;
+    resumeSaveRevision=attempt?.id&&attempt.state==="verifying"?draftRevision:null;
     if(busy)savedWhileBusy=true;
     else if(attempt)void verify();else void refresh();
   }
@@ -285,10 +324,11 @@ $("spend-form").addEventListener("submit",apply);
 $("points").addEventListener("input",()=>{requestId=null;updatePayable();});
 $("maximum-button").addEventListener("click",()=>{$("points").value=String(quote.quote.max_spend_points);requestId=null;updatePayable();});
 $("verify").addEventListener("click",verify);
+$("resume").addEventListener("click",resume);
 controls();
 
 window.addEventListener("pagehide",()=>{
- epoch++;token=null;quote=null;attempt=null;
+ epoch++;token=null;quote=null;attempt=null;resumeAuthorized=false;resumeRequired=false;resumeSaveRevision=null;
  for(const pending of waiting.values()){clearTimeout(pending.timer);pending.reject(new Error("page_closed"));}
  waiting.clear();
 });
