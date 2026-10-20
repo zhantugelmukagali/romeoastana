@@ -22,6 +22,7 @@ class DeliveryTests(unittest.TestCase):
                     ready_for_live_acceptance=False,failures=[dict(stage="widget",code="widget_not_configured")])
         def run(args,**kwargs):
             calls.append(args)
+            if len(calls)==1:self.assertIn("--defer-processing",args)
             if len(calls)==2:self.assertEqual(kwargs["timeout"],900)
             return SimpleNamespace(returncode=1 if args[0]=="docker" else 0,stdout=json.dumps(report))
         with tempfile.TemporaryDirectory() as directory,patch("builtins.print") as output:
@@ -41,5 +42,21 @@ class DeliveryTests(unittest.TestCase):
                 with self.assertRaises(release.DeliveryFailed):
                     release.finish(Path(directory),ROOT,str(uuid4()),runner=run)
                 self.assertFalse((Path(directory)/".release-reports").exists())
+
+
+    def test_failed_worker_confirmation_stops_delivery_before_probe_or_acceptance_claim(self):
+        calls=[]
+        def execute(args,**kwargs):
+            calls.append(args)
+            if len(calls)==2:raise subprocess.CalledProcessError(1,args)
+            return SimpleNamespace(returncode=0,stdout="")
+        with tempfile.TemporaryDirectory() as directory,patch("builtins.print") as output:
+            with self.assertRaises(subprocess.CalledProcessError):
+                release.finish(Path(directory),ROOT,str(uuid4()),runner=execute)
+            self.assertNotIn("READY_FOR_ACCEPTANCE",str(output.call_args_list))
+            self.assertFalse((Path(directory)/".release-reports").exists())
+        self.assertEqual(len(calls),2)
+        self.assertIn("--defer-processing",calls[0])
+        self.assertTrue(str(calls[1][1]).endswith("start_processing.py"))
 
 if __name__=="__main__":unittest.main()

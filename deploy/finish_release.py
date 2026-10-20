@@ -11,7 +11,7 @@ class DeliveryFailed(RuntimeError):pass
 def finish(root,source,tenant,*,runner=subprocess.run):
     tenant=str(UUID(tenant));root=Path(root);source=Path(source)
     print("1/3 Обновляем программу бонусов и скидок, проверяем восстановление копии.",flush=True)
-    runner([sys.executable,str(source/"deploy/update_cabinet.py"),"--root",str(root)],
+    runner([sys.executable,str(source/"deploy/update_cabinet.py"),"--root",str(root),"--tenant",tenant,"--defer-processing"],
            check=True)
     print("2/3 Обновляем обработчик и ждём свежего результата.",flush=True)
     runner([sys.executable,str(source/"deploy/start_processing.py"),"--root",str(root),"--tenant",tenant],
