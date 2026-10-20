@@ -45,6 +45,12 @@ def wait_for_report(fetch,started_after,*,timeout=60,clock=time.monotonic,pause=
         report=fetch()
     return report
 
+def require_fresh_processing(report,started_after):
+    if not processing_confirmed(report,started_after):
+        print("PROCESSING_STARTED: worker is running; fresh successful processing is not yet confirmed.",flush=True)
+        raise ProcessingFailed("PROCESSING_NOT_CONFIRMED: complete the outstanding setup or processing checks; the worker was left running")
+    print("PROCESSING_READY: automatic order processing has reported a new successful cycle",flush=True)
+
 def worker_override(tenant):
     tenant=str(UUID(tenant))
     return '# Managed by BonusPro start_processing.py\nservices:\n  worker:\n    environment:\n      BONUSPRO_TENANT_ID: "'+tenant+'"\n    healthcheck:\n      test: [CMD, python, -m, bonuspro.worker, --health]\n      interval: 15s\n      timeout: 5s\n      start_period: 600s\n      retries: 6\n'
@@ -111,8 +117,7 @@ def main():
         print("Waiting for a new processing cycle; existing orders are checked without changing program setup.",flush=True)
         result=wait_for_report(report,started_after)
         print(json.dumps(result,ensure_ascii=False,indent=2))
-        if processing_confirmed(result,started_after):print("PROCESSING_READY: automatic order processing has reported a new successful cycle")
-        else:print("PROCESSING_STARTED: finish the incomplete steps in BonusPro settings; processing is not yet confirmed")
+        require_fresh_processing(result,started_after)
         print("No migrations, key regeneration or program activation were performed. Active programs can now process orders.")
     except ProcessingFailed as error:raise SystemExit(str(error))
     except Exception:raise SystemExit("PROCESSING_NOT_CONFIRMED: inspect app/worker health; no successful processing was claimed") from None

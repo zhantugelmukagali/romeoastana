@@ -1,5 +1,6 @@
 """Compatible cabinet deployment with isolated, guarded upgrades through schema 0015."""
-import argparse,json,os,re,stat,subprocess
+import argparse,json,os,re,stat,subprocess,sys
+from uuid import UUID
 from datetime import datetime,timezone
 from pathlib import Path
 from urllib.request import urlopen
@@ -367,8 +368,32 @@ def upgrade_schema_and_switch(root,source,image,*,verify=verify_public):
         raise UpdateFailed("UPDATE_FAILED: schema "+original_schema+" and previous services restored. Backup: "+str(backup)) from None
     return backup
 
+def tenant_selector(value):
+    try:return str(UUID(value))
+    except (TypeError,ValueError,AttributeError):
+        raise argparse.ArgumentTypeError("Tenant must be a valid UUID") from None
+
+def start_updated_processing(root,source,image,tenant=None):
+    """Restore the current-image worker only after the app update has committed."""
+    command=[sys.executable,str(source/"deploy/start_processing.py"),"--root",str(root)]
+    if tenant is not None:command.extend(["--tenant",tenant])
+    try:
+        run(command,timeout=900)
+        state=run(["docker","inspect","bonuspro-release-worker-1","--format",
+                   "{{.Config.Image}}|{{.State.Running}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}"],capture=True)
+        if state!=image+"|true|healthy":
+            raise UpdateFailed("Current-image worker is not healthy")
+    except Exception:
+        # Public traffic may already have used this schema/image. A processing
+        # failure must never re-enter an application or database rollback.
+        raise UpdateFailed("UPDATE_INCOMPLETE: application and schema retained; the current-image worker was not confirmed. Run start_processing.py with the selected tenant.") from None
+
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument("--root",type=Path,default=Path("/home/ubuntu/bonuspro-release"));args=parser.parse_args()
+    parser=argparse.ArgumentParser()
+    parser.add_argument("--root",type=Path,default=Path("/home/ubuntu/bonuspro-release"))
+    parser.add_argument("--tenant",type=tenant_selector,help="Selected MoySklad account UUID; otherwise use the single enabled installation")
+    parser.add_argument("--defer-processing",action="store_true",help=argparse.SUPPRESS)
+    args=parser.parse_args()
     if os.geteuid()!=0:raise SystemExit("Run update_cabinet.py with sudo")
     os.umask(0o077);root=args.root.resolve();source=Path(__file__).resolve().parents[1]
     try:
@@ -386,9 +411,12 @@ def main():
             print("Protected backup and isolated migration verified: "+str(backup))
         else:
             switch(root,source,image)
-        print("CABINET_READY: "+image+" · https://loyalty.addwise.kz/admin")
         print("Schema 0015 is confirmed. Credentials and financial journal history were preserved.")
-        print("Run start_processing.py to confirm the updated automatic worker.")
+        if args.defer_processing:
+            print("CABINET_UPDATED_PROCESSING_PENDING: "+image+"; finish_release.py must confirm the worker before delivery.")
+            return
+        start_updated_processing(root,source,image,args.tenant)
+        print("CABINET_READY: "+image+" · https://loyalty.addwise.kz/admin")
     except UpdateFailed as error:raise SystemExit(str(error))
     except Exception:raise SystemExit("UPDATE_FAILED: no successful cabinet update was confirmed") from None
 

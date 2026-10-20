@@ -84,3 +84,48 @@ class ProcessingStartTests(unittest.TestCase):
         args,kwargs=execute.call_args
         self.assertEqual(args[0][-3:],["--wait-timeout","720","worker"])
         self.assertEqual(kwargs["timeout"],900)
+
+    def test_unconfirmed_fresh_report_is_failure_and_never_prints_processing_ready(self):
+        from unittest.mock import patch
+        import start_processing as processing
+        report=dict(ready=False,last_processing_at=None)
+        with patch("builtins.print") as output:
+            with self.assertRaises(ProcessingFailed):
+                processing.require_fresh_processing(report,"2026-10-20T10:00:00+00:00")
+        self.assertIn("PROCESSING_STARTED",str(output.call_args_list))
+        self.assertNotIn("PROCESSING_READY",str(output.call_args_list))
+
+    def test_unconfirmed_cli_exits_nonzero_and_leaves_started_worker_running(self):
+        import json,re
+        from unittest.mock import patch
+        from contextlib import ExitStack
+        import start_processing as processing
+        tenant=str(uuid4());image="bonuspro:"+"b"*12;calls=[]
+        expected=re.search(r'if schema!="([0-9]{4})"',Path(processing.__file__).read_text()).group(1)
+        report=dict(ready=False,last_processing_at=None,checked_at="2026-10-20T10:00:00+00:00",
+                    checks=[dict(id="activation",complete=True)])
+        def execute(args,**kwargs):
+            calls.append(args)
+            if "SELECT version_num" in str(args[-1]):return expected
+            if "SELECT COALESCE" in str(args[-1]):return json.dumps([dict(tenant_id=tenant,state="Activated")])
+            if args[:2]==["docker","inspect"]:
+                return "healthy" if args[-1]=="{{.State.Health.Status}}" else image
+            if "config" in args and "--format" in args:return json.dumps(dict(services=dict(worker=dict(image=image))))
+            if args[:2]==["docker","ps"]:return ""
+            if args[:2]==["docker","exec"]:return json.dumps(report)
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(processing.sys if hasattr(processing,"sys") else __import__("sys"),"argv",
+                                            ["start_processing.py","--root","/isolated/release","--tenant",tenant]))
+            stack.enter_context(patch.object(processing.os,"geteuid",return_value=0))
+            stack.enter_context(patch.object(processing.os,"umask"))
+            stack.enter_context(patch.object(processing,"run",side_effect=execute))
+            stack.enter_context(patch.object(processing,"ensure_worker_override",return_value=None))
+            started=stack.enter_context(patch.object(processing,"start_worker"))
+            stack.enter_context(patch.object(processing,"wait_for_report",return_value=report))
+            output=stack.enter_context(patch("builtins.print"))
+            with self.assertRaises(SystemExit) as failure:processing.main()
+            self.assertIn("PROCESSING_NOT_CONFIRMED",str(failure.exception))
+            started.assert_called_once()
+            self.assertIn("PROCESSING_STARTED",str(output.call_args_list))
+            self.assertNotIn("PROCESSING_READY",str(output.call_args_list))
+        self.assertFalse(any(args[:2]==["docker","stop"] for args in calls))
