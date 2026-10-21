@@ -25,7 +25,7 @@ diagnostic=importlib.util.module_from_spec(spec);spec.loader.exec_module(diagnos
 
 class WidgetDiagnosticTests(unittest.TestCase):
     def child(self,*,prepare=True,existing=False,status=412,body=None,locked=True,
-              binding_mode=None,adapter_contract="installed",proof=None):
+              binding_mode=None,adapter_contract="installed",proof=None,region_rejected=False,region_proof=None):
         tenant,marker=str(uuid4()),str(uuid4());requests=[];sql=[];closed=[]
         row={"id":marker,"name":"БонусПро: операция списания","type":"string","required":False,
              "accountId":tenant,"meta":{"type":"attributemetadata",
@@ -34,6 +34,10 @@ class WidgetDiagnosticTests(unittest.TestCase):
             requests.append(request)
             self.assertEqual(request.headers["Authorization"],"Bearer synthetic-private-token")
             if request.method=="GET":
+                if region_rejected and len(requests)==1:
+                    return httpx.Response(412,json={"errors":[{"code":3030,
+                        "error":"Invalid X-Lognex-Accept-Region synthetic-private-token"}]})
+                if region_rejected:self.assertNotIn("X-Lognex-Accept-Region",request.headers)
                 return httpx.Response(200,json={"meta":{},"rows":[row] if existing else []})
             self.assertEqual(json.loads(request.content),[
                 {"name":"БонусПро: операция списания","type":"string","required":False}])
@@ -73,10 +77,15 @@ class WidgetDiagnosticTests(unittest.TestCase):
             return real_response(*args,**kwargs)
         original_codes=remap._access_error_codes
         original_details=getattr(remap,"_provider_error_details",None)
+        original_evidence=getattr(remap,"_provider_error_evidence",None)
         def details(response,deadline=None):
             codes=(original_details(response,deadline)[0] if callable(original_details)
                    else original_codes(response,deadline))
             return codes,proof
+        def evidence(response,deadline=None):
+            codes,concurrent,region=original_evidence(response,deadline)
+            return (codes,proof if proof is not None else concurrent,
+                    region_proof if region_proof is not None else region)
         output=io.StringIO()
         with ExitStack() as stack:
             stack.enter_context(patch.object(sys,"argv",["-",tenant,"prepare" if prepare else "read_only"]))
@@ -84,8 +93,11 @@ class WidgetDiagnosticTests(unittest.TestCase):
             stack.enter_context(patch.object(sys.modules[Installations.__module__],"Installations",return_value=repo))
             stack.enter_context(patch.object(sys.modules[Redemptions.__module__],"Redemptions",return_value=bindings))
             stack.enter_context(patch.object(remap,"RemapClient",side_effect=factory))
-            if proof is not None:
-                stack.enter_context(patch.object(remap,"_provider_error_details",side_effect=details,create=True))
+            if proof is not None or region_proof is not None:
+                if callable(original_evidence):
+                    stack.enter_context(patch.object(remap,"_provider_error_evidence",side_effect=evidence))
+                else:
+                    stack.enter_context(patch.object(remap,"_provider_error_details",side_effect=details,create=True))
             stack.enter_context(patch.object(httpx,"Response",side_effect=response))
             stack.enter_context(patch.object(psycopg,"connect",return_value=guard))
             stack.enter_context(redirect_stdout(output))
@@ -162,6 +174,23 @@ class WidgetDiagnosticTests(unittest.TestCase):
         self.assertEqual(report["requests"][-1]["codes"],[1065])
         self.assertEqual(self.reconstructed,[{"errors":[{"code":1065}]}])
         self.assertEqual(code,1)
+
+
+    def test_prepare_preserves_proven_region_rejection_so_updated_adapter_can_read_without_region(self):
+        report,requests,code=self.child(existing=True,region_rejected=True)
+        self.assertEqual((code,report["result"]),(0,"marker_valid"))
+        self.assertEqual([request.method for request in requests],["GET","GET"])
+        self.assertEqual(report["requests"],[
+            {"phase":"metadata_read","http":412,"codes":[3030]},
+            {"phase":"metadata_read","http":200,"codes":[]}])
+        self.assertEqual(self.reconstructed,[{"errors":[
+            {"code":3030,"error":"X-Lognex-Accept-Region"}]}])
+
+    def test_mixed_region_errors_cannot_gain_exclusive_proof_during_reconstruction(self):
+        body='{"errors":[{"code":3030,"error":"X-Lognex-Accept-Region"},{}]}'
+        report,requests,code=self.child(body=body)
+        self.assertEqual((code,len(requests),report["result"]),(1,2,"metadata_error"))
+        self.assertEqual(self.reconstructed,[{"errors":[{"code":3030},{}]}])
 
     def test_busy_provisioning_lock_never_sends_a_provider_request(self):
         report,requests,code=self.child(locked=False)

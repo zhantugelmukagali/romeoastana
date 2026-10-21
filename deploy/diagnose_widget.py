@@ -37,8 +37,12 @@ def diagnose():
         item["http"]=response.status_code
         if response.status_code!=200:
             try:
+                evidence=getattr(remap_module,"_provider_error_evidence",None)
                 details=getattr(remap_module,"_provider_error_details",None)
-                if callable(details):
+                region_only=False
+                if callable(evidence):
+                    codes,concurrent_only,region_only=evidence(response,getattr(provider,"deadline",None))
+                elif callable(details):
                     codes,concurrent_only=details(response,getattr(provider,"deadline",None))
                 else:
                     codes=_access_error_codes(response,getattr(provider,"deadline",None))
@@ -49,7 +53,11 @@ def diagnose():
             # Retain unknown-error evidence: filtering numeric codes alone must
             # not turn a mixed validation response into an exclusive1065 proof.
             errors=[{"code":code} for code in item["codes"]]
-            if concurrent_only is not True or item["codes"]!=[1065]:errors.append({})
+            if region_only is True and item["codes"]==[3030]:
+                # Canonical finite evidence only after the installed bounded parser
+                # proves every original error names this region header exclusively.
+                errors=[{"code":3030,"error":"X-Lognex-Accept-Region"}]
+            elif concurrent_only is not True or item["codes"]!=[1065]:errors.append({})
             return httpx.Response(response.status_code,json={"errors":errors},request=request)
         return response
     try:
