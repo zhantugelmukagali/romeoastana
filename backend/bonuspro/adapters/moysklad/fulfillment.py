@@ -218,6 +218,7 @@ class FulfillmentReader:
         saved=normalize_order(self.client,evidence,marker_id=marker_id,allow_fulfilled=True)
         created=moment(doc.get("created"))
         posted=[]
+        empty_demands=set()
         paid=0
         linked_paid=0
         returned_lines=[]
@@ -225,10 +226,6 @@ class FulfillmentReader:
             if link(demand,"customerOrder",{"customerorder"})[1]!=saved.snapshot.order_id:
                 raise InvalidDocument("shipment belongs to another order")
             party_check(demand,doc)
-            normalized=normalize_order(self.client,OrderEvidence(
-                {**demand,"payedSum":0,"shippedSum":0},tuple(rows),(),()),allow_fulfilled=True)
-            if not tax_modes_match(normalized,saved):
-                raise InvalidDocument("shipment tax mismatch")
             demand_returns=[]
             for returned,positions in returns:
                 if link(returned,"demand",{"demand"})[1]!=uuid(demand["id"]):
@@ -243,6 +240,28 @@ class FulfillmentReader:
                 if not tax_modes_match(value,saved):
                     raise InvalidDocument("return tax mismatch")
                 demand_returns.extend(value.lines)
+            try:
+                normalized=normalize_order(self.client,OrderEvidence(
+                    {**demand,"payedSum":0,"shippedSum":0},tuple(rows),(),()),allow_fulfilled=True)
+            except InvalidDocument as error:
+                # REMAP can save a separate empty zero shipment, including a
+                # posted one. Reuse ordinary pre-position validation; only its
+                # missing-position failure has this noncontributing exception.
+                if (error.reason!="positions_missing" or not isinstance(rows,(list,tuple)) or rows
+                    or exact_minor(demand.get("sum"))!=0 or returns):
+                    raise
+                if (demand["vatEnabled"]!=saved.vat_enabled or
+                    (saved.vat_enabled and demand["vatIncluded"]!=saved.vat_included)):
+                    raise InvalidDocument("shipment tax mismatch") from None
+                if not isinstance(demand.get("attributes",[]),list):
+                    raise InvalidDocument("invalid attributes") from None
+                revision=demand.get("updated")
+                if not isinstance(revision,str) or not revision.strip() or len(revision)>256:
+                    raise InvalidDocument("missing saved revision") from None
+                empty_demands.add(uuid(demand["id"]))
+                continue
+            if not tax_modes_match(normalized,saved):
+                raise InvalidDocument("shipment tax mismatch")
             shipped_basket=basket(normalized.lines)
             if any(k not in shipped_basket or qty>shipped_basket[k] for k,qty in basket(demand_returns).items()):
                 raise InvalidDocument("returned quantity exceeds matching shipment")
@@ -264,6 +283,8 @@ class FulfillmentReader:
                     raise InvalidDocument("duplicate payment allocation")
                 seen.add((kind,identity))
                 amount=exact_minor(operation.get("linkedSum"))
+                if kind=="demand" and identity in empty_demands:
+                    raise InvalidDocument("empty shipment has a posted payment allocation")
                 allocated+=amount
                 if (kind=="customerorder" and identity==saved.snapshot.order_id) or (kind=="demand" and identity in posted_ids):
                     counted+=amount
@@ -277,6 +298,10 @@ class FulfillmentReader:
         shipped=sum(x.snapshot.total_minor for x in posted)
         actual=basket([line for demand in posted for line in demand.lines])
         expected=basket(saved.lines)
+        if empty_demands and (not posted or actual!=expected or shipped!=saved.snapshot.total_minor):
+            # An empty document must not replace the actual shipment proof.
+            # Returning an incomplete proof here could reverse a prior accrual.
+            raise InvalidDocument("empty shipment lacks independent full shipment")
         if saved.snapshot.cancelled:
             outcome="cancelled"
         elif actual!=expected:
@@ -295,7 +320,7 @@ class FulfillmentReader:
         return Fulfillment(saved,created,paid,shipped,outcome,digest(second),start+120,
                            tuple(returned_lines),actual==expected and shipped==saved.snapshot.total_minor,
                            paid>=saved.snapshot.total_minor,
-                           saved.snapshot.cancelled and not posted and linked_paid==0
+                           saved.snapshot.cancelled and not posted and not empty_demands and linked_paid==0
                            and not doc.get("invoicesOut") and not doc.get("prepayments"),tuple(sorted(related)),
                            presale_safe=not saved.snapshot.cancelled and not saved.snapshot.paid_minor
                            and not saved.snapshot.shipped_minor and paid==0 and shipped==0

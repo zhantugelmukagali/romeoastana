@@ -29,7 +29,7 @@ class HistoricalWorkerTests(unittest.TestCase):
     def setUp(self):
         self.base=fixtures.AutomationTests();self.base.setUp()
         self.fx=self.base.fx;self.auto=self.base.a;self.tenant=self.fx.tenant
-        # configure() also schedules the fixture's existing preview order.
+        # The fixture preview also schedules its existing order.
         # Check it through the real non-earning path before focusing this worker
         # on a different historical order; do not fake a monitor outcome.
         self.base.run_proof(self.base.proof(outcome="waiting_shipment"))
