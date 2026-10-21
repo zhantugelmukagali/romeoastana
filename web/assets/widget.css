@@ -106,6 +106,7 @@ main[data-personal=true] header{margin-bottom:6px}
 #summary:has(>#apply:not([hidden]))>#payable-row>span{display:block;margin-bottom:2px;font-size:10px}
 #summary:has(>#apply:not([hidden])) #payable{display:block;text-align:left;font-size:18px}
 #summary:has(>#apply:not([hidden]))>#apply{grid-column:2;align-self:center}
+#summary:not(:has(>#apply:not([hidden])))>#payable-row{padding-top:0;border-top:0}
 #maximum-button:hover:not(:disabled){border-color:#b8cdf8;background:#e9f0ff;color:#1d4ed8}
 #maximum-button:disabled{border-color:#e1e5eb;background:#f7f8fa;color:#737d8d}
 @media(max-width:340px){main{padding:10px}#summary{column-gap:8px;grid-template-columns:minmax(0,1fr) minmax(118px,43%)}}
