@@ -100,6 +100,12 @@ class Automation:
         self.ledger._key_lock(conn,tenant,"order/"+s.order_id)
         from bonuspro.adapters.postgres.signals import Signals
         Signals.index_in(conn,tenant,s.order_id,proof.related)
+        from bonuspro.adapters.postgres.presale_undo import PresaleUndo
+        if PresaleUndo.stale_worker_proof_in(conn,tenant,saved):
+            self.outcome_in(conn,tenant,s.order_id,"waiting_refresh")
+            return
+        if PresaleUndo.older_than_completed_undo_in(conn,tenant,saved):
+            raise Conflict("evidence predates completed presale undo")
         context=conn.execute("SELECT * FROM bonuspro.order_contexts WHERE tenant_id=%s AND order_id=%s",(tenant,s.order_id)).fetchone()
         prior=conn.execute("SELECT * FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s",(tenant,s.order_id)).fetchone()
         financial_hash=fingerprint(saved.financial())

@@ -158,7 +158,7 @@ class PersonalApplications:
                 positions.append(update)
             identity=str(uuid4());marker="bonuspro:v1:"+identity;marker_id=str(binding["marker_id"])
             plan.update(before=saved.financial(),bonus_before=basis.financial(),personal_basis=basis.financial(),
-                        source_hash=saved.source_hash,personal_discount_minor=reduction,
+                        source_hash=saved.source_hash,reconstruction=saved.reconstruction_manifest(),personal_discount_minor=reduction,
                         personal_rate_bps=resolved["effective_rate_bps"],personal_calculation=calculation,
                         personal_policy=dict(version=policy["version"],external_policy=policy["external_policy"],
                                              allow_bonus_stack=policy["allow_bonus_stack"]),

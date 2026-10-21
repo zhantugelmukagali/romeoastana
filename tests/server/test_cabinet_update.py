@@ -65,7 +65,7 @@ class CabinetUpdateTests(unittest.TestCase):
             self.assertTrue(pending.exists())
 
 
-    def invoke_standalone(self,schema,*,defer=False,worker_failure=False):
+    def invoke_standalone(self,schema,*,defer=False,worker_failure=False,lineage=True,database_lineage=True):
         from contextlib import ExitStack
         from uuid import uuid4
         image="bonuspro:"+"b"*12;tenant=str(uuid4());calls=[];phases=[]
@@ -84,8 +84,10 @@ class CabinetUpdateTests(unittest.TestCase):
                 stack.enter_context(patch.object(update.sys,"argv",arguments))
                 stack.enter_context(patch.object(update.os,"geteuid",return_value=0))
                 stack.enter_context(patch.object(update.os,"umask"))
-                stack.enter_context(patch.object(update.Path,"read_text",return_value='revision != [("0015",)]'))
+                stack.enter_context(patch.object(update.Path,"read_text",return_value='revision != [("0016",)]'))
+                stack.enter_context(patch.object(update.Path,"is_file",return_value=lineage))
                 stack.enter_context(patch.object(update,"database_schema",return_value=schema))
+                stack.enter_context(patch.object(update,"compatible_database_lineage",return_value=database_lineage))
                 stack.enter_context(patch.object(update,"source_revision",return_value="b"*40))
                 stack.enter_context(patch.object(update,"run",side_effect=execute))
                 stack.enter_context(patch.object(update,"upgrade_schema_and_switch",side_effect=lambda *a:phases.append("upgrade")))
@@ -101,23 +103,35 @@ class CabinetUpdateTests(unittest.TestCase):
             return dict(phases=phases,calls=calls,error=error,messages=messages,tenant=tenant,image=image)
 
     def test_standalone_update_always_confirms_matching_worker_after_app_update(self):
-        for schema in ("0013","0014","0015"):
+        for schema in ("0013","0014","0015","0016"):
             with self.subTest(schema=schema):
                 result=self.invoke_standalone(schema)
                 self.assertIsNone(result["error"])
-                self.assertEqual(result["phases"],["switch" if schema=="0015" else "upgrade","worker"])
+                self.assertEqual(result["phases"],["switch" if schema=="0016" else "upgrade","worker"])
                 command,options=next((a,k) for a,k in result["calls"] if len(a)>1 and str(a[1]).endswith("/start_processing.py"))
                 self.assertEqual(command[-2:],["--tenant",result["tenant"]])
                 self.assertEqual(options["timeout"],900)
                 self.assertIn("CABINET_READY",result["messages"])
 
     def test_failed_processing_confirmation_keeps_updated_app_and_never_claims_cabinet_ready(self):
-        for schema in ("0013","0014","0015"):
+        for schema in ("0013","0014","0015","0016"):
             with self.subTest(schema=schema):
                 result=self.invoke_standalone(schema,worker_failure=True)
                 self.assertIn("UPDATE_INCOMPLETE",result["error"])
-                self.assertEqual(result["phases"],["switch" if schema=="0015" else "upgrade","worker"])
+                self.assertEqual(result["phases"],["switch" if schema=="0016" else "upgrade","worker"])
                 self.assertNotIn("CABINET_READY",result["messages"])
+
+    def test_incompatible_numeric_schema_lineage_is_rejected_before_build_or_switch(self):
+        result=self.invoke_standalone("0016",lineage=False)
+        self.assertIn("Compatible migration lineage",result["error"])
+        self.assertEqual(result["phases"],[])
+        self.assertEqual(result["calls"],[])
+
+    def test_main_numeric_schema_collision_is_rejected_before_build_or_switch(self):
+        result=self.invoke_standalone("0016",database_lineage=False)
+        self.assertIn("Database schema lineage",result["error"])
+        self.assertEqual(result["phases"],[])
+        self.assertEqual(result["calls"],[])
 
     def test_internal_defer_is_explicit_and_cannot_claim_full_success(self):
         result=self.invoke_standalone("0014",defer=True)

@@ -75,6 +75,7 @@ class Fulfillment:
     full_payment: bool = False
     cancel_safe: bool = False
     related: tuple = ()
+    presale_safe: bool = False
 
 
 class FulfillmentReader:
@@ -199,4 +200,8 @@ class FulfillmentReader:
                            tuple(returned_lines),actual==expected and shipped==saved.snapshot.total_minor,
                            paid>=saved.snapshot.total_minor,
                            saved.snapshot.cancelled and not posted and linked_paid==0
-                           and not doc.get("invoicesOut") and not doc.get("prepayments"),tuple(sorted(related)))
+                           and not doc.get("invoicesOut") and not doc.get("prepayments"),tuple(sorted(related)),
+                           presale_safe=not saved.snapshot.cancelled and not saved.snapshot.paid_minor
+                           and not saved.snapshot.shipped_minor and paid==0 and shipped==0
+                           and not demands and not payments and not returned_lines
+                           and not doc.get("invoicesOut") and not doc.get("prepayments"))

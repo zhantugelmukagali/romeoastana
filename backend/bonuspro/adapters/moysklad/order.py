@@ -81,6 +81,26 @@ def _represent_amount(line,target):
     return changed
 
 
+def _recreatable_row(raw,kind):
+    # Financial snapshots do not freeze serials, marking codes, batches or
+    # custom position fields. Missing/unknown provider flags never prove safety.
+    allowed={"meta","id","accountId","quantity","price","discount","vat","vatEnabled",
+             "assortment","reserve","shipped"}
+    if set(raw)-allowed or kind=="bundle" or raw.get("pack") is not None:
+        return False
+    for key in ("reserve","shipped"):
+        value=raw.get(key,0)
+        if isinstance(value,bool) or not isinstance(value,(int,Decimal)) or value!=0:
+            return False
+    if kind=="service":
+        return True
+    assortment=raw.get("assortment")
+    return (isinstance(assortment,dict)
+            and not any(key.startswith("mod__") for key in assortment)
+            and assortment.get("isSerialTrackable") is False
+            and assortment.get("trackingType")=="NOT_TRACKED")
+
+
 @dataclass(frozen=True)
 class SavedOrder:
     snapshot: OrderSnapshot
@@ -91,6 +111,7 @@ class SavedOrder:
     marker: str | None
     name: str
     discount_blocked_reason: str | None = None
+    recreatable_ids: frozenset[str] = frozenset()
 
     def financial(self):
         s = self.snapshot
@@ -98,6 +119,11 @@ class SavedOrder:
                     organization_id=self.organization_id,currency=s.currency,total_minor=s.total_minor,
                     vat_included=self.vat_included,vat_enabled=self.vat_enabled,
                     lines=[x.record() for x in sorted(self.lines,key=lambda line:line.id)])
+
+    def reconstruction_manifest(self):
+        return dict(version=1,rows=[dict(id=line.id,recreatable=line.id in self.recreatable_ids,
+                    fields={key:value for key,value in line.record().items() if key!="id"})
+                    for line in sorted(self.lines,key=lambda item:item.id)])
 
     @property
     def source_hash(self):
@@ -179,7 +205,7 @@ class SavedOrder:
                                        eligible_minor=self.snapshot.eligible_minor-points*100))
         # ALL positions, including services, must remain in UpdateRequest (host replaces the list).
         return dict(before=self.financial(),after=after.financial(),source_hash=self.source_hash,
-                    update_state={"positions":updates})
+                    reconstruction=self.reconstruction_manifest(),update_state={"positions":updates})
 
 
 def read_order(client, order_id, *, marker_id=None, allow_fulfilled=False):
@@ -212,6 +238,7 @@ def normalize_order(client,evidence,*,marker_id=None,allow_fulfilled=False):
     if type(doc.get("applicable")) is not bool:
         raise InvalidDocument("posting status missing")
     lines=[]
+    recreatable=set()
     seen=set()
     for raw in evidence.positions:
         identity=uuid(raw.get("id"))
@@ -235,6 +262,8 @@ def normalize_order(client,evidence,*,marker_id=None,allow_fulfilled=False):
         if pack is not None and not isinstance(pack,dict):
             raise InvalidDocument("invalid pack")
         lines.append(Line(identity,kind,assortment,quantity,price,int(discount),vat,line_vat,pack_id))
+        if _recreatable_row(raw,kind):
+            recreatable.add(identity)
     if not lines:
         raise InvalidDocument("saved positions are missing",reason="positions_missing")
     if len(lines)>1000:
@@ -271,4 +300,4 @@ def normalize_order(client,evidence,*,marker_id=None,allow_fulfilled=False):
              "linked_documents_present" if evidence.payments or evidence.demands else
              "order_has_marker" if marker else None)
     return SavedOrder(snapshot,tuple(lines),organization,vat_included,vat_enabled,marker,
-                      str(doc.get("name",""))[:256],blocked)
+                      str(doc.get("name",""))[:256],blocked,frozenset(recreatable))

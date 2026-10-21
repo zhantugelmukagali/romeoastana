@@ -60,12 +60,13 @@ class Portal:
                 if not cursor:raise NotFound("activity cursor not found")
             rows=conn.execute("""
               SELECT t.id,t.kind,t.delta,t.created_at,c.counterparty_id,
-                COALESCE(r.order_id,a.order_id) AS order_id,
+                COALESCE(r.order_id,a.order_id,u.order_id) AS order_id,
                 EXISTS(SELECT 1 FROM bonuspro.opening_balances o WHERE o.tenant_id=t.tenant_id AND o.transaction_id=t.id) AS opening
               FROM bonuspro.ledger_transactions t
               LEFT JOIN bonuspro.customer_wallets c ON c.tenant_id=t.tenant_id AND c.wallet_id=t.wallet_id
               LEFT JOIN bonuspro.reservations r ON r.tenant_id=t.tenant_id AND r.id=t.reservation_id
               LEFT JOIN bonuspro.order_accruals a ON a.tenant_id=t.tenant_id AND a.credit_id=t.id
+              LEFT JOIN bonuspro.presale_undo_requests u ON u.tenant_id=t.tenant_id AND u.id=t.presale_undo_id
               WHERE t.tenant_id=%s AND (%s::uuid IS NULL OR c.counterparty_id=%s::uuid)
                 AND (%s::uuid IS NULL OR (t.created_at,t.id)<(%s::timestamptz,%s::uuid))
               ORDER BY t.created_at DESC,t.id DESC LIMIT 51

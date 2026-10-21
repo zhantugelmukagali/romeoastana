@@ -3,7 +3,7 @@ const $=id=>document.getElementById(id);
 const fmt=new Intl.NumberFormat("ru-KZ");
 const number=value=>fmt.format(BigInt(value));
 const date=value=>new Date(value).toLocaleString("ru-RU",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
-const labels={credit:"Начисление",opening:"Перенос остатков",redemption:"Списание",reversal:"Отмена начисления",refund:"Возврат бонусов",settlement:"Пересчёт",adjustment:"Корректировка"};
+const labels={credit:"Начисление",opening:"Перенос остатков",redemption:"Списание",presale_refund:"Возврат списания",reversal:"Отмена начисления",refund:"Возврат бонусов",settlement:"Пересчёт",adjustment:"Корректировка"};
 let session=null,connecting=false,summary=null,screen="overview",connectionEpoch=0;
 let customerOffset=null,activityCursor=null,customerQuery="",customersBusy=false,activityBusy=false;
 let customersLoaded=false,activityLoaded=false,searchEpoch=0,profileEpoch=0,profileId=null,profileCursor=null,profileBusy=false;
