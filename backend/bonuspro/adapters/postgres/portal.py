@@ -20,7 +20,9 @@ class Portal:
                 (SELECT state FROM bonuspro.installations WHERE tenant_id=%(tenant)s) AS state,
                 (SELECT json_build_object('earn_bps',earn_bps,'spend_bps',spend_bps,'version',version)
                  FROM bonuspro.rule_versions WHERE tenant_id=%(tenant)s ORDER BY version DESC LIMIT 1) AS rules,
-                (SELECT json_build_object('heartbeat_at',heartbeat_at,'last_error',last_error)
+                (SELECT json_build_object('heartbeat_at',heartbeat_at,'last_error',last_error,
+                   'provider_errors',(SELECT count(*) FROM (SELECT 1 FROM bonuspro.order_monitors
+                     WHERE tenant_id=%(tenant)s AND outcome='provider_error' LIMIT 1001) failed))
                  FROM bonuspro.sync_state WHERE tenant_id=%(tenant)s) AS processing,
                 clock_timestamp() AS generated_at
             """,{"tenant":tenant}).fetchone()

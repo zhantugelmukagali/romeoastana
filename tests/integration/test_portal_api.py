@@ -103,4 +103,34 @@ class PortalAPITests(unittest.TestCase):
         missing=self.client.get("/api/admin/activity",params={"customer":str(uuid4())},headers=self.headers).json()
         self.assertEqual(missing["items"],[])
 
+
+    def test_overview_exposes_only_current_tenant_failed_orders_despite_a_fresh_heartbeat(self):
+        order=str(uuid4())
+        with self.fx.ledger.transaction(self.fx.tenant) as conn:
+            conn.execute("INSERT INTO bonuspro.automation_config(tenant_id,actor_id) VALUES (%s,%s)",
+                         (self.fx.tenant,self.fx.user))
+            conn.execute("INSERT INTO bonuspro.sync_state(tenant_id,scan_until,heartbeat_at) "
+                         "VALUES (%s,clock_timestamp(),clock_timestamp())",(self.fx.tenant,))
+            conn.execute("INSERT INTO bonuspro.order_monitors(tenant_id,order_id,outcome) "
+                         "VALUES (%s,%s,'provider_error')",(self.fx.tenant,order))
+        before=self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)
+        data=self.client.get("/api/admin/overview",headers=self.headers).json()
+        self.assertEqual(data["processing"]["provider_errors"],1)
+        self.assertIsNotNone(data["processing"]["heartbeat_at"])
+        self.assertIsNone(data["processing"]["last_error"])
+        with self.fx.ledger.transaction(self.fx.tenant) as conn:
+            conn.execute("UPDATE bonuspro.order_monitors SET outcome='waiting_payment' "
+                         "WHERE tenant_id=%s AND order_id=%s",(self.fx.tenant,order))
+        other=str(uuid4())
+        self.fx.repo.change(other,{"iat":int(time.time())-1,"exp":int(time.time())+60,"jti":str(uuid4())},
+                            "Install","synthetic-private-token")
+        with self.fx.ledger.transaction(other) as conn:
+            conn.execute("INSERT INTO bonuspro.order_monitors(tenant_id,order_id,outcome) "
+                         "VALUES (%s,%s,'provider_error')",(other,str(uuid4())))
+        response=self.client.get("/api/admin/overview",headers=self.headers)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()["processing"]["provider_errors"],0)
+        self.assertNotIn("synthetic-private-token",response.text)
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),before)
+
 if __name__=="__main__":unittest.main()

@@ -21,7 +21,7 @@ class PortalBrowserTests(unittest.TestCase):
         self.context=self.browser.new_context(viewport={"width":1440,"height":1050})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
         self.personal_assignment={"counterparty_id":CUSTOMER,"version":0,"rate_bps":None};self.personal_saves=[];self.personal_requests={};self.personal_conflict=False;self.personal_drop_first=False;self.personal_archived=False
-        self.sessions=0;self.role="admin";self.state="Activated";self.empty=False;self.balance="184500";self.processing=True;self.calls=[]
+        self.sessions=0;self.role="admin";self.state="Activated";self.empty=False;self.balance="184500";self.processing=True;self.failed_orders=0;self.enrolled=True;self.calls=[]
     def tearDown(self):
         self.context.close();self.browser.close();self.runtime.stop()
     def route(self,route):
@@ -39,9 +39,9 @@ class PortalBrowserTests(unittest.TestCase):
                 "reserved":"0" if self.empty else "1200","credited":"0" if self.empty else "296700",
                 "redeemed":"0" if self.empty else "112200","attention":0,"state":self.state,
                 "rules":{"earn_bps":500,"spend_bps":3000,"version":1},
-                "processing":{"heartbeat_at":datetime.now(timezone.utc).isoformat(),"last_error":None} if self.processing else None,"generated_at":"2026-10-15T05:00:00Z"})
+                "processing":{"heartbeat_at":datetime.now(timezone.utc).isoformat(),"last_error":None,"provider_errors":self.failed_orders} if self.processing else None,"generated_at":"2026-10-15T05:00:00Z"})
             if path=="/api/admin/customers":return route.fulfill(json={"items":[] if self.empty else [
-                {"id":CUSTOMER,"name":NAME,"phone":"+7 700 111 22 33","balance":1500,"available":1200,"reserved":300,"enrolled":True}],"next_offset":None})
+                {"id":CUSTOMER,"name":NAME,"phone":"+7 700 111 22 33","balance":1500 if self.enrolled else 0,"available":1200 if self.enrolled else 0,"reserved":300 if self.enrolled else 0,"enrolled":self.enrolled}],"next_offset":None})
             if path=="/api/admin/customers/"+CUSTOMER+"/personal-discount":
                 body=route.request.post_data_json;self.personal_saves.append(body)
                 if self.personal_archived:return route.fulfill(status=409,json={"error":"customer_archived"})
@@ -53,7 +53,7 @@ class PortalBrowserTests(unittest.TestCase):
                 if self.personal_drop_first and len(self.personal_saves)==1:return route.abort()
                 return route.fulfill(json={"current":self.personal_requests[body["request_id"]]})
             if path=="/api/admin/customers/"+CUSTOMER:return route.fulfill(json={
-                "id":CUSTOMER,"name":NAME,"phone":"+7 700 111 22 33","balance":1500,"available":1200,"reserved":300,"enrolled":True,
+                "id":CUSTOMER,"name":NAME,"phone":"+7 700 111 22 33","balance":1500 if self.enrolled else 0,"available":1200 if self.enrolled else 0,"reserved":300 if self.enrolled else 0,"enrolled":self.enrolled,
                 "personal_discount":{**self.personal_assignment,"enabled":True,"effective_rate_bps":self.personal_assignment["rate_bps"] or 0}})
             if path=="/api/admin/activity":return route.fulfill(json={"items":[] if self.empty else [
                 {"id":TX,"kind":"credit","points":1500,"created_at":"2026-10-15T04:00:00Z","customer_id":CUSTOMER,"order_id":None}],"next_cursor":None})
@@ -309,5 +309,21 @@ class PortalBrowserTests(unittest.TestCase):
         self.assertFalse(self.frame.get_by_role("button",name="Изменить скидку",exact=True).is_enabled())
         self.assertFalse(self.frame.locator("#reload-customer-personal").is_visible())
         self.assertEqual(len(self.personal_saves),1)
+
+
+    def test_fresh_processing_heartbeat_cannot_hide_a_current_failed_order(self):
+        self.failed_orders=1;self.open()
+        self.frame.locator("#processing-callout").wait_for(state="visible")
+        self.assertEqual(self.frame.locator("#processing-callout p").inner_text(),
+                         "Не удалось проверить заказы: 1. Откройте заказ и проверьте виджет.")
+        self.assertTrue(self.frame.get_by_role("link",name="Проверить обработку",exact=True).is_visible())
+
+    def test_unenrolled_customer_has_no_promise_of_automatic_account_creation(self):
+        self.enrolled=False;self.open()
+        self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+        self.frame.get_by_role("button",name="Открыть",exact=True).click()
+        self.frame.get_by_text("Нет бонусных операций.",exact=True).wait_for()
+        self.assertNotIn("появится",self.frame.locator("#profile-status").inner_text())
+        self.assertEqual(self.frame.locator("#customer-available").inner_text(),"0")
 
 if __name__=="__main__":unittest.main()

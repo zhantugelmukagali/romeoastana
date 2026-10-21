@@ -23,7 +23,8 @@ def evaluate(row):
     elif row["last_error"]:
         status="provider_unavailable";label="Не удалось завершить проверку МойСклад"
     elif attention["provider_errors"]:
-        status="provider_documents";label="Не удалось проверить заказы: "+str(attention["provider_errors"])
+        count="более 1000" if attention["provider_errors"]==COUNT_LIMIT else str(attention["provider_errors"])
+        status="provider_documents";label="Не удалось проверить заказы: "+count+". Откройте заказ и проверьте виджет."
     elif attention["documents_to_review"] or attention["unresolved_issues"]:
         status="documents_review";label="Проверьте документы в разделе «Возвраты и сверка»"
     elif attention["stale_redemptions"] or attention["stale_personal_discounts"]:

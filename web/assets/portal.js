@@ -55,10 +55,14 @@ async function overview(){
   $("program-state").textContent=result.state==="Activated"?"Программа активна":"Требуется настройка";
   $("program-state").classList.toggle("success",result.state==="Activated");
   $("setup-callout").hidden=result.state==="Activated";
-  const heartbeat=result.processing?.heartbeat_at;
+  const heartbeat=result.processing?.heartbeat_at,failedOrders=result.processing?.provider_errors;
   const processingHealthy=heartbeat && Number.isFinite(Date.parse(heartbeat)) &&
-    Date.now()-Date.parse(heartbeat)<600000 && !result.processing.last_error;
+    Date.now()-Date.parse(heartbeat)>=0 && Date.now()-Date.parse(heartbeat)<600000 && !result.processing.last_error &&
+    Number.isSafeInteger(failedOrders) && failedOrders===0;
   $("processing-callout").hidden=result.state!=="Activated"||Boolean(processingHealthy);
+  $("processing-callout").querySelector("p").textContent=Number.isSafeInteger(failedOrders)&&failedOrders>0?
+    "Не удалось проверить заказы: "+(failedOrders>=1001?"более 1000":failedOrders)+". Откройте заказ и проверьте виджет.":
+    "Обработка заказов пока не подтверждена или требует внимания. Балансы ниже показывают уже сохранённые операции.";
   $("rule-earn").textContent=result.rules?fmt.format(result.rules.earn_bps/100)+"%":"—";
   $("rule-spend").textContent=result.rules?fmt.format(result.rules.spend_bps/100)+"%":"—";
   $("attention-link").textContent=result.attention?number(result.attention)+" операций требуют проверки →":"Операций на проверке нет";
@@ -131,7 +135,7 @@ async function openCustomer(id){
     $("customer-available").textContent=number(data.available);
     $("customer-reserved").textContent="Баланс "+number(data.balance)+" · В резерве "+number(data.reserved);
     $("customer-source").href="https://online.moysklad.ru/app/#company/edit?id="+encodeURIComponent(id);$("customer-source").hidden=false;
-    if(!data.enrolled)$("profile-status").textContent="Бонусный счёт появится при первой операции или переносе остатков.";
+    if(!data.enrolled)$("profile-status").textContent="Нет бонусных операций.";
     await profileHistory(generation);
   }catch(e){if(generation===profileEpoch)$("profile-status").textContent=e.message;}
 }
