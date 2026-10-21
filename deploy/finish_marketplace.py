@@ -3,7 +3,9 @@ import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from hashlib import sha1, sha256
-import fcntl, json, os, re, stat, subprocess, sys, time
+import errno, fcntl, json, os, re, ssl, stat, subprocess, sys, time
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 from pathlib import Path
 from uuid import uuid4
 from update_cabinet import atomic_write, replacement, source_revision, verify_local, verify_public
@@ -363,6 +365,58 @@ def finish(root,source,*,prepare_only=False):
     with deployment_lock(root):
         return finish_locked(root,source,prepare_only=prepare_only)
 
+class PublicStartupPending(MarketplaceFailed): pass
+
+def temporary_public_failure(error):
+    if isinstance(error,HTTPError):
+        return error.code in (502,503,504)
+    reason=error.reason if isinstance(error,URLError) else error
+    return (isinstance(reason,(TimeoutError,ConnectionError,ssl.SSLEOFError))
+        or isinstance(reason,OSError) and reason.errno in
+            (errno.EHOSTUNREACH,errno.ENETUNREACH,errno.ETIMEDOUT))
+
+def wait_public_ready(*,timeout=45,open_url=urlopen,clock=time.monotonic,pause=time.sleep):
+    # Only this idempotent GET is retried. Exact source assets are checked once
+    # afterwards; 4xx, invalid ready payloads and certificate failures are final.
+    if not 0<timeout<=60:raise MarketplaceFailed("Invalid public startup allowance")
+    deadline=clock()+timeout;waiting=False
+    while True:
+        remaining=deadline-clock()
+        if remaining<=0:
+            raise PublicStartupPending("HTTPS startup did not become ready within the allowed time")
+        try:
+            with open_url("https://loyalty.addwise.kz/health/ready",timeout=min(5,remaining)) as response:
+                if response.status!=200 or json.loads(response.read(1024)).get("status")!="ready":
+                    raise MarketplaceFailed("Public readiness payload was not confirmed")
+            return
+        except (OSError,URLError) as error:
+            if not temporary_public_failure(error):raise
+            if isinstance(error,HTTPError):error.close()
+            remaining=deadline-clock()
+            if remaining<=0:
+                raise PublicStartupPending("HTTPS startup did not become ready within the allowed time") from None
+            if not waiting:
+                print("MARKETPLACE_PUBLIC_STARTUP_WAIT: waiting for HTTPS readiness",flush=True)
+                waiting=True
+            pause(min(1,remaining))
+
+def failure_details(error):
+    # Never include str(error), response bodies, command arguments or credentials.
+    kinds={"HTTPError":"http_error","URLError":"connection_error",
+        "SSLCertVerificationError":"tls_certificate_error","SSLError":"tls_error",
+        "TimeoutError":"timeout","ConnectionRefusedError":"connection_error",
+        "ConnectionResetError":"connection_error","IncompleteRead":"incomplete_http_body",
+        "PermissionError":"local_permission","FileNotFoundError":"missing_local_file",
+        "JSONDecodeError":"invalid_json",
+        "UpdateFailed":"readiness_or_asset_mismatch","MarketplaceFailed":"deployment_check",
+        "CalledProcessError":"command_error","KeyboardInterrupt":"interrupted",
+        "PublicStartupPending":"public_startup_pending"}
+    result={"kind":kinds.get(type(error).__name__,"unexpected_error")}
+    status=getattr(error,"code",None)
+    if type(error).__name__=="HTTPError" and type(status) is int and 100<=status<=599:
+        result["http_status"]=status
+    return result
+
 def finish_locked(root,source,*,prepare_only=False):
     head=verify_source(source);revision=source_revision(source);image="bonuspro:"+revision[:12]
     db=Database();original=db.schema("bonuspro")
@@ -392,37 +446,54 @@ def finish_locked(root,source,*,prepare_only=False):
               "command.upgrade(Config('alembic.ini'),"+repr(target)+")")
         checked(command+["--profile","maintenance","run","--rm","--no-deps","migrate","python","-c",code])
     stopped=False;migration_started=False;replacement_started=False;exposed=False;live_shape=None
+    stage="schema_baselines"
     try:
         with expected_schemas(db,source,owner,migrate,head) as schemas:
+            stage="backup_restore"
             db.dump("bonuspro",backup/"database.dump")
             verify_restore(db,backup/"database.dump",source,owner,migrate,schemas,head)
             print("MARKETPLACE_RESTORE_VERIFIED: backup, exact schema bridge and protected history checked",flush=True)
+            stage="stop_services"
             stopped=True;stop_services(states)
             # The final quiet checkpoint includes work completed during preflight.
+            stage="final_checkpoint"
             db.dump("bonuspro",backup/"database.pre-upgrade.dump")
+            stage="final_restore"
             verify_restore(db,backup/"database.pre-upgrade.dump",source,owner,migrate,schemas,head)
             live_shape=db.schema_hash("bonuspro");migration_started=True
+            stage="main_schema"
             proof=advance(db,"bonuspro",source,owner,migrate,schemas,head)
             # From this boundary a same-schema redeploy is also forward-only:
             # managed app names may now refer to the replacement immutable image.
             replacement_started=True
+            stage="record_configuration"
             atomic_write(env,replacement(old_env,image),env.stat())
             atomic_write(config,(source/"compose.release.yaml").read_text(),config.stat())
             record_configuration(root,source,revision,image,head,backup)
             actual=compose(root,root,env)
+            stage="app_start"
             checked(actual+["up","-d","--no-build","--no-deps","--force-recreate","--wait","--wait-timeout","120","app"])
+            stage="local_assets"
             verify_local(source)
             exposed=True
+            stage="web_start"
             if states.get("web",{}).get("running"):checked(["docker","start",states["web"]["name"]])
+            stage="public_ready"
+            wait_public_ready()
+            stage="public_assets"
             verify_public(source)
             print(json.dumps({**proof,"read_only":False,"business_acceptance_verified":False},ensure_ascii=False))
+            stage="pool_start"
             if prepare_only:
                 checked(actual+["--profile","marketplace","up","-d","--no-build","--no-deps",
                     "--force-recreate","--wait","--wait-timeout","720","worker-pool"],timeout=900)
                 print("MARKETPLACE_APPLICATION_UPDATED_SETUP_PENDING: complete account settings; financial acceptance remains pending")
+                stage="temporary_database_cleanup"
                 return
             start_pool(actual,image)
-    except (Exception,KeyboardInterrupt):
+            stage="temporary_database_cleanup"
+    except (Exception,KeyboardInterrupt) as error:
+        print("MARKETPLACE_STAGE_FAILED: "+json.dumps({"stage":stage,**failure_details(error)}),flush=True)
         unchanged=not migration_started
         observed=None
         if migration_started:

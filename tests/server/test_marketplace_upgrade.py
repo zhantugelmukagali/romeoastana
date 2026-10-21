@@ -1,9 +1,10 @@
 """Guarded main deployment and pool readiness; no production commands are run."""
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stdout
 from datetime import datetime, timezone, timedelta
-import io,json,sys,tempfile,unittest
+import io,json,ssl,sys,tempfile,unittest
 from pathlib import Path
 from unittest.mock import Mock,patch
+from urllib.error import HTTPError, URLError
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT/"deploy"))
@@ -81,7 +82,7 @@ class MarketplaceUpgradeTests(unittest.TestCase):
             "backup_config":Mock(return_value=backup),"checked":Mock(side_effect=checked),
             "expected_schemas":Mock(return_value=nullcontext({"0015":"legacy","0017":"main17","0018":"main18"})),
             "verify_restore":Mock(),"stop_services":Mock(),"restore_old_services":Mock(),
-            "advance":Mock(),"verify_local":Mock(),"verify_public":Mock(),"start_pool":Mock()
+            "advance":Mock(),"verify_local":Mock(),"verify_public":Mock(),"wait_public_ready":Mock(),"start_pool":Mock()
         }
         for name,value in patches.items():
             active=patch.object(upgrade,name,value);active.start();self.addCleanup(active.stop)
@@ -125,9 +126,13 @@ class MarketplaceUpgradeTests(unittest.TestCase):
         root,source,backup,db,state,mocks=self.fixture()
         state.update(schema="0018",shape="main18")
         mocks["advance"].return_value={"schema":"0018"}
-        mocks["verify_public"].side_effect=RuntimeError("synthetic public verification failure")
-        with self.assertRaisesRegex(upgrade.MarketplaceFailed,"MARKETPLACE_NOT_CONFIRMED"):
+        mocks["verify_public"].side_effect=RuntimeError("sensitive provider body must stay private")
+        output=io.StringIO()
+        with redirect_stdout(output),self.assertRaisesRegex(upgrade.MarketplaceFailed,"MARKETPLACE_NOT_CONFIRMED"):
             upgrade.finish(root,source)
+        diagnostic=next(line for line in output.getvalue().splitlines() if line.startswith("MARKETPLACE_STAGE_FAILED: "))
+        self.assertEqual(json.loads(diagnostic.split(": ",1)[1]),{"stage":"public_assets","kind":"unexpected_error"})
+        self.assertNotIn("sensitive provider",output.getvalue())
         mocks["restore_old_services"].assert_not_called()
         self.assertEqual((root/"compose.release.yaml").read_text(),"new managed main compose\n")
         self.assertEqual(state["schema"],"0018")
@@ -155,5 +160,80 @@ class MarketplaceUpgradeTests(unittest.TestCase):
         self.assertEqual((root/"compose.release.yaml").read_text(),"new managed main compose\n")
         self.assertIn("a"*12,(root/".env.release").read_text())
         self.assertEqual(json.loads((root/".marketplace-deployment.json").read_text())["schema"],"0018")
+
+
+    def test_safe_failure_reports_http_status_without_url_or_response_body(self):
+        error=HTTPError("https://example.invalid/?token=private",503,"private provider message",{},None)
+        details=upgrade.failure_details(error)
+        self.assertEqual(details,{"kind":"http_error","http_status":503})
+        self.assertNotIn("private",json.dumps(details))
+
+
+    def test_https_startup_retries_only_temporary_get_failures_before_readiness(self):
+        instant=[0.0];requested=[];delays=[]
+        temporary_response=io.BytesIO(b"private response body")
+        outcomes=[HTTPError("https://example.invalid",503,"private",{},temporary_response),
+                  URLError(ConnectionRefusedError("private")),
+                  nullcontext(Mock(status=200,read=Mock(return_value=b'{"status":"ready"}')))]
+        def open_url(url,**options):
+            requested.append((url,options))
+            result=outcomes.pop(0)
+            if isinstance(result,BaseException):raise result
+            return result
+        def pause(seconds):delays.append(seconds);instant[0]+=seconds
+        with redirect_stdout(io.StringIO()):
+            upgrade.wait_public_ready(open_url=open_url,clock=lambda:instant[0],pause=pause)
+        self.assertEqual(len(requested),3)
+        self.assertTrue(all(url=="https://loyalty.addwise.kz/health/ready" for url,_ in requested))
+        self.assertTrue(all(set(options)=={"timeout"} and 0<options["timeout"]<=5 for _,options in requested))
+        self.assertEqual(delays,[1,1])
+        self.assertTrue(temporary_response.closed)
+
+    def test_https_startup_never_retries_permanent_http_or_certificate_failures(self):
+        for error in (HTTPError("https://example.invalid",401,"private",{},None),
+                      HTTPError("https://example.invalid",429,"private",{},None),
+                      HTTPError("https://example.invalid",500,"private",{},None),
+                      URLError(ssl.SSLCertVerificationError("private certificate failure")),
+                      URLError("unclassified private network failure")):
+            with self.subTest(kind=type(error).__name__,status=getattr(error,"code",None)):
+                open_url=Mock(side_effect=error);pause=Mock()
+                with self.assertRaises(type(error)) as failure:
+                    upgrade.wait_public_ready(open_url=open_url,pause=pause)
+                self.assertIs(failure.exception,error)
+                self.assertEqual(open_url.call_count,1);pause.assert_not_called()
+                if isinstance(error,HTTPError):
+                    self.assertFalse(error.fp.closed)
+                    error.close()
+
+    def test_https_startup_refuses_unexpected_success_payload_without_retry(self):
+        open_url=Mock(return_value=nullcontext(Mock(status=200,read=Mock(return_value=b'{"status":"starting"}'))))
+        pause=Mock()
+        with self.assertRaises(upgrade.MarketplaceFailed):
+            upgrade.wait_public_ready(open_url=open_url,pause=pause)
+        self.assertEqual(open_url.call_count,1);pause.assert_not_called()
+
+    def test_https_startup_timeout_is_bounded_and_reports_no_provider_error_text(self):
+        instant=[0.0];delays=[]
+        open_url=Mock(side_effect=HTTPError("https://example.invalid/?private",502,"private body",{},None))
+        def pause(seconds):delays.append(seconds);instant[0]+=seconds
+        output=io.StringIO()
+        with redirect_stdout(output),self.assertRaises(upgrade.PublicStartupPending) as failure:
+            upgrade.wait_public_ready(timeout=3,open_url=open_url,clock=lambda:instant[0],pause=pause)
+        self.assertEqual(sum(delays),3)
+        self.assertEqual(open_url.call_count,3)
+        self.assertNotIn("private",str(failure.exception)+output.getvalue())
+
+    def test_exact_asset_mismatch_is_checked_once_and_keeps_forward_recovery(self):
+        root,source,backup,db,state,mocks=self.fixture()
+        state.update(schema="0018",shape="main18")
+        mocks["advance"].return_value={"schema":"0018"}
+        from update_cabinet import UpdateFailed
+        mocks["verify_public"].side_effect=UpdateFailed("public assets do not match the image source")
+        with redirect_stdout(io.StringIO()),self.assertRaisesRegex(upgrade.MarketplaceFailed,"MARKETPLACE_NOT_CONFIRMED"):
+            upgrade.finish(root,source)
+        mocks["wait_public_ready"].assert_called_once_with()
+        mocks["verify_public"].assert_called_once_with(source)
+        mocks["restore_old_services"].assert_not_called()
+        self.assertIn("a"*12,(root/".env.release").read_text())
 
 if __name__=="__main__":unittest.main()
