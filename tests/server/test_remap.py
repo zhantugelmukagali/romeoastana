@@ -68,6 +68,46 @@ class RemapTests(unittest.TestCase):
                 self.client(lambda req:httpx.Response(status,text="synthetic-token")).entity("customerorder",self.order)
             self.assertNotIn("synthetic-token",str(error.exception))
 
+    def test_denials_keep_only_bounded_numeric_codes_without_inventing_a_permission_cause(self):
+        for status,code in ((401,1056),(403,1016),(403,1070),(403,47000)):
+            with self.subTest(status=status,code=code):
+                body={"errors":[{"code":code,"error":"synthetic-token","moreInfo":"https://private.test/secret"},
+                                {"code":code},{"code":True},{"code":str(code)},{"code":-1},{"code":1000000}]}
+                with self.assertRaises(AccessDenied) as caught:
+                    self.client(lambda req:httpx.Response(status,json=body)).entity("customerorder",self.order)
+                self.assertEqual(caught.exception.status_code,status)
+                self.assertEqual(caught.exception.provider_error_codes,(code,))
+                self.assertNotIn("synthetic-token",str(caught.exception.__dict__))
+                self.assertNotIn("private.test",str(caught.exception.__dict__))
+                self.assertNotIn(str(code),str(caught.exception))
+        values=[{"code":code} for code in range(1020,1009,-1)]
+        with self.assertRaises(AccessDenied) as caught:
+            self.client(lambda req:httpx.Response(403,json={"errors":values})).entity("customerorder",self.order)
+        self.assertEqual(caught.exception.provider_error_codes,tuple(range(1010,1018)))
+
+    def test_denial_diagnostics_fail_closed_for_malformed_oversized_or_non_json_bodies(self):
+        bodies=[("application/json",'{"errors":[{"code":1070}],"padding":"'+("x"*65536)+'"}'),
+                ("application/json",'{"errors":[{"code":1070,"code":1016}]}'),
+                ("application/json",'{"errors":[{"code":NaN}]}'),
+                ("application/json",'{"errors":'),
+                ("application/json",json.dumps({"errors":[{"code":1070}]*65})),
+                ("text/html",'<script>synthetic-token</script>')]
+        for content_type,body in bodies:
+            with self.subTest(content_type=content_type,length=len(body)),self.assertRaises(AccessDenied) as caught:
+                self.client(lambda req:httpx.Response(403,text=body,headers={"Content-Type":content_type})).entity("customerorder",self.order)
+            self.assertEqual(caught.exception.provider_error_codes,())
+            self.assertEqual(str(caught.exception),"MoySklad access denied")
+
+    def test_interrupted_denial_body_keeps_access_denied_instead_of_becoming_retryable(self):
+        class Interrupted(httpx.SyncByteStream):
+            def __iter__(self):
+                yield b'{"errors":['
+                raise httpx.ReadError("synthetic-token")
+        with self.assertRaises(AccessDenied) as caught:
+            self.client(lambda req:httpx.Response(403,stream=Interrupted(),headers={"Content-Type":"application/json"})).entity("customerorder",self.order)
+        self.assertEqual(caught.exception.provider_error_codes,())
+        self.assertNotIn("synthetic-token",str(caught.exception))
+
     def test_timeout_is_retryable_without_exposing_request(self):
         def timeout(req):
             raise httpx.ReadTimeout("synthetic-token",request=req)

@@ -14,7 +14,7 @@ import test_return_api as fixture
 class WidgetSetupContractTests(unittest.TestCase):
     def setUp(self):
         self.fx=fixture.ReturnAPITests();self.fx.setUp();self.addCleanup(self.fx.doCleanups)
-        self.rows=[];self.calls=[];self.posts=0;self.denied=None;self.lose=False
+        self.rows=[];self.calls=[];self.posts=0;self.denied=None;self.lose=False;self.denial_codes=[]
         self.block=False;self.entered=Event();self.release=Event();self.echo_query=False
         self.marker=str(uuid4());path="/entity/customerorder/metadata/attributes"
         self.row=dict(id=self.marker,name="БонусПро: операция списания",type="string",required=False,
@@ -22,7 +22,9 @@ class WidgetSetupContractTests(unittest.TestCase):
         outer=self
         def transport(request):
             self.calls.append(request)
-            if self.denied:return httpx.Response(self.denied,json={"errors":[{"error":"private provider detail"}]})
+            if self.denied:return httpx.Response(self.denied,json={"errors":[
+                {"error":"private provider detail","code":code,"moreInfo":"https://private.test/token"}
+                for code in self.denial_codes] or [{"error":"private provider detail"}]})
             if request.method=="GET":
                 if self.block:
                     self.entered.set()
@@ -62,6 +64,21 @@ class WidgetSetupContractTests(unittest.TestCase):
             self.assertEqual(response.json()["error"],code)
             self.assertNotIn("private",response.text)
         self.assertIsNone(self.adapter.binding(self.fx.tenant))
+    def test_same_http_denial_preserves_distinct_api_codes_without_echoing_messages_or_changing_money(self):
+        before=self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)
+        for status,code in ((401,1056),(403,1016),(403,1070),(403,47000)):
+            self.denied=status;self.denial_codes=[code,code,True,"synthetic-token",-1,1000000]
+            response=self.setup_widget()
+            self.assertEqual(response.status_code,403,response.text)
+            self.assertEqual(response.json(),{
+                "error":"moysklad_token_rejected" if status==401 else "moysklad_permissions_required",
+                "provider_error_codes":[code]})
+            self.assertNotIn("private",response.text)
+            self.assertNotIn("synthetic-token",response.text)
+        self.assertIsNone(self.adapter.binding(self.fx.tenant))
+        self.assertEqual(self.posts,0)
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),before)
+
     def test_deleted_previously_bound_field_is_not_silently_recreated(self):
         self.assertEqual(self.setup_widget().status_code,200)
         self.rows=[]

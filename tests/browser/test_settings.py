@@ -16,7 +16,7 @@ class SettingsBrowserTests(unittest.TestCase):
         self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1280,"height":1200})
         self.page=self.context.new_page()
-        self.unverified=[];self.setup_error=None;self.widget_configured=False;self.automation_config=None;self.activations=[]
+        self.unverified=[];self.setup_error=None;self.setup_codes=None;self.widget_configured=False;self.automation_config=None;self.activations=[]
         self.current=None;self.saved=[];self.drop_first=False;self.conflict=False
         self.policy={"version":0,"enabled":False,"external_policy":"skip","allow_bonus_stack":False}
         self.policy_saved=[];self.policy_requests={};self.policy_conflict=False;self.policy_drop_first=False
@@ -32,7 +32,8 @@ class SettingsBrowserTests(unittest.TestCase):
         path=url.split("https://widget.test",1)[1]
         if path=="/api/session":return route.fulfill(json={"token":"synthetic-session"})
         if path=="/api/admin/widget/setup":
-            if self.setup_error:return route.fulfill(status=self.setup_error[0],json={"error":self.setup_error[1]})
+            if self.setup_error:return route.fulfill(status=self.setup_error[0],json={
+                "error":self.setup_error[1],"provider_error_codes":self.setup_codes})
             self.widget_configured=True
             return route.fulfill(json={"configured":True})
         if path=="/api/admin/automation":
@@ -187,6 +188,23 @@ class SettingsBrowserTests(unittest.TestCase):
             self.assertTrue(button.is_enabled())
         self.setup_error=None;button.click()
         self.frame.get_by_text("Виджет подготовлен. Это не включает рабочие списания.",exact=True).wait_for()
+
+    def test_widget_access_denial_shows_only_numeric_diagnostics_without_claiming_missing_descriptor(self):
+        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
+        button=self.frame.get_by_role("button",name="Подготовить виджет",exact=True)
+        self.setup_error=(403,"moysklad_permissions_required")
+        for code in (1016,1070):
+            self.setup_codes=[code,code,True,"1056","synthetic-token",-1,1000000,1070.5]
+            button.click()
+            self.frame.locator("#setup-status").get_by_text("Коды API МойСклад: "+str(code)+".",exact=False).wait_for()
+            message=self.frame.locator("#setup-status").inner_text()
+            self.assertIn("BP-WIDGET-ACCESS",message)
+            self.assertNotIn("useOwnAttributeMetadata",message)
+            self.assertNotIn("не выдан доступ",message)
+            self.assertNotIn("Обновите дескриптор",message)
+            self.assertNotIn("synthetic-token",message)
+            self.assertNotIn("1056",message)
+            self.assertTrue(button.is_enabled())
 
     def test_widget_setup_expired_session_shows_reconnect_instead_of_hidden_error(self):
         self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()

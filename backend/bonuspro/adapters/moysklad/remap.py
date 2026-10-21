@@ -25,8 +25,11 @@ class RemapError(RuntimeError):
 
 
 class AccessDenied(RemapError):
-    def __init__(self,message="MoySklad access denied",*,status_code=None):
+    def __init__(self,message="MoySklad access denied",*,status_code=None,provider_error_codes=()):
         self.status_code=status_code
+        values=provider_error_codes if isinstance(provider_error_codes,(list,tuple)) else ()
+        self.provider_error_codes=tuple(sorted({code for code in values[:64]
+            if type(code) is int and 0<=code<=999999})[:8])
         super().__init__(message)
 
 
@@ -120,6 +123,27 @@ def _invalid_number(value):
     raise ValueError("invalid JSON constant")
 
 
+def _access_error_codes(response,deadline=None):
+    """Keep numeric diagnostics only; an unreadable denial remains a denial."""
+    if not response.headers.get("Content-Type","").lower().startswith("application/json"):
+        return ()
+    body=bytearray()
+    try:
+        for chunk in response.iter_bytes(chunk_size=4096):
+            if (deadline is not None and time.monotonic()>=deadline) or len(body)+len(chunk)>64*1024:
+                return ()
+            body.extend(chunk)
+        payload=json.loads(body,parse_float=Decimal,parse_constant=_invalid_number,
+                           object_pairs_hook=_unique_object)
+    except (httpx.HTTPError,ValueError,UnicodeError,RecursionError):
+        return ()
+    errors=payload.get("errors") if isinstance(payload,dict) else None
+    if not isinstance(errors,list) or len(errors)>64:
+        return ()
+    return tuple(sorted({item["code"] for item in errors if isinstance(item,dict)
+        and type(item.get("code")) is int and 0<=item["code"]<=999999})[:8])
+
+
 class RemapClient:
     def __init__(self, token, tenant_id, *, transport=None, budget_seconds=None, minimum_interval=0):
         if not isinstance(token,str) or not token.strip() or len(token)>8192:
@@ -152,7 +176,8 @@ class RemapClient:
                 with client.stream(method,BASE+path,params=params,headers=headers,json=body) as response:
                     status=response.status_code
                     if status in (401,403):
-                        raise AccessDenied("MoySklad access denied",status_code=status)
+                        raise AccessDenied("MoySklad access denied",status_code=status,
+                                           provider_error_codes=_access_error_codes(response,self.deadline))
                     if status==404:
                         raise EntityMissing("MoySklad entity is missing")
                     if status==429:
