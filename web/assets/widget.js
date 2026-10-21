@@ -292,9 +292,11 @@ async function apply(event){
       resumeRequired=true;showPending(result);status("Заказ изменился. "+preservedOperation()+" — проверьте операцию.",true);return;
     }
     status(personal?"Применяем скидку…":"Применяем бонусы…");
+    // Dispatch may precede Save even when the host acknowledgement arrives later.
+    dirty=true;controls();
     await hostRequest("UpdateRequest",{updateState:result.update_state},"UpdateResponse");
     if(generation!==epoch)return;
-    dirty=true;showPending(result);
+    showPending(result);
   }catch(error){
     if(generation===epoch){
       const rejected=!attempt && [400,401,403,404,409,422].includes(error.status);
@@ -348,9 +350,11 @@ async function resume(){
       status("Заказ изменился. "+preservedOperation()+" — проверьте операцию.",true);return;
     }
     status(attempt.apply_personal?"Продолжаем применение…":"Продолжаем списание…");
+    // Preserve a Save or Change received after dispatch and before its acknowledgement.
+    dirty=true;controls();
     await hostRequest("UpdateRequest",{updateState:result.update_state},"UpdateResponse");
     if(generation!==epoch)return;
-    dirty=true;resumeRequired=false;showPending(result);
+    resumeRequired=false;showPending(result);
   }catch(error){
     if(generation===epoch){resumeRequired=true;showPending(attempt);status(explain(error),true);}
   }finally{

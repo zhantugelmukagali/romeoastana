@@ -111,6 +111,58 @@ class WidgetBrowserTests(unittest.TestCase):
     def apply(self):
         self.frame.get_by_label("Списать бонусы",exact=True).fill("1000")
         self.frame.locator("#apply").click()
+
+    def save_between_dispatch_and_ack(self):
+        # The native Save is delivered after UpdateRequest, before its delayed ACK.
+        # Only the subsequent server readback is allowed to confirm the operation.
+        self.page.evaluate("""()=>{
+            window.savesBeforeAck=0;
+            const original=window.send;window.send=message=>{
+                if(message.name==='UpdateResponse'){
+                    window.savesBeforeAck++;
+                    original({name:'Save',messageId:980,extensionPoint:'document.customerorder.edit',
+                        objectId:'11111111-1111-4111-8111-111111111111'});
+                }
+                original(message);
+            };
+        }""")
+        def saved_verification(route):
+            self.assertEqual(self.page.evaluate("savesBeforeAck"),1)
+            self.saved=True;self.verifies+=1
+            return route.fulfill(json={"id":"attempt","order_id":ORDER,"points":self.prepared_points,
+                "state":"committed","verified":True,"recoverable":False,
+                "undo_available":True,"undo_source_hash":"d"*64,**self.personal_operation()})
+        self.context.route("**/api/widget/orders/"+ORDER+"/verify",saved_verification)
+
+    def test_save_after_apply_dispatch_before_ack_stays_verified_and_allows_undo(self):
+        self.open();self.save_between_dispatch_and_ack();self.apply()
+        self.frame.locator("#pending[data-state=done]").wait_for()
+        self.frame.locator("#undo-start:not([disabled])").wait_for()
+        self.assertEqual(self.frame.locator("#status").inner_text(),"")
+        self.assertEqual(self.frame.locator("#pending-note").inner_text(),"Заказ сохранён и проверен.")
+        self.assertEqual(self.page.evaluate("savesBeforeAck"),1)
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+        self.assertEqual(len(self.prepares),1);self.assertEqual(self.resumes,[]);self.assertEqual(self.verifies,1)
+        self.page.evaluate("openOrder('"+ORDER+"')")
+        self.frame.locator("#undo-start:not([disabled])").wait_for()
+        self.assertEqual(self.frame.locator("#status").inner_text(),"")
+        self.assertEqual(len(self.prepares),1);self.assertEqual(self.page.evaluate("updates.length"),1)
+        self.assertEqual(self.verifies,2)
+
+    def test_save_after_recovered_dispatch_before_ack_does_not_require_another_save(self):
+        self.recover_lost_prepare();self.save_for_resume();verifies=self.verifies
+        self.save_between_dispatch_and_ack()
+        self.frame.get_by_role("button",name="Продолжить списание",exact=True).click()
+        self.frame.locator("#pending[data-state=done]").wait_for()
+        self.frame.locator("#undo-start:not([disabled])").wait_for()
+        self.assertEqual(self.frame.locator("#status").inner_text(),"")
+        self.assertEqual(self.frame.locator("#pending-note").inner_text(),"Заказ сохранён и проверен.")
+        self.assertEqual(self.page.evaluate("savesBeforeAck"),1)
+        self.assertEqual(self.page.evaluate("updates.length"),1)
+        self.assertEqual(len(self.prepares),1)
+        self.assertEqual(self.resumes,[{"attempt_id":"attempt","source_hash":"b"*64}])
+        self.assertEqual(self.verifies,verifies+1)
+
     def test_host_ack_is_not_a_success_until_saved_verification(self):
         self.open();self.apply()
         self.frame.get_by_text(re.compile(r"1\s?000 бонусов в резерве")).wait_for()
