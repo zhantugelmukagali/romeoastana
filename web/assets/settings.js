@@ -115,15 +115,18 @@ $("setup-widget").onclick=async()=>{
       }
       const messages={
         moysklad_token_rejected:"МойСклад отклонил доступ решения. Обновите установленное решение и подключитесь снова. Код BP-WIDGET-TOKEN.",
-        moysklad_permissions_required:"Решению не выдан доступ к своим дополнительным полям. Обновите дескриптор с useOwnAttributeMetadata и установленное решение. Код BP-WIDGET-ACCESS.",
+        moysklad_permissions_required:"МойСклад запретил доступ к служебному полю. Проверьте права установленного решения и ограничения аккаунта. Код BP-WIDGET-ACCESS.",
         widget_setup_in_progress:"Подключение уже выполняется в другом окне. Подождите и повторите проверку.",
         widget_metadata_temporarily_unavailable:"МойСклад временно не отвечает или ограничил запросы. Подождите и повторите; уже созданное поле будет найдено.",
         widget_metadata_invalid:"МойСклад вернул неподходящее или неоднозначное служебное поле. Требуется проверка настройки. Код BP-WIDGET-METADATA.",
         widget_binding_changed:"Служебное поле отличается от ранее подключённого. Не удаляйте поля и не повторяйте списания; нужна проверка администратора. Код BP-WIDGET-BINDING."
       };
-      throw new Error(messages[data.error]||(response.status===403?
-        "Нужны права администратора и доступ решения к своим дополнительным полям. Код BP-WIDGET-ACCESS.":
-        "Не удалось подключить виджет. Код BP-WIDGET-HTTP-"+response.status+". Повторите проверку."));
+      const codes=Array.isArray(data.provider_error_codes)?[...new Set(data.provider_error_codes.slice(0,64)
+        .filter(code=>Number.isSafeInteger(code)&&code>=0&&code<=999999))].sort((a,b)=>a-b).slice(0,8):[];
+      const diagnostic=codes.length?" Коды API МойСклад: "+codes.join(", ")+".":"";
+      throw new Error((messages[data.error]||(response.status===403?
+        "Доступ к настройке отклонён. Проверьте права администратора и установленного решения. Код BP-WIDGET-ACCESS.":
+        "Не удалось подключить виджет. Код BP-WIDGET-HTTP-"+response.status+". Повторите проверку."))+diagnostic);
     }
     $("setup-status").textContent="Виджет подготовлен. Это не включает рабочие списания.";
     await updateReadiness();

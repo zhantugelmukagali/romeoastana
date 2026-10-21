@@ -625,7 +625,10 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
             return JSONResponse({"error":"widget_setup_in_progress"},status_code=409)
         except AccessDenied as error:
             code="moysklad_token_rejected" if error.status_code==401 else "moysklad_permissions_required"
-            return JSONResponse({"error":code},status_code=403)
+            payload={"error":code}
+            if error.provider_error_codes:
+                payload["provider_error_codes"]=list(error.provider_error_codes)
+            return JSONResponse(payload,status_code=403)
         except RetryLater as error:
             return JSONResponse({"error":"widget_metadata_temporarily_unavailable"},status_code=503,
                                 headers={"Retry-After":str(error.delay_seconds)})
