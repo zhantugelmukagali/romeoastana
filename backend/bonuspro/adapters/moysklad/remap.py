@@ -7,7 +7,9 @@ float. Transient failures go back to the durable scheduler, not an HTTP retry lo
 from dataclasses import dataclass
 from decimal import Decimal, DecimalException
 import json
+import re
 import time
+from threading import Lock
 from uuid import UUID
 from urllib.parse import urlsplit, parse_qsl
 
@@ -32,6 +34,27 @@ def _provider_codes(values):
 
 def _provider_operation(value):
     return value if value in ("metadata_read","metadata_create") else None
+
+
+_REGION_HEADER="X-Lognex-Accept-Region"
+_REQUEST_HEADERS=("Accept","Accept-Encoding","Content-Type",_REGION_HEADER,"Authorization",
+                  "Host","Connection","User-Agent","Content-Length","Transfer-Encoding")
+_HEADER_PATTERNS={name:re.compile(r"(?<![a-z0-9-])"+re.escape(name)+r"(?![a-z0-9-])",re.I)
+                  for name in _REQUEST_HEADERS}
+
+def _region_header_only(item):
+    if not isinstance(item,dict) or type(item.get("code")) is not int or item["code"]!=3030:
+        return False
+    message=item.get("error")
+    if not isinstance(message,str) or not 1<=len(message)<=4096:
+        return False
+    return {name for name,pattern in _HEADER_PATTERNS.items() if pattern.search(message)}=={_REGION_HEADER}
+
+
+class _RegionHeaderRejected(Exception):
+    def __init__(self,rejection):
+        self.rejection=rejection
+        super().__init__("regional header rejected")
 
 
 class AccessDenied(RemapError):
@@ -147,27 +170,34 @@ def _invalid_number(value):
     raise ValueError("invalid JSON constant")
 
 
-def _provider_error_details(response,deadline=None):
-    """Return bounded diagnostics separately from proof every error is 1065."""
+def _provider_error_evidence(response,deadline=None):
+    """Parse once: bounded codes, exclusive concurrency, exclusive region rejection."""
     if not response.headers.get("Content-Type","").lower().startswith("application/json"):
-        return (),False
+        return (),False,False
     body=bytearray()
     try:
         for chunk in response.iter_bytes(chunk_size=4096):
             if (deadline is not None and time.monotonic()>=deadline) or len(body)+len(chunk)>64*1024:
-                return (),False
+                return (),False,False
             body.extend(chunk)
         payload=json.loads(body,parse_float=Decimal,parse_constant=_invalid_number,
                            object_pairs_hook=_unique_object)
     except (httpx.HTTPError,ValueError,UnicodeError,RecursionError,DecimalException):
-        return (),False
+        return (),False,False
     errors=payload.get("errors") if isinstance(payload,dict) else None
     if not isinstance(errors,list) or not 1<=len(errors)<=64:
-        return (),False
+        return (),False,False
     codes=tuple(sorted({item["code"] for item in errors if isinstance(item,dict)
         and type(item.get("code")) is int and 0<=item["code"]<=999999})[:8])
     concurrent_only=all(isinstance(item,dict) and type(item.get("code")) is int
                         and item["code"]==1065 for item in errors)
+    region_only=all(_region_header_only(item) for item in errors)
+    return codes,concurrent_only,region_only
+
+
+def _provider_error_details(response,deadline=None):
+    """Compatibility helper: keep the original two-value proof contract."""
+    codes,concurrent_only,_=_provider_error_evidence(response,deadline)
     return codes,concurrent_only
 
 
@@ -186,8 +216,25 @@ class RemapClient:
         self.deadline=time.monotonic()+budget_seconds if budget_seconds else None
         self.minimum_interval=minimum_interval
         self.last_request=0
+        self._omit_region=False
+        self._region_fallback_attempted=False
+        self._region_guard=Lock()
 
     def _request(self,method,path,params=None,body=None):
+        try:
+            return self._request_once(method,path,params,body,omit_region=self._omit_region)
+        except _RegionHeaderRejected as error:
+            # One read-only fallback per client; never retry a provider write.
+            with self._region_guard:
+                if self._region_fallback_attempted:
+                    raise error.rejection from None
+                self._region_fallback_attempted=True
+            payload=self._request_once(method,path,params,body,omit_region=True)
+            # A failed, incomplete or invalid response never selects a mode.
+            self._omit_region=True
+            return payload
+
+    def _request_once(self,method,path,params=None,body=None,*,omit_region=False):
         # Private method: callers below construct this path exclusively from enums/UUIDs.
         if not path.startswith("/entity/") or any(x in path for x in ("..","?","#","%","\\","@")):
             raise InvalidDocument("invalid resource path")
@@ -202,7 +249,8 @@ class RemapClient:
             time.sleep(min(wait,1))
         self.last_request=time.monotonic()
         headers={"Authorization":"Bearer "+self._token,"Accept":"application/json;charset=utf-8",
-                 "Accept-Encoding":"gzip","X-Lognex-Accept-Region":"kz"}
+                 "Accept-Encoding":"gzip"}
+        if not omit_region:headers[_REGION_HEADER]="kz"
         try:
             with httpx.Client(timeout=httpx.Timeout(10,connect=3),follow_redirects=False,
                               trust_env=False,transport=self.transport) as client:
@@ -212,8 +260,15 @@ class RemapClient:
                         raise AccessDenied("MoySklad access denied",status_code=status,
                                            provider_error_codes=_access_error_codes(response,self.deadline),
                                            provider_operation=operation)
+                    evidence=None
+                    if status==412 and method=="GET" and not omit_region and not self._region_fallback_attempted:
+                        evidence=_provider_error_evidence(response,self.deadline)
+                        if evidence[2]:
+                            rejection=(MetadataRejected(status,evidence[0],operation) if operation else
+                                       RetryLater(30,"conflict",provider_status=status))
+                            raise _RegionHeaderRejected(rejection)
                     if operation and status in (400,409,412):
-                        codes,concurrent_only=_provider_error_details(response,self.deadline)
+                        codes,concurrent_only,_=evidence if evidence is not None else _provider_error_evidence(response,self.deadline)
                         # Only a complete body whose every error is integer 1065
                         # proves a concurrent modification; filtered diagnostics do not.
                         if concurrent_only:

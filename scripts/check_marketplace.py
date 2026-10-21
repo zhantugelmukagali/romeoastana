@@ -90,5 +90,5 @@ assert not svg.xpath("//*[local-name()='script' or local-name()='foreignObject' 
 report = {"descriptor": "valid against official XSD", "schema_sha256": hashes,
           "manual": "root index.html, CRC and source equality verified",
           "icon": "512x512 SVG under 1 MB",
-          "scope": "registration draft only; not live installation acceptance"}
+          "scope": "marketplace package validation only; not live installation acceptance"}
 print(json.dumps(report, ensure_ascii=False, indent=2))

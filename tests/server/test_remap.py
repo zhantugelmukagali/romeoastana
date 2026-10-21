@@ -292,3 +292,231 @@ class CurrencyContractTests(unittest.TestCase):
         for patch in ({"id":str(uuid4())},{"meta":{"type":"counterparty"}}):
             with self.assertRaises(InvalidDocument):
                 self.client({**self.currency,**patch}).entity("currency",self.identity)
+
+
+class RegionalHeaderContractTests(unittest.TestCase):
+    def setUp(self):
+        self.tenant,self.order,self.marker=(str(uuid4()) for _ in range(3))
+        self.calls=[]
+        self.path="/entity/customerorder/metadata/attributes"
+        self.document={"id":self.order,"accountId":self.tenant,"meta":{"type":"customerorder"},
+                       "applicable":True,"sum":1000000,"payedSum":1000000,"shippedSum":1000000}
+        self.row={"id":self.marker,"accountId":self.tenant,"name":"БонусПро: операция списания",
+                  "type":"string","required":False,"meta":{"type":"attributemetadata",
+                  "href":BASE+self.path+"/"+self.marker}}
+
+    def rejection(self,*,status=412,errors=None):
+        return httpx.Response(status,json={"errors":errors if errors is not None else [
+            {"code":3030,"error":"Ошибка валидации заголовка 'X-Lognex-Accept-Region': private-token"}]})
+
+    def client(self,handler,**kwargs):
+        def send(request):
+            self.calls.append(request);return handler(request)
+        return RemapClient("synthetic-token",self.tenant,transport=httpx.MockTransport(send),**kwargs)
+
+    def test_worker_order_graph_reuses_the_accepted_mode_for_all_later_reads(self):
+        def respond(request):
+            if request.headers.get("X-Lognex-Accept-Region")=="kz":return self.rejection()
+            if request.url.path.endswith("/positions"):
+                return httpx.Response(200,json={"meta":{"size":0},"rows":[]})
+            return httpx.Response(200,json=self.document)
+        proof=self.client(respond).order_evidence(self.order)
+        self.assertEqual(proof.order,self.document)
+        self.assertEqual([r.method for r in self.calls],["GET"]*4)
+        self.assertEqual([r.headers.get("X-Lognex-Accept-Region") for r in self.calls],["kz",None,None,None])
+        original=dict(self.calls[0].headers);original.pop("x-lognex-accept-region")
+        self.assertEqual(dict(self.calls[1].headers),original)
+        self.assertEqual(self.calls[0].url,self.calls[1].url)
+        self.assertEqual(self.calls[0].content,self.calls[1].content)
+
+    def test_marker_creation_uses_accepted_get_mode_and_never_duplicates_post(self):
+        rows=[]
+        def respond(request):
+            if request.headers.get("X-Lognex-Accept-Region")=="kz":return self.rejection()
+            if request.method=="GET":
+                return httpx.Response(200,json={"meta":{},"rows":list(rows)})
+            self.assertEqual(json.loads(request.content),[
+                {"name":self.row["name"],"type":"string","required":False}])
+            rows.append(self.row);return httpx.Response(200,json=[self.row])
+        client=self.client(respond)
+        self.assertEqual(client.marker_attribute(create=True),self.marker)
+        self.assertEqual(client.marker_attribute(create=True),self.marker)
+        self.assertEqual([r.method for r in self.calls],["GET","GET","POST","GET"])
+        self.assertEqual([r.headers.get("X-Lognex-Accept-Region") for r in self.calls],["kz",None,None,None])
+        self.assertEqual(len(rows),1)
+
+    def test_region_header_proof_is_not_tied_to_localized_error_template(self):
+        for message in ("X-Lognex-Accept-Region",
+                        "Invalid header [x-lognex-accept-region].",
+                        "Ошибка заголовка «X-Lognex-Accept-Region»: требуется регион аккаунта"):
+            with self.subTest(message=message):
+                self.calls=[]
+                def respond(request):
+                    if len(self.calls)==1:return self.rejection(errors=[{"code":3030,"error":message}])
+                    return httpx.Response(200,json=self.document)
+                self.assertEqual(self.client(respond).entity("customerorder",self.order),self.document)
+                self.assertEqual(len(self.calls),2)
+
+    def test_ambiguous_other_or_mixed_error_evidence_never_triggers_fallback(self):
+        region={"code":3030,"error":"X-Lognex-Accept-Region"}
+        bad_errors=(
+            [],[{}],[{"code":3030}],[{"code":"3030","error":"X-Lognex-Accept-Region"}],
+            [{"code":3030.0,"error":"X-Lognex-Accept-Region"}],
+            [{"code":2000,"error":"X-Lognex-Accept-Region"}],
+            [{"code":3030,"error":"Accept"}],
+            [{"code":3030,"error":"X-Lognex-Accept-Region Accept"}],
+            [{"code":3030,"error":"X-Lognex-Accept-Region Authorization"}],
+            [{"code":3030,"error":"X-Lognex-Accept-Region User-Agent"}],
+            [{"code":3030,"error":"X-Lognex-Accept-Region-X"}],
+            [{"code":3030,"error":"X-X-Lognex-Accept-Region"}],
+            [{"code":3030,"error":"X-Lognex-Accept-Region"+("x"*4096)}],
+            [region,{}],[region,{"code":2000}],[region,{"code":1065}],
+            [region,{"code":3030,"error":"Content-Type"}],[region,None],[region,"private-token"],
+            [region]*65,
+        )
+        for errors in bad_errors:
+            with self.subTest(errors=errors):
+                self.calls=[]
+                with self.assertRaises(MetadataRejected) as caught:
+                    self.client(lambda request:self.rejection(errors=errors)).marker_attribute()
+                self.assertEqual(len(self.calls),1)
+                self.assertEqual(self.calls[0].headers["X-Lognex-Accept-Region"],"kz")
+                self.assertNotIn("private-token",str(caught.exception))
+                self.assertNotIn("X-Lognex",str(caught.exception.__dict__))
+
+    def test_only_http412_can_trigger_the_read_fallback(self):
+        for status,expected in ((400,MetadataRejected),(409,MetadataRejected),(401,AccessDenied),
+                                (403,AccessDenied),(429,RetryLater),(503,RetryLater)):
+            with self.subTest(status=status):
+                self.calls=[]
+                with self.assertRaises(expected):
+                    self.client(lambda request:self.rejection(status=status)).marker_attribute()
+                self.assertEqual(len(self.calls),1)
+
+    def test_region_rejected_post_is_never_retried_or_used_to_select_a_mode(self):
+        def respond(request):
+            if request.method=="GET":return httpx.Response(200,json={"meta":{},"rows":[]})
+            return self.rejection()
+        client=self.client(respond)
+        with self.assertRaises(MetadataRejected) as caught:client.marker_attribute(create=True)
+        self.assertEqual(caught.exception.provider_operation,"metadata_create")
+        self.assertEqual([r.method for r in self.calls],["GET","POST"])
+        self.assertTrue(all(r.headers.get("X-Lognex-Accept-Region")=="kz" for r in self.calls))
+        self.assertFalse(client._omit_region)
+
+    def test_failed_fallback_preserves_backoff_and_is_not_repeated_on_later_calls(self):
+        def respond(request):
+            if len(self.calls)==2:
+                return httpx.Response(429,headers={"Retry-After":"7"})
+            return self.rejection()
+        client=self.client(respond)
+        with self.assertRaises(RetryLater) as caught:client.marker_attribute()
+        self.assertEqual(caught.exception.delay_seconds,7)
+        self.assertEqual(caught.exception.provider_status,429)
+        with self.assertRaises(MetadataRejected):client.marker_attribute()
+        self.assertEqual([r.headers.get("X-Lognex-Accept-Region") for r in self.calls],["kz",None,"kz"])
+
+    def test_invalid_or_rejected_fallback_never_caches_omission_or_tries_again(self):
+        for second in ("broken","array","html","rejected","unauthorized","server"):
+            with self.subTest(second=second):
+                self.calls=[]
+                def respond(request):
+                    if len(self.calls)!=2:return self.rejection()
+                    if second=="broken":return httpx.Response(200,text="{",headers={"Content-Type":"application/json"})
+                    if second=="array":return httpx.Response(200,json=[])
+                    if second=="html":return httpx.Response(200,text="<html>",headers={"Content-Type":"text/html"})
+                    if second=="rejected":return self.rejection()
+                    if second=="unauthorized":return httpx.Response(401)
+                    return httpx.Response(503)
+                client=self.client(respond)
+                expected=AccessDenied if second=="unauthorized" else RetryLater if second=="server" else MetadataRejected if second=="rejected" else InvalidDocument
+                with self.assertRaises(expected):client.marker_attribute()
+                with self.assertRaises(MetadataRejected):client.marker_attribute()
+                self.assertEqual([r.headers.get("X-Lognex-Accept-Region") for r in self.calls],["kz",None,"kz"])
+
+    def test_unreadable_region_rejection_never_authorizes_another_get(self):
+        bodies=(
+            ("application/json",'{"errors":[{"code":3030,"error":"X-Lognex-Accept-Region"}],"padding":"'+("x"*65536)+'"}'),
+            ("application/json",'{"errors":[{"code":3030,"code":3030,"error":"X-Lognex-Accept-Region"}]}'),
+            ("application/json",'{"errors":[{"code":3030,"error":"X-Lognex-Accept-Region"}],"detail":1e9999999999999999999}'),
+            ("application/json",'{"errors":'),
+            ("text/html","X-Lognex-Accept-Region private-token"),
+        )
+        for content_type,body in bodies:
+            with self.subTest(content_type=content_type,length=len(body)):
+                self.calls=[]
+                with self.assertRaises(MetadataRejected):
+                    self.client(lambda request:httpx.Response(412,text=body,headers={"Content-Type":content_type})).marker_attribute()
+                self.assertEqual(len(self.calls),1)
+
+    def test_rejection_is_parsed_once_and_original_stream_closes_before_fallback(self):
+        class Once(httpx.SyncByteStream):
+            def __init__(self):self.reads=0;self.closed=False
+            def __iter__(self):
+                self.reads+=1
+                if self.reads!=1:raise AssertionError("body parsed twice")
+                yield b'{"errors":[{"code":3030,"error":"X-Lognex-Accept-Region"}]}'
+            def close(self):self.closed=True
+        stream=Once()
+        def respond(request):
+            if len(self.calls)==1:
+                return httpx.Response(412,stream=stream,headers={"Content-Type":"application/json"})
+            self.assertTrue(stream.closed)
+            return httpx.Response(200,json=self.document)
+        self.assertEqual(self.client(respond).entity("customerorder",self.order),self.document)
+        self.assertEqual(stream.reads,1)
+        self.assertTrue(stream.closed)
+
+    def test_compatibility_error_helper_keeps_two_values_and_strict_concurrency_proof(self):
+        from bonuspro.adapters.moysklad.remap import _provider_error_details,_provider_error_evidence
+        self.assertEqual(_provider_error_details(httpx.Response(412,json={"errors":[{"code":1065}]})),((1065,),True))
+        self.assertEqual(_provider_error_details(self.rejection()),((3030,),False))
+        self.assertEqual(_provider_error_evidence(self.rejection()),((3030,),False,True))
+        self.assertEqual(_provider_error_evidence(self.rejection(errors=[
+            {"code":3030,"error":"X-Lognex-Accept-Region"},{}])),((3030,),False,False))
+
+    def test_accepted_region_mode_is_isolated_between_clients_and_accounts(self):
+        other_tenant,other_order=str(uuid4()),str(uuid4())
+        calls=[]
+        def respond(request):
+            calls.append(request)
+            if request.headers["Authorization"]=="Bearer first-token":
+                if request.headers.get("X-Lognex-Accept-Region")=="kz":return self.rejection()
+                return httpx.Response(200,json=self.document)
+            return httpx.Response(200,json={**self.document,"id":other_order,"accountId":other_tenant})
+        transport=httpx.MockTransport(respond)
+        first=RemapClient("first-token",self.tenant,transport=transport)
+        second=RemapClient("second-token",other_tenant,transport=transport)
+        first.entity("customerorder",self.order)
+        second.entity("customerorder",other_order)
+        first.entity("customerorder",self.order)
+        fresh=RemapClient("first-token",self.tenant,transport=transport)
+        fresh.entity("customerorder",self.order)
+        self.assertEqual([r.headers.get("X-Lognex-Accept-Region") for r in calls],
+                         ["kz",None,"kz",None,"kz",None])
+
+    def test_region_fallback_preserves_pacing_and_the_original_deadline(self):
+        from unittest.mock import patch
+        from bonuspro.adapters.moysklad import remap
+        clock=[100.0];pauses=[]
+        def pause(seconds):pauses.append(seconds);clock[0]+=seconds
+        def respond(request):
+            return self.rejection() if len(self.calls)==1 else httpx.Response(200,json=self.document)
+        with patch.object(remap.time,"monotonic",side_effect=lambda:clock[0]),patch.object(remap.time,"sleep",side_effect=pause):
+            client=self.client(respond,budget_seconds=30,minimum_interval=0.5)
+            client.entity("customerorder",self.order);client.entity("customerorder",self.order)
+            self.assertEqual(client.deadline,130)
+        self.assertEqual(pauses,[0.5,0.5])
+        self.assertEqual([r.headers.get("X-Lognex-Accept-Region") for r in self.calls],["kz",None,None])
+
+    def test_remaining_budget_can_block_fallback_without_a_second_wire_request(self):
+        from unittest.mock import patch
+        from bonuspro.adapters.moysklad import remap
+        clock=[100.0]
+        def respond(request):clock[0]=102.0;return self.rejection()
+        with patch.object(remap.time,"monotonic",side_effect=lambda:clock[0]):
+            client=self.client(respond,budget_seconds=12)
+            with self.assertRaises(RetryLater) as caught:client.marker_attribute()
+            self.assertEqual(caught.exception.code,"provider_timeout")
+            self.assertEqual(client.deadline,112)
+        self.assertEqual(len(self.calls),1)
