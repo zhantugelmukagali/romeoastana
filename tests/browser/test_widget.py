@@ -143,7 +143,9 @@ class WidgetBrowserTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate("savesBeforeAck"),1)
         self.assertEqual(self.page.evaluate("updates.length"),1)
         self.assertEqual(len(self.prepares),1);self.assertEqual(self.resumes,[]);self.assertEqual(self.verifies,1)
-        self.page.evaluate("openOrder('"+ORDER+"')")
+        with self.page.expect_response(lambda response: response.url=="https://widget.test/api/widget/orders/"+ORDER+"/verify"
+                                       and response.request.method=="POST"):
+            self.page.evaluate("openOrder('"+ORDER+"')")
         self.frame.locator("#undo-start:not([disabled])").wait_for()
         self.assertEqual(self.frame.locator("#status").inner_text(),"")
         self.assertEqual(len(self.prepares),1);self.assertEqual(self.page.evaluate("updates.length"),1)
