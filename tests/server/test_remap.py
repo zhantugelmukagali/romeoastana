@@ -98,6 +98,15 @@ class RemapTests(unittest.TestCase):
             self.assertEqual(caught.exception.provider_error_codes,())
             self.assertEqual(str(caught.exception),"MoySklad access denied")
 
+    def test_decimal_overflow_in_denial_body_preserves_original_access_denial(self):
+        body='{"errors":[{"code":1070}],"detail":1e9999999999999999999}'
+        for status in (401,403):
+            with self.subTest(status=status),self.assertRaises(AccessDenied) as caught:
+                self.client(lambda req:httpx.Response(status,text=body,headers={"Content-Type":"application/json"})).entity("customerorder",self.order)
+            self.assertEqual(caught.exception.status_code,status)
+            self.assertEqual(caught.exception.provider_error_codes,())
+            self.assertEqual(str(caught.exception),"MoySklad access denied")
+
     def test_interrupted_denial_body_keeps_access_denied_instead_of_becoming_retryable(self):
         class Interrupted(httpx.SyncByteStream):
             def __iter__(self):

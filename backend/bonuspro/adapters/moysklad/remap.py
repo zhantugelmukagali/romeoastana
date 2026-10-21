@@ -5,7 +5,7 @@ followed. Decimal JSON parsing preserves provider monetary values without binary
 float. Transient failures go back to the durable scheduler, not an HTTP retry loop.
 """
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 import json
 import time
 from uuid import UUID
@@ -138,7 +138,7 @@ def _access_error_codes(response,deadline=None):
             body.extend(chunk)
         payload=json.loads(body,parse_float=Decimal,parse_constant=_invalid_number,
                            object_pairs_hook=_unique_object)
-    except (httpx.HTTPError,ValueError,UnicodeError,RecursionError):
+    except (httpx.HTTPError,ValueError,UnicodeError,RecursionError,DecimalException):
         return ()
     errors=payload.get("errors") if isinstance(payload,dict) else None
     if not isinstance(errors,list) or len(errors)>64:
