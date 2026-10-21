@@ -1,0 +1,99 @@
+{
+  "recorded_on": "2026-10-22",
+  "last_confirmed_deployment": {
+    "source": "Owner-provided Ubuntu terminal output on 2026-10-21; not a new remote inspection",
+    "commit": "fa139a7b6635e0952d425141ad4ed5e820a60e1b",
+    "image": "bonuspro:fa139a7b6635",
+    "schema": "0018",
+    "active_accounts": 1,
+    "application_health": "healthy",
+    "worker_pool_health": "healthy",
+    "processing": "fresh cycle confirmed",
+    "docker_autostart": true,
+    "restart_policy": "unless-stopped",
+    "protected_restore": {
+      "tables": 42,
+      "rows": 4258
+    },
+    "application_git_objects": {
+      "backend": "83a778dbc030b4c99eaaa615febf25201d99ef39",
+      "web": "b8aa3bda4fdda487823e6dc595af5a8288bcee67",
+      "migrations": "29a386d070cb69e8ffb8a84a9cc966507c28b0b4",
+      "Dockerfile": "8dde1a539d5f36c8900097b2809511919a8fc455",
+      "requirements-server.lock": "9c74c649802d23a94143509a4f1ced079775a82c",
+      "compose.release.yaml": "819c008f55690fd7021250ac9a6c07dc2fd870d6",
+      "compose.https.yaml": "f57bece887140b70815dcec7db0506255150ac58",
+      "alembic.ini": "6bbc6a4bf8abf4492fc53ede79b3c37e035e6ac1",
+      "deploy/healthcheck.py": "cc885c32052781ed864985f1a96368871c9f1d08"
+    }
+  },
+  "automatic_checks": {
+    "commit": "e1107c7a4c90dce31d610bb66dc68a3a00d8ad04",
+    "unit": 14,
+    "server": 405,
+    "postgres": 437,
+    "chromium": 144,
+    "total": 1000,
+    "failures": 0,
+    "skipped": 0,
+    "domain": "https://github.com/zhantugelmukagali/romeoastana/actions/runs/39658205281",
+    "https": "https://github.com/zhantugelmukagali/romeoastana/actions/runs/39658205497",
+    "marketplace": "https://github.com/zhantugelmukagali/romeoastana/actions/runs/39658205194"
+  },
+  "live_acceptance": {
+    "source": "Owner confirmation in MoySklad; core financial code on b1932488cece",
+    "accrual": {
+      "goods_kzt": 10000,
+      "service_kzt": 1000,
+      "partial_payment_kzt": 5500,
+      "points_after_full_payment_and_shipment": 500,
+      "points_after_partial_expected": 0,
+      "partial_stage_live_observation": "not separately recorded"
+    },
+    "redemption": {
+      "spent_points": 500,
+      "order_total_kzt": 10500,
+      "points_after_full_payment_and_shipment": 500
+    },
+    "full_return": {
+      "earned_points_reversed": 500,
+      "spent_points_refunded": 500,
+      "resulting_balance": 500
+    },
+    "personal_discount": {
+      "percent": 10,
+      "goods_after_kzt": 9000,
+      "service_after_kzt": 1000,
+      "earned_points": 450
+    },
+    "not_separately_recorded_live": [
+      "combined discount and bonus redemption",
+      "partial and repeated returns",
+      "undo before sale",
+      "multiple real accounts under load"
+    ]
+  },
+  "current_delivery_scope": {
+    "currency": "KZT",
+    "one_point_kzt": 1,
+    "customer_orders": true,
+    "bonus_points": true,
+    "personal_discounts": true,
+    "clients": true,
+    "returns": true,
+    "retail_pos": false,
+    "wallet": false
+  },
+  "deferred_by_owner": [
+    "server upgrade",
+    "external backup storage and recovery from it",
+    "Telegram failure alerts",
+    "independent external availability monitor"
+  ],
+  "publication": {
+    "submitted": "not_confirmed",
+    "approved": "not_confirmed",
+    "paid_distribution_configured": "not_confirmed",
+    "source": "No authenticated developer-cabinet evidence; owner action required"
+  }
+}

@@ -1,0 +1,23 @@
+[Unit]
+Description=BonusPro read-only operations probes and Telegram alerts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/usr/local/lib/bonuspro-ops
+ExecStart=/usr/bin/python3 -E -s /usr/local/lib/bonuspro-ops/monitor_vps.py --config /etc/bonuspro-ops/config.json
+TimeoutStartSec=240
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/bonuspro-ops

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ServerApplication xmlns="https://apps-api.moysklad.ru/xml/ns/appstore/app/v2"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="https://apps-api.moysklad.ru/xml/ns/appstore/app/v2 https://apps-api.moysklad.ru/xml/ns/appstore/app/v2/application-v2.xsd">
+  <vendorApi>
+    <endpointBase>https://loyalty.addwise.kz</endpointBase>
+    <additionalEvents><updatePermissions/></additionalEvents>
+  </vendorApi>
+  <access>
+    <resource>https://api.moysklad.ru/api/remap/1.2</resource>
+    <scope>custom</scope>
+    <permissions>
+      <useOwnAttributeMetadata/>
+      <useOwnWebhooks/>
+      <customerOrder><view/></customerOrder>
+      <demand><view/></demand>
+      <salesReturn><view/></salesReturn>
+      <paymentIn><view/></paymentIn>
+      <paymentOut><view/></paymentOut>
+      <cashIn><view/></cashIn>
+      <cashOut><view/></cashOut>
+      <company><view/></company>
+      <myCompany><view/></myCompany>
+      <currency><view/></currency>
+    </permissions>
+  </access>
+  <iframes>
+    <iframe type="main" sourceUrl="https://loyalty.addwise.kz/admin" useContextKey="false">
+      <uses><user-context/></uses>
+    </iframe>
+  </iframes>
+  <widgets>
+    <document.customerorder.create useContextKey="false">
+      <sourceUrl>https://loyalty.addwise.kz/widget</sourceUrl>
+      <height><fixed>140px</fixed></height>
+      <supports><change-handler/></supports>
+      <uses><user-context/></uses>
+    </document.customerorder.create>
+    <document.customerorder.edit useContextKey="false">
+      <sourceUrl>https://loyalty.addwise.kz/widget</sourceUrl>
+      <height><fixed>380px</fixed></height>
+      <supports><open-feedback/><save-handler/><change-handler/><update-provider/></supports>
+      <uses><user-context/></uses>
+    </document.customerorder.edit>
+  </widgets>
+</ServerApplication>

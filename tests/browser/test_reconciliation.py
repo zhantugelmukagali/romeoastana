@@ -1,0 +1,125 @@
+import json,unittest
+from pathlib import Path
+from playwright.sync_api import sync_playwright
+
+ROOT=Path(__file__).resolve().parents[2]
+HOST="""<!doctype html><iframe src="https://widget.test/reconciliation" style="width:100%;height:1000px"></iframe>
+<script>addEventListener('message',e=>{if(e.data.name==='UserContextRequest')
+e.source.postMessage({name:'UserContextResponse',correlationId:e.data.messageId,token:'synthetic'},'https://widget.test');});</script>"""
+class ReconciliationBrowserTests(unittest.TestCase):
+    def setUp(self):
+        self.runtime=sync_playwright().start();self.browser=self.runtime.chromium.launch()
+        self.ctx=self.browser.new_context(viewport={"width":390,"height":844});self.page=self.ctx.new_page()
+        self.decisions=[];self.conflict=False;self.resolved=False;self.hold_settlements=False;self.held_settlements=None;self.unverified=[];self.issues=[]
+        self.ctx.route("**/*",self.route)
+    def tearDown(self):self.ctx.close();self.browser.close();self.runtime.stop()
+    def route(self,r):
+        url=r.request.url
+        if url.startswith("https://online.moysklad.ru/"):return r.fulfill(content_type="text/html",body=HOST)
+        if not url.startswith("https://widget.test/"):return r.abort()
+        path=url.split("https://widget.test",1)[1]
+        if path=="/api/session":return r.fulfill(json={"token":"synthetic"})
+        if path=="/api/me":return r.fulfill(json={"role":"admin"})
+        if path=="/api/admin/automation":return r.fulfill(json={"issues":self.issues,"unverified":self.unverified})
+        if path.startswith("/api/admin/settlements?"):
+            items=[] if self.resolved else [dict(id="case",order_id="order",order_name="123",earn_delta=-500,refund_delta=0,
+                                               total_delta=-500,available=0,state="pending",reason=None)]
+            data={"items":items,"next_cursor":None}
+            if self.hold_settlements:
+                self.hold_settlements=False;self.held_settlements=(r,data);return
+            return r.fulfill(json=data)
+        if path.endswith("/resolve"):
+            self.decisions.append(r.request.post_data_json)
+            if self.conflict:return r.fulfill(status=409,json={"error":"conflict"})
+            self.resolved=True;return r.fulfill(json={"state":"waived"})
+        file=ROOT/"web"/("reconciliation.html" if path=="/reconciliation" else path.lstrip("/"))
+        if file.is_file():return r.fulfill(content_type="text/html" if file.suffix==".html" else "text/css" if file.suffix==".css" else "text/javascript",body=file.read_text())
+        return r.fulfill(status=404)
+    def open(self):
+        self.page.goto("https://online.moysklad.ru/test");self.frame=self.page.frame_locator("iframe")
+        self.frame.get_by_role("heading",name="Заказ 123",exact=True).wait_for()
+    def test_no_debt_explicit_reason_and_mobile_layout(self):
+        self.open()
+        self.assertFalse(self.frame.get_by_role("button",name="Выполнить пересчёт",exact=True).is_enabled())
+        self.frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).click()
+        self.frame.get_by_label("Причина решения").fill("Согласовано с клиентом")
+        self.frame.get_by_role("button",name="Подтвердить",exact=True).click()
+        self.frame.get_by_text("Операций в этом разделе нет.",exact=True).wait_for()
+        self.assertEqual(self.decisions,[{"decision":"waive","reason":"Согласовано с клиентом"}])
+        self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth <= innerWidth"))
+        self.assertEqual(self.page.frames[1].evaluate("localStorage.length+sessionStorage.length"),0)
+    def test_conflict_keeps_dialog_without_false_success(self):
+        self.conflict=True;self.open()
+        self.frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).click()
+        self.frame.get_by_label("Причина решения").fill("Проверено")
+        self.frame.get_by_role("button",name="Подтвердить",exact=True).click()
+        self.frame.get_by_text("Документы изменились или бонусов недостаточно. Обновите список и проверьте решение.",exact=True).wait_for()
+        self.assertTrue(self.frame.get_by_role("dialog").is_visible())
+
+
+    def test_refresh_blocks_old_case_actions_until_authoritative_list_returns(self):
+        self.open()
+        self.hold_settlements=True
+        with self.page.expect_request("https://widget.test/api/admin/settlements?state=pending"):
+            self.frame.get_by_role("button",name="Обновить",exact=True).click()
+        self.assertFalse(self.frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).is_enabled())
+        self.assertFalse(self.frame.get_by_role("button",name="Выполнить пересчёт",exact=True).is_enabled())
+        self.page.frames[1].evaluate("document.querySelector('#cases .actions button:last-child').click()")
+        self.assertFalse(self.frame.get_by_role("dialog").is_visible())
+        self.assertEqual(self.decisions,[])
+        self.assertIsNotNone(self.held_settlements)
+        held,data=self.held_settlements
+        with self.page.expect_response("https://widget.test/api/admin/settlements?state=pending") as response:
+            held.fulfill(json=data)
+        response.value.json()
+        self.frame.get_by_role("button",name="Обновить",exact=True).wait_for(state="visible")
+        self.frame.get_by_role("button",name="Сохранить бонусы клиенту",exact=True).click()
+        self.assertFalse(self.frame.get_by_role("button",name="Выполнить пересчёт",exact=True).is_enabled())
+        self.frame.get_by_label("Причина решения").fill("Согласовано с клиентом")
+        self.frame.get_by_role("button",name="Подтвердить",exact=True).click()
+        self.frame.get_by_text("Операций в этом разделе нет.",exact=True).wait_for()
+        self.assertEqual(self.decisions,[{"decision":"waive","reason":"Согласовано с клиентом"}])
+
+
+    def test_personal_only_pending_operation_never_claims_zero_bonus_reserve(self):
+        self.unverified=[{"id":"application","order_id":"order","points":0}]
+        self.open()
+        self.frame.get_by_text("Персональная скидка — ожидает подтверждения",exact=True).wait_for()
+        self.frame.get_by_role("heading",name="Неподтверждённые операции",exact=True).wait_for()
+        self.assertNotIn("0 бонусов",self.frame.locator("#unverified").inner_text())
+        self.frame.get_by_role("button",name="Проверить отмену скидки",exact=True).click()
+        self.frame.get_by_role("heading",name="Отменить применение персональной скидки?",exact=True).wait_for()
+        self.assertNotIn("резерв",self.frame.locator("#decision").inner_text().lower())
+        self.frame.get_by_text("Если скидка уже сохранена, отмена запрещена.",exact=False).wait_for()
+
+
+    def test_known_issue_reasons_identify_the_source_without_submitting_a_decision(self):
+        reasons={
+            "changed_credited_order":"Заказ или отгрузка после начисления требуют сверки.",
+            "provider_document_missing":"Не найден заказ или связанный документ после начисления.",
+            "invalid_credited_document":"Не удалось проверить заказ, оплату или отгрузку после начисления.",
+            "unrecognized_bonus_marker":"В заказе есть бонусная отметка без подтверждённой операции."
+        }
+        for reason,message in reasons.items():
+            with self.subTest(reason=reason):
+                self.issues=[{"id":"issue","order_id":"source-order","reason":reason}]
+                self.open()
+                self.frame.get_by_text(message,exact=True).wait_for()
+                link=self.frame.locator("#issues").get_by_role("link",name="Открыть заказ в МойСклад",exact=True)
+                self.assertEqual(link.get_attribute("href"),
+                    "https://online.moysklad.ru/app/#customerorder/edit?id=source-order")
+                self.assertTrue(self.frame.get_by_role("button",name="Проверить исправление",exact=True).is_visible())
+                self.assertEqual(self.decisions,[])
+
+    def test_unknown_issue_reason_is_neutral_and_never_claims_an_empty_worklist(self):
+        private="<img src=x onerror=alert(1)> private provider detail"
+        self.resolved=True;self.issues=[{"id":"issue","order_id":"source-order","reason":private}]
+        self.page.goto("https://online.moysklad.ru/test");self.frame=self.page.frame_locator("iframe")
+        self.frame.get_by_text("Заказ требует проверки. Списание по клиенту приостановлено.",exact=True).wait_for()
+        self.frame.get_by_text("Есть операции на проверке ниже.",exact=True).wait_for()
+        self.assertNotIn("Операций в этом разделе нет.",self.frame.locator("#status").inner_text())
+        self.assertNotIn(private,self.frame.locator("body").inner_text())
+        self.assertEqual(self.frame.locator("#issues img").count(),0)
+        self.assertEqual(self.decisions,[])
+
+if __name__=="__main__":unittest.main()

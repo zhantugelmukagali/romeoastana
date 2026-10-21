@@ -1,0 +1,28 @@
+name: HTTPS deployment checks
+on:
+  push:
+    branches: [bonuspro/rebuild]
+    paths: ['compose.https.yaml', 'deploy/Caddyfile.release', 'deploy/switch_https.py', 'tests/deploy/**', '.github/workflows/https.yml']
+  pull_request:
+    paths: ['compose.https.yaml', 'deploy/Caddyfile.release', 'deploy/switch_https.py', 'tests/deploy/**', '.github/workflows/https.yml']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Verify rollback control flow
+        run: python3 -m unittest discover -s tests/deploy -v
+      - name: Validate compose merge
+        env:
+          BONUSPRO_IMAGE: bonuspro:ci
+          PUBLIC_ORIGIN: https://loyalty.addwise.kz
+          MOYSKLAD_APP_ID: 642007f9-0076-4a7f-887a-c890d3c8f415
+          MOYSKLAD_APP_UID: bonuspro.romeoastana
+        run: docker compose -f compose.release.yaml -f compose.https.yaml config --quiet
+      - name: Validate release Caddy configuration
+        run: docker run --rm -v "$PWD/deploy/Caddyfile.release:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile

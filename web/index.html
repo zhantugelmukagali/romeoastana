@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>БонусПро · Бонусная программа</title>
+<link rel="stylesheet" href="/assets/app.css"><link rel="stylesheet" href="/assets/portal.css">
+<script type="module" src="/assets/shell.js"></script><script type="module" src="/assets/portal.js"></script></head>
+<body><main class="portal">
+<header><div><h1 id="page-title">Обзор программы</h1><p class="subtitle" id="page-description">Бонусы, клиенты и покупки — в одном месте.</p></div><div class="header-actions"><span id="program-state" class="pill">Подключение</span><button id="open-customers" class="primary" hidden>Найти клиента</button><button id="refresh" aria-label="Обновить" title="Обновить данные" hidden>Обновить</button></div><p id="status" class="connection-status" role="status" aria-live="polite">Подключаемся к МойСклад…</p></header>
+<button id="retry" hidden>Повторить подключение</button>
+<div id="workspace" hidden>
+<section data-screen="overview">
+<div id="setup-callout" class="setup-callout" hidden><div><h2>Настройте программу перед первой продажей</h2><p>Проверьте правила, перенесите остатки при необходимости и подтвердите запуск.</p></div><a href="/settings" class="button primary">Настроить программу</a></div>
+<div id="processing-callout" class="processing-callout" hidden><div><strong>Проверьте автоматическое начисление</strong><p>Обработка заказов пока не подтверждена или требует внимания. Балансы ниже показывают уже сохранённые операции.</p></div><a href="/settings" class="button">Проверить обработку</a></div>
+<div class="kpi-grid">
+<article class="metric"><div class="metric-label">Бонусы у клиентов</div><strong id="total-balance">—</strong><p>Текущий баланс · 1 бонус = 1 ₸</p></article>
+<article class="metric"><div class="metric-label">Клиенты программы</div><strong id="total-customers">—</strong><p>С бонусным счётом</p></article>
+<article class="metric"><div class="metric-label">Начислено</div><strong id="total-credited">—</strong><p>За всё время, включая перенос</p></article>
+<article class="metric"><div class="metric-label">Списано</div><strong id="total-redeemed">—</strong><p>За всё время, до возвратов</p></article>
+</div>
+<div class="overview-grid">
+<section class="panel"><div class="panel-heading"><div><h2>Последние операции</h2><p>Начисления, списания и пересчёты</p></div><a href="#activity">Все операции →</a></div><div id="recent-activity"></div></section>
+<aside class="panel program-card"><div class="panel-heading"><h2>Правила программы</h2><a href="/settings">Изменить</a></div><div class="rule-numbers"><div><strong id="rule-earn">—</strong><span>начисление</span></div><div><strong id="rule-spend">—</strong><span>лимит списания</span></div></div><p class="rule-list">Только товары, без доставки.<br>Начисление после оплаты и отгрузки.</p><div class="reserved-info"><span>В резерве</span><strong id="total-reserved">—</strong></div><a class="attention-link" id="attention-link" href="/reconciliation">Проверить операции</a></aside>
+</div>
+<section class="widget-callout"><div><h2>Бонусы в заказе</h2><p>Списание доступно в сохранённом заказе покупателя.</p></div><button id="widget-help">Как пользоваться</button></section>
+</section>
+<section data-screen="customers" hidden class="panel">
+<div class="panel-heading"><div><h2>Клиенты и бонусы</h2><p>Данные клиентов из МойСклад, балансы — из журнала БонусПро.</p></div></div>
+<form id="search-form" class="search-bar"><label class="sr-only" for="customer-search">Имя или телефон клиента</label><input id="customer-search" type="search" maxlength="100" placeholder="Поиск по имени или телефону" autocomplete="off"><button class="primary" type="submit">Найти</button></form>
+<p id="customer-status" role="status"></p><div id="customers"></div><button id="more-customers" class="load-more" hidden>Показать ещё клиентов</button>
+</section>
+<section data-screen="activity" hidden class="panel">
+<div class="panel-heading"><div><h2>История бонусов</h2><p>Только сохранённые операции. Резерв не считается списанием.</p></div></div>
+<p id="activity-status" role="status"></p><div id="activity"></div><button id="more-activity" class="load-more" hidden>Показать ещё операций</button>
+</section>
+</div>
+<dialog id="customer-dialog" class="customer-dialog" aria-labelledby="customer-name"><div class="dialog-heading"><div><p class="eyebrow">КАРТОЧКА КЛИЕНТА</p><h2 id="customer-name">Клиент</h2><p id="customer-phone" class="subtitle"></p></div><button id="close-customer" aria-label="Закрыть карточку клиента" class="icon-button">×</button></div><p id="profile-status" role="status"></p><div class="customer-balance"><div><span>Доступно бонусов</span><strong id="customer-available">—</strong></div><p id="customer-reserved"></p></div><a id="customer-source" target="_blank" rel="noopener noreferrer">Открыть в МойСклад ↗</a><section id="customer-personal" class="customer-personal" aria-labelledby="customer-personal-title">
+<div class="personal-heading"><h3 id="customer-personal-title">Персональная скидка</h3><button id="edit-customer-personal" type="button" disabled>Изменить скидку</button></div>
+<p id="customer-personal-value">—</p><p id="customer-personal-policy" class="muted"></p><p id="customer-personal-audit" class="muted"></p>
+<form id="customer-personal-form" hidden>
+<label for="customer-personal-mode">Назначение скидки</label><select id="customer-personal-mode"><option value="none">Не назначена</option><option value="rate">Задать процент</option></select>
+<div id="customer-personal-rate-field"><label for="customer-personal-rate">Персональная скидка, %</label><input id="customer-personal-rate" type="number" min="0" max="100" step="0.01" inputmode="decimal" value="0"></div>
+<p class="hint">0% — явно отключить скидку у клиента. «Не назначена» удаляет назначение.</p>
+<label for="customer-personal-reason">Причина изменения скидки</label><textarea id="customer-personal-reason" rows="2" maxlength="500" required></textarea>
+<div class="actions"><button id="save-customer-personal" class="primary" type="submit">Сохранить скидку</button><button id="cancel-customer-personal" type="button">Отмена</button></div>
+</form><p id="customer-personal-status" role="status" aria-live="polite"></p><button id="reload-customer-personal" type="button" hidden>Загрузить актуальную скидку</button>
+</section><section id="customer-recalculations-section" aria-labelledby="customer-recalculations-title"><h3 id="customer-recalculations-title">Детали пересчётов</h3><p id="customer-recalculations-note" class="muted" hidden>Итог уже учтён в балансе.</p><div id="customer-recalculations"></div><p id="customer-recalculations-status" role="status" aria-live="polite"></p><button id="more-customer-recalculations" type="button" hidden>Показать ещё пересчёты</button></section><h3>История операций</h3><div id="customer-history"></div><button id="more-customer-history" hidden>Показать ещё операций клиента</button></dialog>
+<dialog id="help-dialog" aria-labelledby="help-title"><div class="dialog-heading"><h2 id="help-title">Бонусы в заказе покупателя</h2><button id="close-help" aria-label="Закрыть инструкцию" class="icon-button">×</button></div><ol class="help-steps"><li><strong>Выберите покупателя</strong><p>Откройте новый неоплаченный заказ без отгрузок, выберите клиента и сохраните заказ.</p></li><li><strong>Примените бонусы</strong><p>В виджете БонусПро появятся баланс и доступный лимит. Укажите количество бонусов и примените скидку.</p></li><li><strong>Сохраните заказ</strong><p>Списание подтвердится после проверки сохранённой скидки. Начисление за покупку — после полной оплаты и отгрузки.</p></li></ol><p class="hint">Если виджета нет в заказе, необходимо обновить конфигурацию установленного решения МойСклад.</p><a href="/settings" class="button primary">Открыть настройки</a></dialog>
+</main></body></html>

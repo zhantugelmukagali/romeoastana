@@ -1,0 +1,19 @@
+name: Public endpoint diagnostics
+on:
+  push:
+    branches: [bonuspro/rebuild]
+    paths:
+      - scripts/check_public_endpoints.py
+      - .github/workflows/access-check.yml
+permissions:
+  contents: read
+jobs:
+  read-only-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Inspect DNS, TLS and SSH banner without login
+        run: python3 scripts/check_public_endpoints.py

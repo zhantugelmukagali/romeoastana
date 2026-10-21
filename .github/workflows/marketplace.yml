@@ -1,0 +1,48 @@
+name: Marketplace package
+on:
+  push:
+    branches: [bonuspro/rebuild, bonuspro/vendor-auth-fix]
+    paths: ['marketplace/**', 'docs/**', 'scripts/check_marketplace.py', 'scripts/package_delivery.py', '.github/workflows/marketplace.yml']
+  pull_request:
+    paths: ['marketplace/**', 'docs/**', 'scripts/check_marketplace.py', 'scripts/package_delivery.py', '.github/workflows/marketplace.yml']
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install XML schema validator
+        run: |
+          python3 -m venv .marketplace-check
+          .marketplace-check/bin/pip install lxml==6.0.2
+      - name: Build current manual archive
+        run: python3 marketplace/build_manual.py
+      - name: Validate descriptor and upload files
+        shell: bash
+        run: .marketplace-check/bin/python scripts/check_marketplace.py | tee .marketplace-validation.json
+      - name: Assemble delivery packages and provenance
+        run: python3 scripts/package_delivery.py
+      - name: Verify both package checksums
+        run: |
+          cd .delivery-package/marketplace
+          sha256sum --check SHA256SUMS
+          cd ../handover
+          sha256sum --check SHA256SUMS
+      - name: Bundle marketplace materials
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bonuspro-marketplace-package
+          path: .delivery-package/marketplace
+          if-no-files-found: error
+          retention-days: 90
+      - name: Bundle customer handover
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bonuspro-customer-handover
+          path: .delivery-package/handover
+          if-no-files-found: error
+          retention-days: 90
