@@ -57,14 +57,18 @@ SELECT count(*) FROM (
         result=command(["docker","exec","-i",DB,"psql","-U","postgres","-d",name,"-At","-v","ON_ERROR_STOP=1"],
             input=sql.encode(),stdout=subprocess.PIPE).stdout.decode().splitlines()
         if result!=[args.expected_schema,"0"]:raise ValueError()
-        marker=source.with_suffix(source.suffix+".verified.json")
-        marker.write_text(json.dumps(dict(restored_at=datetime.now(timezone.utc).isoformat(),
-            schema=args.expected_schema,sha256=digest.hexdigest(),offsite_verified=False))+"\n")
-        print("ENCRYPTED_BACKUP_RESTORE_OK")
     except Exception:
         raise SystemExit("RESTORE_CHECK_FAILED: checkpoint has not been confirmed")
     finally:
         if created:
             try:command(["docker","exec",DB,"dropdb","-U","postgres",name],stdout=subprocess.DEVNULL)
-            except Exception:print("Temporary restore database cleanup required")
+            except Exception:
+                raise SystemExit("RESTORE_CLEANUP_FAILED: temporary database cleanup required") from None
+    try:
+        marker=source.with_suffix(source.suffix+".verified.json")
+        marker.write_text(json.dumps(dict(restored_at=datetime.now(timezone.utc).isoformat(),
+            schema=args.expected_schema,sha256=digest.hexdigest(),offsite_verified=False))+"\n")
+    except Exception:
+        raise SystemExit("RESTORE_CHECK_FAILED: checkpoint has not been confirmed") from None
+    print("ENCRYPTED_BACKUP_RESTORE_OK")
 if __name__=="__main__":main()

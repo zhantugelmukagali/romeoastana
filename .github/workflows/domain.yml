@@ -90,7 +90,7 @@ jobs:
 
   container:
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -99,6 +99,10 @@ jobs:
         run: |
           python3 scripts/ci_restrict_build_context.py
           docker build --pull -t bonuspro:ci .
+      - name: Install offsite transport for isolated recovery checks
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y rclone
       - name: Test real deployment roles, migrations and HTTP readiness
         run: python3 scripts/ci_container_smoke.py
   dependencies:

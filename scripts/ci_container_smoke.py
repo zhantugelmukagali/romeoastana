@@ -201,6 +201,8 @@ def main():
                 "assert l.snapshot('"+tenant+"','"+wallet+"')['balance']==1000; "
                 "print('Backup restored: balanced journal and runtime RLS role verified')")
         run(*command,"exec","-T","app","python","-c",verify)
+        from ci_operations_smoke import run_smoke
+        run_smoke(Path(__file__).resolve().parents[1])
         print("Container, least-privilege bootstrap, repeat migration, readiness and anonymous access checks passed.")
     finally:
         run(*command,"logs","--tail","50")
