@@ -47,9 +47,11 @@ class InvalidDocument(RemapError):
 
 
 class RetryLater(RemapError):
-    def __init__(self, delay_seconds=30, code="provider_unavailable"):
+    def __init__(self, delay_seconds=30, code="provider_unavailable", *, provider_status=None):
         self.delay_seconds=delay_seconds
         self.code=code
+        self.provider_status=provider_status if type(provider_status) is int and (
+            provider_status in (408,409,412,429) or 500<=provider_status<=599) else None
         super().__init__("provider temporarily unavailable")
 
 
@@ -186,9 +188,9 @@ class RemapClient:
                             raw=response.headers.get(name,"")
                             if raw.isascii() and raw.isdecimal() and len(raw)<=12:
                                 values.append((int(raw)+divisor-1)//divisor)
-                        raise RetryLater(min(86400,max([1,*values])),"provider_unavailable")
+                        raise RetryLater(min(86400,max([1,*values])),"provider_unavailable",provider_status=status)
                     if status>=500 or status in (408,409,412):
-                        raise RetryLater(30,"conflict" if status in (409,412) else "provider_unavailable")
+                        raise RetryLater(30,"conflict" if status in (409,412) else "provider_unavailable",provider_status=status)
                     if status!=200 or not response.headers.get("Content-Type","").lower().startswith("application/json"):
                         raise InvalidDocument("unexpected provider response")
                     body=bytearray()

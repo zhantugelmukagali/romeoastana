@@ -101,6 +101,9 @@ def check_account(ledger,installations,tenant,*,sample_limit=3,client_factory=Re
     try:orders=recent_orders(client,sample_limit)
     except Exception as error:
         fail("discovery",error);return report
+    if not orders:
+        report["failures"].append(dict(stage="discovery",code="no_orders_to_check"))
+        return report
     outcomes=Counter()
     for order in orders:
         try:

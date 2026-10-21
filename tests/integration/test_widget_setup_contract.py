@@ -14,7 +14,7 @@ import test_return_api as fixture
 class WidgetSetupContractTests(unittest.TestCase):
     def setUp(self):
         self.fx=fixture.ReturnAPITests();self.fx.setUp();self.addCleanup(self.fx.doCleanups)
-        self.rows=[];self.calls=[];self.posts=0;self.denied=None;self.lose=False;self.denial_codes=[]
+        self.rows=[];self.calls=[];self.posts=0;self.denied=None;self.lose=False;self.denial_codes=[];self.temporary=None
         self.block=False;self.entered=Event();self.release=Event();self.echo_query=False
         self.marker=str(uuid4());path="/entity/customerorder/metadata/attributes"
         self.row=dict(id=self.marker,name="БонусПро: операция списания",type="string",required=False,
@@ -22,6 +22,10 @@ class WidgetSetupContractTests(unittest.TestCase):
         outer=self
         def transport(request):
             self.calls.append(request)
+            if self.temporary:
+                status,headers=self.temporary
+                if status=="timeout":raise httpx.ReadTimeout("private-provider-token")
+                return httpx.Response(status,headers=headers,text="private-provider-token")
             if self.denied:return httpx.Response(self.denied,json={"errors":[
                 {"error":"private provider detail","code":code,"moreInfo":"https://private.test/token"}
                 for code in self.denial_codes] or [{"error":"private provider detail"}]})
@@ -53,10 +57,37 @@ class WidgetSetupContractTests(unittest.TestCase):
     def test_lost_creation_response_is_recovered_without_duplicate_creation(self):
         self.lose=True
         response=self.setup_widget();self.assertEqual(response.status_code,503,response.text)
+        self.assertEqual(response.json(),{"error":"widget_metadata_temporarily_unavailable",
+            "retry_reason":"timeout","retry_after":5})
+        self.assertEqual(response.headers["Retry-After"],"5")
+        self.assertEqual(self.posts,1)
         self.assertIsNone(self.adapter.binding(self.fx.tenant))
         self.lose=False
         response=self.setup_widget();self.assertEqual(response.status_code,200,response.text)
         self.assertEqual(self.posts,1)
+    def test_transient_metadata_failures_show_finite_retry_reason_without_writes_or_private_details(self):
+        before=self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)
+        cases=((429,{"X-Lognex-Retry-After":"2501","Retry-After":"2"},"rate_limited",3),
+               (503,{},"unavailable",30),(408,{},"timeout",30),
+               (409,{},"conflict",30),(412,{},"conflict",30),
+               ("timeout",{},"timeout",5))
+        for status,headers,reason,delay in cases:
+            with self.subTest(status=status):
+                self.temporary=(status,headers);calls=len(self.calls)
+                response=self.setup_widget()
+                self.assertEqual(response.status_code,503,response.text)
+                expected={"error":"widget_metadata_temporarily_unavailable",
+                          "retry_reason":reason,"retry_after":delay}
+                if type(status) is int:expected["provider_status"]=status
+                self.assertEqual(response.json(),expected)
+                self.assertEqual(response.headers["Retry-After"],str(delay))
+                self.assertEqual(len(self.calls),calls+1)
+                self.assertNotIn("private",response.text)
+                self.assertNotIn("token",response.text)
+                self.assertIsNone(self.adapter.binding(self.fx.tenant))
+        self.assertEqual(self.posts,0)
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),before)
+
     def test_permissions_and_token_failures_are_distinct_and_do_not_echo_provider_details(self):
         for status,code in ((401,"moysklad_token_rejected"),(403,"moysklad_permissions_required")):
             self.denied=status;response=self.setup_widget()
