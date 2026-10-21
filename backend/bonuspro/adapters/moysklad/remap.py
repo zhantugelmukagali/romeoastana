@@ -27,12 +27,21 @@ class RemapError(RuntimeError):
     pass
 
 
+def _provider_codes(values):
+    values=values if isinstance(values,(list,tuple)) else ()
+    return tuple(sorted({code for code in values[:64]
+        if type(code) is int and 0<=code<=999999})[:8])
+
+
+def _provider_operation(value):
+    return value if value in ("metadata_read","metadata_create") else None
+
+
 class AccessDenied(RemapError):
-    def __init__(self,message="MoySklad access denied",*,status_code=None,provider_error_codes=()):
+    def __init__(self,message="MoySklad access denied",*,status_code=None,provider_error_codes=(),provider_operation=None):
         self.status_code=status_code
-        values=provider_error_codes if isinstance(provider_error_codes,(list,tuple)) else ()
-        self.provider_error_codes=tuple(sorted({code for code in values[:64]
-            if type(code) is int and 0<=code<=999999})[:8])
+        self.provider_error_codes=_provider_codes(provider_error_codes)
+        self.provider_operation=_provider_operation(provider_operation)
         super().__init__(message)
 
 
@@ -49,12 +58,25 @@ class InvalidDocument(RemapError):
         super().__init__(message)
 
 
+class MetadataRejected(RemapError):
+    def __init__(self,status_code,provider_error_codes,provider_operation):
+        if type(status_code) is not int or status_code not in (400,409,412):
+            raise ValueError("invalid metadata rejection status")
+        self.provider_status=status_code
+        self.provider_error_codes=_provider_codes(provider_error_codes)
+        self.provider_operation=_provider_operation(provider_operation)
+        super().__init__("MoySklad rejected metadata request")
+
+
 class RetryLater(RemapError):
-    def __init__(self, delay_seconds=30, code="provider_unavailable", *, provider_status=None):
+    def __init__(self, delay_seconds=30, code="provider_unavailable", *, provider_status=None,
+                 provider_error_codes=(),provider_operation=None):
         self.delay_seconds=delay_seconds
         self.code=code
         self.provider_status=provider_status if type(provider_status) is int and (
-            provider_status in (408,409,412,429) or 500<=provider_status<=599) else None
+            provider_status in (400,408,409,412,429) or 500<=provider_status<=599) else None
+        self.provider_error_codes=_provider_codes(provider_error_codes)
+        self.provider_operation=_provider_operation(provider_operation)
         super().__init__("provider temporarily unavailable")
 
 
@@ -128,25 +150,33 @@ def _invalid_number(value):
     raise ValueError("invalid JSON constant")
 
 
-def _access_error_codes(response,deadline=None):
-    """Keep numeric diagnostics only; an unreadable denial remains a denial."""
+def _provider_error_details(response,deadline=None):
+    """Return bounded diagnostics separately from proof every error is 1065."""
     if not response.headers.get("Content-Type","").lower().startswith("application/json"):
-        return ()
+        return (),False
     body=bytearray()
     try:
         for chunk in response.iter_bytes(chunk_size=4096):
             if (deadline is not None and time.monotonic()>=deadline) or len(body)+len(chunk)>64*1024:
-                return ()
+                return (),False
             body.extend(chunk)
         payload=json.loads(body,parse_float=Decimal,parse_constant=_invalid_number,
                            object_pairs_hook=_unique_object)
     except (httpx.HTTPError,ValueError,UnicodeError,RecursionError,DecimalException):
-        return ()
+        return (),False
     errors=payload.get("errors") if isinstance(payload,dict) else None
-    if not isinstance(errors,list) or len(errors)>64:
-        return ()
-    return tuple(sorted({item["code"] for item in errors if isinstance(item,dict)
+    if not isinstance(errors,list) or not 1<=len(errors)<=64:
+        return (),False
+    codes=tuple(sorted({item["code"] for item in errors if isinstance(item,dict)
         and type(item.get("code")) is int and 0<=item["code"]<=999999})[:8])
+    concurrent_only=all(isinstance(item,dict) and type(item.get("code")) is int
+                        and item["code"]==1065 for item in errors)
+    return codes,concurrent_only
+
+
+def _access_error_codes(response,deadline=None):
+    """Compatibility helper for numeric diagnostics, never retry authority."""
+    return _provider_error_details(response,deadline)[0]
 
 
 class RemapClient:
@@ -168,9 +198,10 @@ class RemapClient:
         allowed_put=path.startswith("/entity/webhook/") and path=="/entity/webhook/"+uuid(path.rsplit("/",1)[-1])
         if method not in ("GET","POST","PUT") or (method=="POST" and not allowed_post) or (method=="PUT" and not allowed_put):
             raise InvalidDocument("unsupported write resource")
+        operation=("metadata_read" if method=="GET" else "metadata_create") if path=="/entity/customerorder/metadata/attributes" else None
         now=time.monotonic()
         if self.deadline is not None and now+11>=self.deadline:
-            raise RetryLater(5,"provider_timeout")
+            raise RetryLater(5,"provider_timeout",provider_operation=operation)
         wait=self.minimum_interval-(now-self.last_request)
         if wait>0:
             time.sleep(min(wait,1))
@@ -184,7 +215,16 @@ class RemapClient:
                     status=response.status_code
                     if status in (401,403):
                         raise AccessDenied("MoySklad access denied",status_code=status,
-                                           provider_error_codes=_access_error_codes(response,self.deadline))
+                                           provider_error_codes=_access_error_codes(response,self.deadline),
+                                           provider_operation=operation)
+                    if operation and status in (400,409,412):
+                        codes,concurrent_only=_provider_error_details(response,self.deadline)
+                        # Only a complete body whose every error is integer 1065
+                        # proves a concurrent modification; filtered diagnostics do not.
+                        if concurrent_only:
+                            raise RetryLater(30,"conflict",provider_status=status,
+                                             provider_error_codes=codes,provider_operation=operation)
+                        raise MetadataRejected(status,codes,operation)
                     if status==404:
                         raise EntityMissing("MoySklad entity is missing")
                     if status==429:
@@ -193,15 +233,19 @@ class RemapClient:
                             raw=response.headers.get(name,"")
                             if raw.isascii() and raw.isdecimal() and len(raw)<=12:
                                 values.append((int(raw)+divisor-1)//divisor)
-                        raise RetryLater(min(86400,max([1,*values])),"provider_unavailable",provider_status=status)
+                        raise RetryLater(min(86400,max([1,*values])),"provider_unavailable",provider_status=status,
+                                         provider_error_codes=_access_error_codes(response,self.deadline) if operation else (),
+                                         provider_operation=operation)
                     if status>=500 or status in (408,409,412):
-                        raise RetryLater(30,"conflict" if status in (409,412) else "provider_unavailable",provider_status=status)
+                        raise RetryLater(30,"conflict" if status in (409,412) else "provider_unavailable",provider_status=status,
+                                         provider_error_codes=_access_error_codes(response,self.deadline) if operation else (),
+                                         provider_operation=operation)
                     if status!=200 or not response.headers.get("Content-Type","").lower().startswith("application/json"):
                         raise InvalidDocument("unexpected provider response")
                     body=bytearray()
                     for chunk in response.iter_bytes():
                         if self.deadline is not None and time.monotonic()>=self.deadline:
-                            raise RetryLater(5,"provider_timeout")
+                            raise RetryLater(5,"provider_timeout",provider_operation=operation)
                         body.extend(chunk)
                         if len(body)>8*1024*1024:
                             raise InvalidDocument("provider response exceeds size limit")
@@ -218,9 +262,9 @@ class RemapClient:
                         raise InvalidDocument("provider object required")
                     return payload
         except httpx.TimeoutException:
-            raise RetryLater(5,"provider_timeout") from None
+            raise RetryLater(5,"provider_timeout",provider_operation=operation) from None
         except httpx.HTTPError:
-            raise RetryLater() from None
+            raise RetryLater(provider_operation=operation) from None
 
     def _get(self,path,params=None):
         return self._request("GET",path,params)

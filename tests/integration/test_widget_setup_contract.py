@@ -14,7 +14,7 @@ import test_return_api as fixture
 class WidgetSetupContractTests(unittest.TestCase):
     def setUp(self):
         self.fx=fixture.ReturnAPITests();self.fx.setUp();self.addCleanup(self.fx.doCleanups)
-        self.rows=[];self.calls=[];self.posts=0;self.denied=None;self.lose=False;self.denial_codes=[];self.temporary=None
+        self.rows=[];self.calls=[];self.posts=0;self.denied=None;self.lose=False;self.denial_codes=[];self.temporary=None;self.rejected=None;self.rejected_errors=None
         self.block=False;self.entered=Event();self.release=Event();self.echo_query=False
         self.marker=str(uuid4());path="/entity/customerorder/metadata/attributes"
         self.row=dict(id=self.marker,name="БонусПро: операция списания",type="string",required=False,
@@ -22,6 +22,11 @@ class WidgetSetupContractTests(unittest.TestCase):
         outer=self
         def transport(request):
             self.calls.append(request)
+            if self.rejected and request.method==self.rejected[0]:
+                errors=self.rejected_errors if self.rejected_errors is not None else [
+                    {"code":code,"error":"private-token","moreInfo":"https://private.test/secret"}
+                    for code in self.rejected[2]]
+                return httpx.Response(self.rejected[1],json={"errors":errors})
             if self.temporary:
                 status,headers=self.temporary
                 if status=="timeout":raise httpx.ReadTimeout("private-provider-token")
@@ -58,7 +63,7 @@ class WidgetSetupContractTests(unittest.TestCase):
         self.lose=True
         response=self.setup_widget();self.assertEqual(response.status_code,503,response.text)
         self.assertEqual(response.json(),{"error":"widget_metadata_temporarily_unavailable",
-            "retry_reason":"timeout","retry_after":5})
+            "retry_reason":"timeout","retry_after":5,"provider_operation":"metadata_create"})
         self.assertEqual(response.headers["Retry-After"],"5")
         self.assertEqual(self.posts,1)
         self.assertIsNone(self.adapter.binding(self.fx.tenant))
@@ -69,7 +74,6 @@ class WidgetSetupContractTests(unittest.TestCase):
         before=self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)
         cases=((429,{"X-Lognex-Retry-After":"2501","Retry-After":"2"},"rate_limited",3),
                (503,{},"unavailable",30),(408,{},"timeout",30),
-               (409,{},"conflict",30),(412,{},"conflict",30),
                ("timeout",{},"timeout",5))
         for status,headers,reason,delay in cases:
             with self.subTest(status=status):
@@ -77,7 +81,7 @@ class WidgetSetupContractTests(unittest.TestCase):
                 response=self.setup_widget()
                 self.assertEqual(response.status_code,503,response.text)
                 expected={"error":"widget_metadata_temporarily_unavailable",
-                          "retry_reason":reason,"retry_after":delay}
+                          "retry_reason":reason,"retry_after":delay,"provider_operation":"metadata_read"}
                 if type(status) is int:expected["provider_status"]=status
                 self.assertEqual(response.json(),expected)
                 self.assertEqual(response.headers["Retry-After"],str(delay))
@@ -86,6 +90,65 @@ class WidgetSetupContractTests(unittest.TestCase):
                 self.assertNotIn("token",response.text)
                 self.assertIsNone(self.adapter.binding(self.fx.tenant))
         self.assertEqual(self.posts,0)
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),before)
+
+    def test_metadata_validation_rejections_are_not_a_repeatable_timeout_and_never_change_money(self):
+        before=self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)
+        for method in ("GET","POST"):
+            for status in (400,409,412):
+                for codes in ([2000],[1065,2000],[]):
+                    with self.subTest(method=method,status=status,codes=codes):
+                        self.rejected=(method,status,codes);before_calls=len(self.calls)
+                        response=self.setup_widget()
+                        self.assertEqual(response.status_code,422,response.text)
+                        self.assertEqual(response.json(),{"error":"widget_metadata_rejected",
+                            "provider_status":status,"provider_error_codes":sorted(codes),
+                            "provider_operation":"metadata_read" if method=="GET" else "metadata_create"})
+                        self.assertNotIn("Retry-After",response.headers)
+                        self.assertNotIn("private",response.text)
+                        self.assertNotIn("token",response.text)
+                        self.assertEqual(len(self.calls)-before_calls,1 if method=="GET" else 2)
+                        self.assertIsNone(self.adapter.binding(self.fx.tenant))
+        self.assertEqual(self.posts,0)
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),before)
+
+    def test_unknown_errors_alongside_concurrency_code_do_not_offer_retry_or_create_a_binding(self):
+        before=self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)
+        unknown=({},{"code":"2000"},{"code":True},{"code":1000000},{"code":-1},
+                 {"code":1065.0},"private-token",None)
+        for method in ("GET","POST"):
+            for item in unknown:
+                with self.subTest(method=method,item=item):
+                    self.rejected=(method,412,[]);self.rejected_errors=[{"code":1065},item]
+                    response=self.setup_widget()
+                    self.assertEqual(response.status_code,422,response.text)
+                    self.assertEqual(response.json(),{"error":"widget_metadata_rejected",
+                        "provider_status":412,"provider_error_codes":[1065],
+                        "provider_operation":"metadata_read" if method=="GET" else "metadata_create"})
+                    self.assertNotIn("Retry-After",response.headers)
+                    self.assertNotIn("private-token",response.text)
+                    self.assertIsNone(self.adapter.binding(self.fx.tenant))
+        self.assertEqual(self.posts,0)
+        self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),before)
+
+    def test_only_provider_concurrency_code_can_retry_metadata_without_automatic_duplicate_creation(self):
+        before=self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet)
+        for method in ("GET","POST"):
+            self.rejected=(method,412,[1065]);before_calls=len(self.calls)
+            response=self.setup_widget()
+            self.assertEqual(response.status_code,503,response.text)
+            self.assertEqual(response.json(),{"error":"widget_metadata_temporarily_unavailable",
+                "retry_reason":"conflict","retry_after":30,"provider_status":412,
+                "provider_error_codes":[1065],
+                "provider_operation":"metadata_read" if method=="GET" else "metadata_create"})
+            self.assertEqual(response.headers["Retry-After"],"30")
+            self.assertEqual(len(self.calls)-before_calls,1 if method=="GET" else 2)
+            self.assertEqual(self.posts,0)
+            self.assertIsNone(self.adapter.binding(self.fx.tenant))
+        self.rejected=None
+        self.assertEqual(self.setup_widget().status_code,200)
+        self.assertEqual(self.setup_widget().status_code,200)
+        self.assertEqual(self.posts,1)
         self.assertEqual(self.fx.ledger.snapshot(self.fx.tenant,self.fx.wallet),before)
 
     def test_permissions_and_token_failures_are_distinct_and_do_not_echo_provider_details(self):
@@ -103,7 +166,7 @@ class WidgetSetupContractTests(unittest.TestCase):
             self.assertEqual(response.status_code,403,response.text)
             self.assertEqual(response.json(),{
                 "error":"moysklad_token_rejected" if status==401 else "moysklad_permissions_required",
-                "provider_error_codes":[code]})
+                "provider_error_codes":[code],"provider_operation":"metadata_read"})
             self.assertNotIn("private",response.text)
             self.assertNotIn("synthetic-token",response.text)
         self.assertIsNone(self.adapter.binding(self.fx.tenant))
