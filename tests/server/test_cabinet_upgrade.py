@@ -34,7 +34,7 @@ class SchemaUpgradeTests(unittest.TestCase):
                 events.append("isolated_restore")
                 if preflight_failure:raise RuntimeError("isolated migration failed")
             def apply(database,source):
-                events.append("migration");schema["value"]="0015"
+                events.append("migration");schema["value"]="0016"
                 if ambiguous_commit:raise RuntimeError("connection lost after commit")
             def local(source):
                 events.append("local_verify")
@@ -73,7 +73,7 @@ class SchemaUpgradeTests(unittest.TestCase):
         self.assertLess(events.index("database.pre-upgrade.dump"),events.index("migration"))
         self.assertLess(events.index("migration"),events.index("new_app"))
         self.assertLess(events.index("local_verify"),events.index("web_exposure"))
-        self.assertEqual(result["schema"],"0015")
+        self.assertEqual(result["schema"],"0016")
         self.assertIn("database.dump",result["backups"])
         self.assertIn("database.pre-upgrade.dump",result["backups"])
         # The old worker cannot run against a new schema before start_processing replaces it.
@@ -98,14 +98,14 @@ class SchemaUpgradeTests(unittest.TestCase):
     def test_audit_history_blocks_ddl_rollback_and_old_service_restart(self):
         result=self.exercise(local_failure=True,rollback_blocked=True)
         self.assertIn("UPDATE_ROLLBACK_BLOCKED",result["error"])
-        self.assertEqual(result["schema"],"0015");self.assertNotEqual(result["env"],result["old"])
+        self.assertEqual(result["schema"],"0016");self.assertNotEqual(result["env"],result["old"])
         self.assertNotIn("restore_previous",result["events"])
         self.assertFalse(any(result["states"].values()))
 
     def test_any_public_exposure_forbids_automatic_schema_downgrade(self):
         result=self.exercise(public_failure=True)
         self.assertIn("UPDATE_NOT_CONFIRMED",result["error"])
-        self.assertEqual(result["schema"],"0015");self.assertNotEqual(result["env"],result["old"])
+        self.assertEqual(result["schema"],"0016");self.assertNotEqual(result["env"],result["old"])
         self.assertNotIn("ddl_rollback",result["events"])
         self.assertNotIn("restore_previous",result["events"])
 
@@ -149,6 +149,29 @@ class SchemaUpgradeTests(unittest.TestCase):
         self.assertEqual(result["env"],result["old"])
         self.assertIn("restore_previous",result["events"])
 
+    def test_existing_0015_upgrade_failure_restores_original_personal_discount_schema(self):
+        result=self.exercise(local_failure=True,original_schema="0015")
+        self.assertIn("UPDATE_FAILED: schema 0015",result["error"])
+        self.assertEqual(result["schema"],"0015")
+        self.assertEqual(result["env"],result["old"])
+        self.assertIn("restore_previous",result["events"])
+
+    def test_presale_rollback_checks_both_tables_globally_before_owner_role(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source=Path(directory);path=source/"migrations/versions/0016_presale_undo.down.sql"
+            path.parent.mkdir(parents=True);path.write_text("SELECT 'exact presale rollback';")
+            captured=[]
+            with patch.object(update,"migration_owner",return_value='"bonuspro_migrator"'),\
+                 patch.object(update,"database_sql",side_effect=lambda database,sql,**kw:captured.append(sql)):
+                update.rollback_presale_undo_migration(source)
+            sql=captured[0];role=sql.index("SET LOCAL ROLE")
+            for table in update.PRESALE_UNDO_TABLES:
+                self.assertLess(sql.index("LOCK TABLE bonuspro."+table+" IN ACCESS EXCLUSIVE MODE"),role)
+                self.assertLess(sql.index("EXISTS(SELECT 1 FROM bonuspro."+table+")"),role)
+            self.assertLess(role,sql.index(path.read_text()))
+            self.assertIn("version_num='0015'",sql)
+            self.assertNotIn("CASCADE",sql)
+
     def test_personal_rollback_checks_every_new_table_before_owner_role(self):
         with tempfile.TemporaryDirectory() as directory:
             source=Path(directory);path=source/"migrations/versions/0015_personal_discounts.down.sql"
@@ -168,31 +191,37 @@ class SchemaUpgradeTests(unittest.TestCase):
             self.assertIn("DO $$ BEGIN IF",sql);self.assertIn("END $$;",sql)
 
     def test_compatible_upgrade_chain_handles_both_supported_origins_and_is_idempotent(self):
-        for initial,expected in (("0013",["rebinding","personal"]),("0014",["personal"]),("0015",[])):
+        for initial,expected in (("0013",["rebinding","personal","presale"]),("0014",["personal","presale"]),("0015",["presale"]),("0016",[])):
             state={"schema":initial};calls=[]
             def rebinding(database,source):
                 self.assertEqual(state["schema"],"0013");calls.append("rebinding");state["schema"]="0014"
             def personal(database,source):
                 self.assertEqual(state["schema"],"0014");calls.append("personal");state["schema"]="0015"
+            def presale(database,source):
+                self.assertEqual(state["schema"],"0015");calls.append("presale");state["schema"]="0016"
             with patch.object(update,"database_schema",side_effect=lambda *_:state["schema"]),\
                  patch.object(update,"apply_rebinding_migration",side_effect=rebinding),\
-                 patch.object(update,"apply_personal_discount_migration",side_effect=personal):
+                 patch.object(update,"apply_personal_discount_migration",side_effect=personal),\
+                 patch.object(update,"apply_presale_undo_migration",side_effect=presale):
                 update.apply_compatible_migrations("bonuspro",ROOT)
-            self.assertEqual(calls,expected);self.assertEqual(state["schema"],"0015")
+            self.assertEqual(calls,expected);self.assertEqual(state["schema"],"0016")
         with patch.object(update,"database_schema",return_value="0017"),\
              patch.object(update,"database_sql") as execute:
             with self.assertRaises(update.UpdateFailed):update.apply_compatible_migrations("bonuspro",ROOT)
             execute.assert_not_called()
 
     def test_rollback_chain_never_crosses_original_schema_or_drops_rebinding_after_personal_history(self):
-        for original,expected in (("0013",["personal","rebinding"]),("0014",["personal"])):
-            state={"schema":"0015"};calls=[]
+        for original,expected in (("0013",["presale","personal","rebinding"]),("0014",["presale","personal"]),("0015",["presale"])):
+            state={"schema":"0016"};calls=[]
             def personal(source,database):
                 calls.append("personal");state["schema"]="0014"
             def rebinding(database):
                 calls.append("rebinding");state["schema"]="0013"
+            def presale(source,database):
+                calls.append("presale");state["schema"]="0015"
             with patch.object(update,"database_schema",side_effect=lambda *_:state["schema"]),\
                  patch.object(update,"rollback_personal_discount_migration",side_effect=personal),\
+                 patch.object(update,"rollback_presale_undo_migration",side_effect=presale),\
                  patch.object(update,"rollback_rebinding_migration",side_effect=rebinding):
                 update.rollback_compatible_migrations(ROOT,original)
             self.assertEqual(calls,expected);self.assertEqual(state["schema"],original)
@@ -203,8 +232,55 @@ class SchemaUpgradeTests(unittest.TestCase):
             rebinding.assert_not_called()
 
     def test_only_adjacent_compatible_schema_transitions_are_allowed(self):
-        for old,new in (("0013","0014"),("0014","0013"),("0014","0015"),("0015","0014")):
+        for old,new in (("0013","0014"),("0014","0013"),("0014","0015"),("0015","0014"),("0015","0016"),("0016","0015")):
             self.assertIn("COMMIT;",update.guarded_schema_sql("SELECT 1;",expected=old,result=new,owner="bonuspro_migrator"))
         for old,new in (("0013","0015"),("0015","0013"),("0016","0017"),("0014","0014")):
             with self.assertRaises(update.UpdateFailed):
                 update.guarded_schema_sql("SELECT 1;",expected=old,result=new,owner="bonuspro_migrator")
+
+    def test_existing_0015_isolated_restore_preserves_personal_history(self):
+        for altered in (False,True):
+            with self.subTest(altered=altered),tempfile.TemporaryDirectory() as directory:
+                backup=Path(directory);(backup/"database.dump").write_bytes(b"isolated archive")
+                personal={name:2 for name in update.PERSONAL_DISCOUNT_TABLES}
+                after=personal.copy()
+                if altered:after[update.PERSONAL_DISCOUNT_TABLES[0]]+=1
+                with patch.object(update,"database_sql") as execute,\
+                     patch.object(update.subprocess,"run"),\
+                     patch.object(update,"database_schema",side_effect=["0015","0016"]),\
+                     patch.object(update,"validate_restored_journal"),\
+                     patch.object(update,"financial_counts",return_value={"transactions":4,"postings":8}),\
+                     patch.object(update,"personal_discount_counts",side_effect=[personal,after]),\
+                     patch.object(update,"presale_undo_counts",return_value=dict.fromkeys(update.PRESALE_UNDO_TABLES,0)),\
+                     patch.object(update,"apply_compatible_migrations"):
+                    if altered:
+                        with self.assertRaisesRegex(update.UpdateFailed,"changed personal-discount history"):
+                            update.verify_restore(backup,ROOT)
+                    else:update.verify_restore(backup,ROOT)
+                    self.assertTrue(any(str(call.args[1]).startswith("DROP DATABASE ") for call in execute.call_args_list))
+
+    def test_new_undo_history_on_restore_is_never_accepted_as_empty_upgrade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            backup=Path(directory);(backup/"database.dump").write_bytes(b"isolated archive")
+            with patch.object(update,"database_sql"),\
+                 patch.object(update.subprocess,"run"),\
+                 patch.object(update,"database_schema",side_effect=["0015","0016"]),\
+                 patch.object(update,"validate_restored_journal"),\
+                 patch.object(update,"financial_counts",return_value={}),\
+                 patch.object(update,"personal_discount_counts",return_value={}),\
+                 patch.object(update,"presale_undo_counts",return_value={"presale_undo_requests":1}),\
+                 patch.object(update,"apply_compatible_migrations"):
+                with self.assertRaisesRegex(update.UpdateFailed,"unexpectedly created presale-undo history"):
+                    update.verify_restore(backup,ROOT)
+
+    def test_schema_numbers_do_not_make_main_and_compatible_images_interchangeable(self):
+        import json
+        for schema,flags in (("0013",[False,False,False]),("0014",[True,False,False]),
+                             ("0015",[True,True,False]),("0016",[True,True,True])):
+            with self.subTest(schema=schema),patch.object(update,"database_sql",return_value=json.dumps(flags)):
+                self.assertTrue(update.compatible_database_lineage(schema))
+        for schema,flags in (("0014",[False,False,False]),("0015",[False,False,False]),
+                             ("0016",[True,False,False]),("0016",[True,True,False]),
+                             ("0016",[1,1,1])):
+            with self.subTest(schema=schema,flags=flags),patch.object(update,"database_sql",return_value=json.dumps(flags)):
+                self.assertFalse(update.compatible_database_lineage(schema))

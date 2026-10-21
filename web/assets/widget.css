@@ -87,3 +87,18 @@ main[data-personal=true] #payable{font-size:20px}
 
 .spend-heading{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
 #personal-limit{color:#596579;font-size:11px;text-align:right;font-variant-numeric:tabular-nums}
+
+
+#undo-start{width:100%;min-height:38px;margin-top:12px;color:#596579;font-size:12px}
+#undo-panel{padding-top:10px;border-top:1px solid #e7e9ee}
+#undo-panel h2{margin:0 0 8px;color:#344054;font-size:13px;font-weight:600;line-height:20px}
+#undo-note{margin:0;color:#596579;font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+#undo-verify,#undo-resume{width:100%;min-height:38px;margin-top:12px;font-size:12px}
+#undo-panel[data-state=review] h2{color:#865b20}
+
+#undo-confirm{margin-top:12px;padding:10px;border:1px solid #ead9bc;border-radius:4px;background:#fffaf2}
+#undo-confirm h2{margin:0 0 6px;font-size:12px;font-weight:600}
+#undo-confirm p{margin:0;color:#79521f;font-size:12px;line-height:1.5}
+.undo-confirm-actions{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+#undo-confirm-apply{flex:1;min-height:38px;border-color:#987027;color:#79521f;font-size:12px}
+#undo-confirm-cancel{min-height:38px;font-size:12px}

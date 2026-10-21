@@ -5,6 +5,7 @@ const $=id=>document.getElementById(id);
 let sequence=0,epoch=0,openMessage=null,orderId=null,token=null,quote=null;
 let dirty=false,busy=false,attempt=null,requestId=null,draftRevision=0,savedWhileBusy=false;
 let resumeRequired=false,resumeAuthorized=false,resumeSaveRevision=null;
+let undo=null,undoRequestId=null,undoResumeAuthorized=false,undoSaveRevision=null,undoNotice=null,undoConfirmation=null;
 const waiting=new Map();
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const documentErrors={
@@ -30,6 +31,16 @@ const readOnlyMessages={
   order_has_redemption:"В заказе уже есть операция списания. Обновите данные для проверки.",
   return_review:"Списание приостановлено. Нужен администратор."
 };
+const undoErrors={
+  undo_restore_original:"Заказ изменён. Восстановите сохранённый вариант со скидкой или обратитесь к администратору.",
+  undo_sale_locked:"У заказа есть оплата, отгрузка или возврат. Отмена через виджет недоступна.",
+  undo_operation_changed:"Операция изменилась. Обновите виджет.",
+  undo_not_confirmed:"Сохраните заказ и дождитесь подтверждения применения.",
+  undo_generation_changed:"Операция уже отменена или заменена. Обновите виджет.",
+  undo_not_representable:"Не удалось точно восстановить цены. Нужен администратор.",
+  undo_balance_limit:"Возврат бонусов превысит допустимый баланс. Нужен администратор."
+};
+const digest=value=>typeof value==="string"&&/^[a-f0-9]{64}$/.test(value);
 const amountFormat=new Intl.NumberFormat("ru-KZ");
 const money=value=>{
  const minor=BigInt(value),fraction=minor%100n;return amountFormat.format(minor/100n)+(fraction?","+String(fraction).padStart(2,"0"):"")+" ₸";
@@ -57,7 +68,7 @@ function renderBalance(id,value){
 function view(name){document.querySelector("main").dataset.view=name;}
 function status(text,error=false){$("status").textContent=text;$("status").dataset.error=String(error);$("status").hidden=!text;}
 function controls(){
-  const personal=personalSelected(),spending=Boolean(quote&&canSpend()&&!attempt),applying=Boolean(quote&&!attempt&&(spending||personal));
+  const personal=personalSelected(),spending=Boolean(quote&&canSpend()&&!attempt&&!undo),applying=Boolean(quote&&!attempt&&!undo&&(spending||personal));
   $("refresh").disabled=busy||!orderId;
   $("apply").disabled=busy||dirty||!applying||!validAmount()||Boolean(attempt);
   $("points").disabled=busy||dirty||!spending||Boolean(attempt);$("points").required=!personal;
@@ -71,6 +82,17 @@ function controls(){
   $("resume").hidden=!resumeRequired||!attempt?.id||attempt.recoverable!==true;
   $("resume").disabled=busy||dirty||!resumeAuthorized||$("resume").hidden;
   $("resume").textContent=attempt?.apply_personal?"Продолжить применение":"Продолжить списание";
+  $("undo-start").hidden=Boolean(undo)||!(attempt?.state==="committed"&&
+    (attempt.verified===true||attempt.undo_restore_required===true)&&
+    attempt.undo_available===true&&!attempt.original_buyer_id&&digest(attempt.undo_source_hash));
+  $("undo-start").textContent=attempt?.undo_restore_required===true?"Восстановить исходные строки и отменить":"Отменить применение";
+  $("undo-start").disabled=busy||dirty||Boolean(undoConfirmation)||$("undo-start").hidden;
+  $("undo-verify").hidden=!undo?.id;$("undo-verify").disabled=busy||dirty||Boolean(undoConfirmation)||!undo?.id;
+  $("undo-resume").hidden=!undo?.id||undo.recoverable!==true||Boolean(undo.original_buyer_id);
+  $("undo-resume").disabled=busy||dirty||Boolean(undoConfirmation)||!undoResumeAuthorized||$("undo-resume").hidden;
+  $("undo-resume").textContent=undo?.restore_required===true?"Восстановить исходные строки и отменить":"Продолжить отмену";
+  $("undo-confirm-apply").disabled=busy||dirty;
+  $("undo-confirm-cancel").disabled=busy;
 }
 function hostRequest(name,extra={},responseName){
   return new Promise((resolve,reject)=>{
@@ -90,9 +112,10 @@ async function api(path,options={}){
     try{payload=await response.json();}catch{payload=null;}
     if(generation!==epoch)throw new Error("document_changed");
     const error=new Error("api_error");error.status=response.status;
-    error.stage=path.endsWith("/prepare")?"prepare":path.endsWith("/verify")?"verify":path.endsWith("/resume")?"resume":path.startsWith("/api/widget/orders/")?"load":"session";
+    error.stage=path.includes("/undo/")?"undo":path.endsWith("/prepare")?"prepare":path.endsWith("/verify")?"verify":path.endsWith("/resume")?"resume":path.startsWith("/api/widget/orders/")?"load":"session";
     if(Object.hasOwn(documentErrors,payload?.reason)&&
        (payload.reason!=="discount_not_representable"||error.stage==="prepare"))error.reason=payload.reason;
+    if(Object.hasOwn(undoErrors,payload?.reason))error.reason=payload.reason;
     if(typeof payload?.trace_id==="string"&&/^[a-f0-9]{12}$/.test(payload.trace_id))error.trace=payload.trace_id;
     if(["moysklad_permissions_required","operator_access_required","program_not_configured"].includes(payload?.error))error.code=payload.error;
     if(response.status===401)token=null;
@@ -103,6 +126,12 @@ async function api(path,options={}){
   return value;
 }
 function explain(error){
+  if(error.stage==="undo"){
+    if(undoErrors[error.reason])return undoErrors[error.reason];
+    if(error.status===401)return "Сессия истекла. Нажмите «Обновить».";
+    if(error.status===403)return "Нет доступа к отмене. Нужен администратор.";
+    return "Отмена не подтверждена. Обновите данные — повторно применять скидку не нужно.";
+  }
   if(error.message==="host_rejected")return "МойСклад отклонил скидку. "+preservedOperation()+" — нужен администратор.";
   if(error.status===401)return "Сессия истекла. Нажмите «Обновить».";
   if(error.status===403)return error.code==="moysklad_permissions_required"?"Нет доступа к данным МойСклад. Проверьте подключение решения.":"Нет доступа к бонусам. Обратитесь к администратору.";
@@ -129,6 +158,8 @@ async function authenticate(generation){
   token=session.token;
 }
 function showPending(value){
+  clearUndoConfirmation();
+  undo=null;undoResumeAuthorized=false;undoSaveRevision=null;$("undo-panel").hidden=true;
   attempt=value;quote=null;view("pending");$("summary").hidden=true;$("pending").hidden=false;$("personal-row").hidden=true;
   const done=value.state==="committed"&&value.verified===true,personal=value.apply_personal===true;
   if(done){resumeRequired=false;resumeAuthorized=false;resumeSaveRevision=null;}
@@ -140,14 +171,34 @@ function showPending(value){
     personal?"Скидка клиента: −"+money(value.personal_discount_minor):pointsLabel(value.points)+(done?"":" в резерве");
   $("pending-bonus").hidden=!value.id||!personal||value.points<=0;
   $("pending-bonus").textContent=personal&&value.points>0?pointsLabel(value.points)+(done?" списано":" в резерве"):"";
-  $("pending-note").textContent=done?"Заказ сохранён и проверен.":
+  $("pending-note").textContent=value.original_buyer_id?"Верните первоначального покупателя в заказ и сохраните. Затем повторите отмену.":
+    value.undo_restore_required===true?"Можно восстановить исходные строки и отменить применение. Текущие изменения товаров будут заменены.":done?"Заказ сохранён и проверен.":
     !value.id?"Обновите данные. Не применяйте "+(personal?"скидку":"бонусы")+" повторно.":
     resumeRequired&&value.recoverable===true?"Сохраните заказ в МойСклад, затем продолжите "+(personal?"применение скидки.":"списание."):
+    value.verified===false&&value.state==="committed"?"Заказ изменён. Восстановите сохранённые условия и повторите отмену или обратитесь к администратору.":
     value.verified===false?"Сохраните заказ. Если сумма отличается — нужен администратор.":
     value.recovered?"Сверяем операцию с заказом.":"Нажмите «Сохранить» в МойСклад.";
+  status(dirty&&done?"Верните заказ к сохранённому варианту со скидкой, затем отмените применение.":"");controls();
+}
+function showUndo(value){
+  clearUndoConfirmation();
+  undo=value;quote=null;resumeRequired=false;resumeAuthorized=false;resumeSaveRevision=null;
+  view("undo");$("summary").hidden=true;$("pending").hidden=true;$("personal-row").hidden=true;$("undo-panel").hidden=false;
+  $("undo-panel").dataset.state=value.recoverable===false&&value.reason?"review":"waiting";
+  $("undo-title").textContent="Отмена применения";
+  $("undo-note").textContent=value.original_buyer_id?"Верните первоначального покупателя в заказ и сохраните. Затем повторите отмену.":
+    !value.id?"Ответ не получен. Обновите данные, чтобы проверить отмену.":
+    value.restore_required===true&&value.recoverable===true?"Для отмены нужно восстановить исходные строки. Сохраните заказ, затем подтвердите восстановление.":
+    value.reason&&undoErrors[value.reason]?undoErrors[value.reason]:
+    dirty?"Сохраните заказ в МойСклад. Отмена завершится после проверки.":
+    value.recovered?"Проверяем сохранённый заказ.":
+    value.recoverable===true?"Сохраните заказ, затем продолжите отмену.":
+    "Сохраните заказ в МойСклад. Отмена завершится после проверки.";
   status("");controls();
 }
 function renderQuote(value){
+  clearUndoConfirmation();
+  undo=null;undoRequestId=null;undoResumeAuthorized=false;undoSaveRevision=null;$("undo-panel").hidden=true;
   quote=value;attempt=null;resumeRequired=false;resumeAuthorized=false;resumeSaveRevision=null;$("summary").hidden=false;$("pending").hidden=true;
   $("order-label").textContent=value.name?"Заказ №"+value.name:"Заказ покупателя";
   renderBalance("balance",value.quote.balance);
@@ -155,7 +206,7 @@ function renderQuote(value){
   $("available-note").hidden=!reserved;$("available-note").textContent=reserved?"В резерве: "+amountFormat.format(value.quote.balance-value.quote.available):"";
   $("balances").hidden=false;$("apply-personal").checked=hasPersonal();
   view(value.quote.balance===0?"empty":"ready");
-  quoteStatus();updatePayable();
+  quoteStatus();updatePayable();if(undoNotice&&!dirty)status(undoNotice);
 }
 function quoteStatus(){
   if(!quote)return;
@@ -169,14 +220,18 @@ function quoteStatus(){
 }
 async function refresh(){
   if(!orderId||busy)return;
-  const generation=epoch,id=orderId;busy=true;quote=null;resumeAuthorized=false;resumeSaveRevision=null;$("summary").hidden=true;$("pending").hidden=true;
+  clearUndoConfirmation();
+  const generation=epoch,id=orderId;busy=true;quote=null;resumeAuthorized=false;resumeSaveRevision=null;undoResumeAuthorized=false;undoSaveRevision=null;$("summary").hidden=true;$("pending").hidden=true;$("undo-panel").hidden=true;
   view("loading");status("Загружаем бонусы…");controls();
   try{
     await authenticate(generation);
     if(generation!==epoch)return;
     const value=await api("/api/widget/orders/"+id);
     if(generation!==epoch)return;
-    if(value.redemption){
+    if(value.undo){
+      showUndo({...value.undo,recovered:true});
+      if(!dirty)savedWhileBusy=true;
+    }else if(value.redemption){
       showPending({...value.redemption,recovered:true});
       // Refresh resumes verification; a stored state alone never renders success.
       savedWhileBusy=true;
@@ -214,12 +269,13 @@ function finishBusy(generation){
     savedWhileBusy=false;
     // Save can race the prepare/UpdateResponse or a provider read. Verify the
     // saved document after the in-flight operation, never treat Save as proof.
-    queueMicrotask(()=>{if(generation===epoch){if(attempt)void verify();else void refresh();}});
+    queueMicrotask(()=>{if(generation===epoch){if(undo)void verifyUndo();else if(attempt)void verify();else void refresh();}});
   }
 }
 async function apply(event){
   event.preventDefault();
-  if(busy||dirty||attempt||(!canSpend()&&!personalSelected()))return;
+  if(busy||dirty||attempt||undo||(!canSpend()&&!personalSelected()))return;
+  undoNotice=null;
   const points=requestedPoints(),personal=personalSelected(),personalPreview=quote?.personal_discount;
   if(!validAmount()){
     status("Введите целое число в пределах лимита.",true);return;
@@ -262,7 +318,7 @@ async function apply(event){
   }finally{finishBusy(generation);}
 }
 async function verify(){
-  if(busy||!orderId||!attempt)return;
+  if(busy||!orderId||!attempt||undo)return;
   const generation=epoch,id=orderId,revision=draftRevision;
   const savedForResume=resumeSaveRevision===revision;
   resumeAuthorized=false;
@@ -302,6 +358,123 @@ async function resume(){
     finishBusy(generation);
   }
 }
+function clearUndoConfirmation(){
+  const visible=Boolean(undoConfirmation);
+  undoConfirmation=null;$("undo-confirm").hidden=true;
+  if(visible){$("pending").hidden=Boolean(undo)||!attempt;$("undo-panel").hidden=!undo;}
+}
+function confirmUndo(mode){
+  const value=mode==="start"?attempt:undo;
+  const source=mode==="start"?value?.undo_source_hash:value?.resume_source_hash;
+  if(busy||dirty||!value?.id||!digest(source))return;
+  undoConfirmation={mode,epoch,revision:draftRevision,id:value.id,source};
+  $("pending").hidden=true;$("undo-panel").hidden=true;$("undo-confirm").hidden=false;
+  controls();$("undo-confirm-apply").focus();
+}
+function acceptUndoConfirmation(){
+  const confirmation=undoConfirmation;
+  if(!confirmation)return;
+  const value=confirmation.mode==="start"?attempt:undo;
+  const source=confirmation.mode==="start"?value?.undo_source_hash:value?.resume_source_hash;
+  const valid=!busy&&!dirty&&confirmation.epoch===epoch&&confirmation.revision===draftRevision&&
+    confirmation.id===value?.id&&confirmation.source===source;
+  clearUndoConfirmation();controls();
+  if(!valid){status("Заказ изменился. Проверьте данные и повторите отмену.",true);return;}
+  if(confirmation.mode==="start")void startUndo(true);else void resumeUndo(true);
+}
+function completeUndo(value){
+  if(value?.state!=="completed"||value.verified!==true)return false;
+  clearUndoConfirmation();
+  // A host acknowledgement or Save event is never financial proof.
+  undo=null;attempt=null;quote=null;requestId=null;undoRequestId=null;
+  undoResumeAuthorized=false;undoSaveRevision=null;undoNotice="Применение отменено. Можно изменить заказ.";
+  $("undo-panel").hidden=true;savedWhileBusy=true;return true;
+}
+async function startUndo(restoreOriginal=false){
+  if(busy||dirty||undo||!attempt?.id||attempt.state!=="committed"||
+     (attempt.verified!==true&&attempt.undo_restore_required!==true)||attempt.original_buyer_id||
+     attempt.undo_available!==true||!digest(attempt.undo_source_hash))return;
+  if(attempt.undo_restore_required===true&&restoreOriginal!==true){confirmUndo("start");return;}
+  const generation=epoch,id=orderId,revision=draftRevision,applied=attempt;
+  undoNotice=null;undoRequestId=undoRequestId||crypto.randomUUID();
+  const body={request_id:undoRequestId,attempt_id:applied.id,source_hash:applied.undo_source_hash};
+  if(restoreOriginal===true)body.restore_original=true;
+  busy=true;controls();
+  try{
+    await authenticate(generation);if(generation!==epoch)return;
+    const result=await api("/api/widget/orders/"+id+"/undo/prepare",{method:"POST",body:JSON.stringify(body)});
+    if(generation!==epoch)return;
+    if(completeUndo(result.undo))return;
+    showUndo(result.undo);
+    if(revision!==draftRevision||dirty||!result.update_state){
+      status(revision!==draftRevision||dirty?"Заказ изменился. Отмена не подтверждена — проверьте сохранение.":
+        "Проверьте сохранение заказа перед продолжением отмены.",true);return;
+    }
+    // Dispatch itself may change the draft even when its acknowledgement is lost.
+    dirty=true;controls();
+    await hostRequest("UpdateRequest",{updateState:result.update_state},"UpdateResponse");
+    if(generation!==epoch)return;
+    showUndo(result.undo);
+  }catch(error){
+    error.stage="undo";
+    if(generation===epoch){
+      if(!undo&&[400,401,403,404,409,422].includes(error.status)){
+        undoRequestId=null;showPending(applied);
+      }else{
+        showUndo(undo||{state:"prepared",attempt_id:applied.id});
+      }
+      status(explain(error),true);
+    }
+  }finally{finishBusy(generation);}
+}
+async function verifyUndo(){
+  if(busy||dirty||!orderId||!undo?.id)return;
+  const generation=epoch,id=orderId,revision=draftRevision;
+  const savedForResume=undoSaveRevision===revision;
+  undoResumeAuthorized=false;busy=true;controls();
+  try{
+    await authenticate(generation);if(generation!==epoch)return;
+    const result=await api("/api/widget/orders/"+id+"/undo/verify",{method:"POST",body:JSON.stringify({undo_id:undo.id})});
+    if(generation!==epoch)return;
+    const value=result.undo;
+    if(completeUndo(value))return;
+    showUndo(value);
+    if(dirty)status("Сохраните заказ, чтобы проверить отмену.");
+    undoResumeAuthorized=savedForResume&&undoSaveRevision===revision&&draftRevision===revision&&!dirty&&
+      value?.recoverable===true&&digest(value.resume_source_hash);
+  }catch(error){if(generation===epoch)status(explain(error),true);}
+  finally{finishBusy(generation);}
+}
+async function resumeUndo(restoreOriginal=false){
+  if(busy||dirty||!undoResumeAuthorized||!undo?.id||undo.recoverable!==true||undo.original_buyer_id||!digest(undo.resume_source_hash))return;
+  if(undo.restore_required===true&&restoreOriginal!==true){confirmUndo("resume");return;}
+  const generation=epoch,id=orderId,revision=draftRevision,value=undo;
+  const body={undo_id:value.id,source_hash:value.resume_source_hash};
+  if(restoreOriginal===true)body.restore_original=true;
+  undoResumeAuthorized=false;undoSaveRevision=null;busy=true;controls();
+  try{
+    await authenticate(generation);if(generation!==epoch)return;
+    const result=await api("/api/widget/orders/"+id+"/undo/resume",{method:"POST",body:JSON.stringify(body)});
+    if(generation!==epoch)return;
+    if(completeUndo(result.undo))return;
+    showUndo(result.undo);
+    if(revision!==draftRevision||dirty||!result.update_state){
+      status(revision!==draftRevision||dirty?"Заказ изменился. Отмена не подтверждена — проверьте сохранение.":
+        "Проверьте сохранение заказа перед продолжением отмены.",true);return;
+    }
+    // Dispatch itself may change the draft even when its acknowledgement is lost.
+    dirty=true;controls();
+    await hostRequest("UpdateRequest",{updateState:result.update_state},"UpdateResponse");
+    if(generation!==epoch)return;
+    showUndo(result.undo);
+  }catch(error){
+    error.stage="undo";
+    if(generation===epoch){showUndo(undo||value);status(explain(error),true);}
+  }finally{
+    if(generation===epoch){undoResumeAuthorized=false;undoSaveRevision=null;}
+    finishBusy(generation);
+  }
+}
 window.addEventListener("message",event=>{
   if(!isHostMessage(event)||!event.data||typeof event.data!=="object")return;
   const message=event.data;
@@ -318,6 +491,7 @@ window.addEventListener("message",event=>{
     if(openMessage===message.messageId)return;
     epoch++;openMessage=message.messageId;orderId=null;token=null;quote=null;attempt=null;requestId=null;
     dirty=false;busy=false;draftRevision=0;savedWhileBusy=false;resumeRequired=false;resumeAuthorized=false;resumeSaveRevision=null;
+    undo=null;undoRequestId=null;undoResumeAuthorized=false;undoSaveRevision=null;undoNotice=null;clearUndoConfirmation();$("undo-panel").hidden=true;
     for(const pending of waiting.values()){clearTimeout(pending.timer);pending.reject(new Error("document_changed"));}
     waiting.clear();$("summary").hidden=true;$("pending").hidden=true;$("points").value="";$("apply-personal").checked=false;$("personal-row").hidden=true;$("pending-bonus").hidden=true;$("order-label").textContent="";$("amount-hint").textContent="";$("payable").textContent="";$("points").setAttribute("aria-invalid","false");
     view("loading");status("Загружаем бонусы…");controls();
@@ -328,27 +502,36 @@ window.addEventListener("message",event=>{
     }
     orderId=message.objectId;void refresh();
   }else if(message.name==="Change"&&orderId){
-    draftRevision++;dirty=true;resumeAuthorized=false;resumeSaveRevision=null;controls();
-    if(!attempt)status("Сохраните изменения в заказе.");
+    clearUndoConfirmation();
+    draftRevision++;dirty=true;resumeAuthorized=false;resumeSaveRevision=null;undoResumeAuthorized=false;undoSaveRevision=null;undoNotice=null;controls();
+    if(undo)status("Сохраните заказ, чтобы проверить отмену.");
+    else if(attempt?.state==="committed")status("Верните заказ к сохранённому варианту со скидкой, затем отмените применение.");
+    else if(!attempt)status("Сохраните изменения в заказе.");
   }else if(message.name==="Save"&&message.objectId===orderId&&message.extensionPoint==="document.customerorder.edit"){
-    dirty=false;draftRevision++;
-    resumeAuthorized=false;
+    clearUndoConfirmation();dirty=false;draftRevision++;
+    resumeAuthorized=false;undoResumeAuthorized=false;undoSaveRevision=undo?.id?draftRevision:null;
     resumeSaveRevision=attempt?.id&&attempt.state==="verifying"?draftRevision:null;
     if(busy)savedWhileBusy=true;
-    else if(attempt)void verify();else void refresh();
+    else if(undo)void verifyUndo();else if(attempt)void verify();else void refresh();
   }
 });
 $("refresh").addEventListener("click",refresh);
 $("spend-form").addEventListener("submit",apply);
-$("points").addEventListener("input",()=>{requestId=null;updatePayable();});
+$("points").addEventListener("input",()=>{requestId=null;undoNotice=null;updatePayable();});
 $("maximum-button").addEventListener("click",()=>{$("points").value=String(projection().max_spend_points);requestId=null;updatePayable();});
 $("apply-personal").addEventListener("change",()=>{requestId=null;quoteStatus();updatePayable();});
 $("verify").addEventListener("click",verify);
 $("resume").addEventListener("click",resume);
+$("undo-start").addEventListener("click",()=>void startUndo());
+$("undo-verify").addEventListener("click",verifyUndo);
+$("undo-resume").addEventListener("click",()=>void resumeUndo());
+$("undo-confirm-apply").addEventListener("click",acceptUndoConfirmation);
+$("undo-confirm-cancel").addEventListener("click",()=>{clearUndoConfirmation();controls();});
 controls();
 
 window.addEventListener("pagehide",()=>{
  epoch++;token=null;quote=null;attempt=null;resumeAuthorized=false;resumeRequired=false;resumeSaveRevision=null;
+ undo=null;undoRequestId=null;undoResumeAuthorized=false;undoSaveRevision=null;undoNotice=null;clearUndoConfirmation();
  for(const pending of waiting.values()){clearTimeout(pending.timer);pending.reject(new Error("page_closed"));}
  waiting.clear();
 });

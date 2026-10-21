@@ -1,4 +1,4 @@
-"""Start the existing schema-0015 tenant worker without changing keys or financial setup."""
+"""Start the existing schema-0016 tenant worker without changing keys or financial setup."""
 import argparse,json,os,re,selectors,subprocess,time
 from contextlib import contextmanager
 from datetime import datetime,timezone
@@ -202,7 +202,7 @@ def main():
     os.umask(0o077);root=args.root.resolve()
     try:
         schema=run(["docker","exec","bonuspro-release-db-1","psql","-U","postgres","-d","bonuspro","-At","-c","SELECT version_num FROM public.alembic_version"],capture=True)
-        if schema!="0015":raise ProcessingFailed("This helper requires schema 0015; no migration was attempted")
+        if schema!="0016":raise ProcessingFailed("This helper requires schema 0016; no migration was attempted")
         rows=installation_rows()
         tenant=select_tenant(rows,args.tenant)
         require_setup(rows,tenant)

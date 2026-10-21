@@ -41,7 +41,8 @@ def check_compatible_upgrade(command):
         update.verify_restore(backup,source)
     assert update.database_schema()=="0013"
     update.apply_compatible_migrations("bonuspro",source)
-    assert update.database_schema()=="0015"
+    assert update.database_schema()=="0016"
+    assert not any(update.presale_undo_counts("bonuspro").values())
     update.rollback_compatible_migrations(source,"0013")
     assert update.database_schema()=="0013"
     assert update.financial_counts("bonuspro")==before
@@ -109,7 +110,26 @@ def check_compatible_upgrade(command):
     assert update.database_sql("bonuspro","SELECT count(*) FROM bonuspro.order_customer_rebindings",capture=True)=="1"
     assert update.financial_counts("bonuspro")==before
     update.validate_restored_journal("bonuspro")
-    print("Compatible 0013/0014 upgrades through 0015: protected restore, exact migrations, empty rollback, runtime RLS and history rollback refusal passed.")
+    # Existing 0015 personal policy history must survive the new undo migration,
+    # isolated restore, and an empty pre-traffic undo-only rollback.
+    personal_before=update.personal_discount_counts("bonuspro")
+    with tempfile.TemporaryDirectory() as directory:
+        backup=Path(directory)
+        update.dump_database(backup/"database.dump")
+        update.verify_restore(backup,source)
+    assert update.database_schema()=="0015"
+    assert update.personal_discount_counts("bonuspro")==personal_before
+    update.apply_presale_undo_migration("bonuspro",source)
+    assert update.database_schema()=="0016"
+    assert not any(update.presale_undo_counts("bonuspro").values())
+    update.rollback_compatible_migrations(source,"0015")
+    assert update.database_schema()=="0015"
+    assert update.personal_discount_counts("bonuspro")==personal_before
+    assert update.financial_counts("bonuspro")==before
+    update.apply_presale_undo_migration("bonuspro",source)
+    assert update.database_schema()=="0016"
+    update.validate_restored_journal("bonuspro")
+    print("Compatible 0013/0014/0015 upgrades through 0016: protected restore, exact migrations, empty rollback, runtime RLS and history rollback refusal passed.")
 
 def main():
     if os.environ.get("GITHUB_ACTIONS")!="true":

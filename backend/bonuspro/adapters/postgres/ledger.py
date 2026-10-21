@@ -113,13 +113,13 @@ class Ledger:
             return self._snapshot(conn, tenant, wallet)
 
     @staticmethod
-    def _post(conn, tenant, wallet, operation_key, request_hash, delta, kind, actor, reason, reservation=None, credit_ref=None, settlement_event=None):
+    def _post(conn, tenant, wallet, operation_key, request_hash, delta, kind, actor, reason, reservation=None, credit_ref=None, settlement_event=None, presale_undo=None):
         transaction_id = uuid4()
         conn.execute(
             "INSERT INTO bonuspro.ledger_transactions "
-            "(tenant_id,id,wallet_id,operation_key,request_hash,kind,delta,reservation_id,actor_id,reason,credit_ref_id,settlement_event_id) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-            (tenant, transaction_id, wallet, operation_key, request_hash, kind, delta, reservation, actor, reason, credit_ref, settlement_event),
+            "(tenant_id,id,wallet_id,operation_key,request_hash,kind,delta,reservation_id,actor_id,reason,credit_ref_id,settlement_event_id,presale_undo_id) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (tenant, transaction_id, wallet, operation_key, request_hash, kind, delta, reservation, actor, reason, credit_ref, settlement_event, presale_undo),
         )
         with conn.cursor() as cur:
             cur.executemany(

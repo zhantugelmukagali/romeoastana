@@ -31,6 +31,7 @@ from bonuspro.adapters.postgres.imports import Imports
 from bonuspro.adapters.postgres.activation import ActivationService,ActivationConflict
 from bonuspro.adapters.postgres.operators import Operators,OperatorDenied
 from bonuspro.adapters.postgres.voids import Voids
+from bonuspro.adapters.postgres.presale_undo import PresaleUndo,PresaleUndoConflict
 from bonuspro.importing import ImportInvalid
 from bonuspro.adapters.moysklad.remap import RemapClient, RemapError, RetryLater, AccessDenied, EntityMissing, MetadataRejected
 from bonuspro.adapters.moysklad.order import read_order
@@ -183,6 +184,24 @@ class ResumeRequest(BaseModel):
     source_hash: str = Field(min_length=64,max_length=64,pattern="^[0-9a-f]{64}$")
 
 
+class UndoPrepareRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID
+    attempt_id: UUID
+    source_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    restore_original: StrictBool = False
+
+
+class UndoVerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    undo_id: UUID
+
+
+class UndoResumeRequest(UndoVerifyRequest):
+    source_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    restore_original: StrictBool = False
+
+
 class SecurityHeaders:
     """Add headers directly to ASGI response-start; never wrap or consume its body."""
     def __init__(self, app):
@@ -243,6 +262,7 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     checkout = Checkout(Ledger(config.database_url))
     discounts = PersonalDiscounts(Ledger(config.database_url))
     redemptions = Redemptions(Ledger(config.database_url))
+    presale_undo = PresaleUndo(Ledger(config.database_url))
     automation = Automation(Ledger(config.database_url))
     imports = Imports(Ledger(config.database_url))
     operators = Operators(Ledger(config.database_url))
@@ -290,6 +310,10 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     @app.exception_handler(ActivationConflict)
     async def activation_conflict(request,error):
         return JSONResponse({"error":error.code},status_code=409)
+
+    @app.exception_handler(PresaleUndoConflict)
+    async def presale_undo_conflict(request,error):
+        return JSONResponse({"error":"presale_undo_conflict","reason":error.reason},status_code=409)
 
     @app.exception_handler(Conflict)
     async def conflict(request, error):
@@ -345,9 +369,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         try:
             with psycopg.connect(config.database_url,connect_timeout=3) as conn:
                 conn.execute("SET LOCAL statement_timeout='3s'")
-                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events'),to_regclass('bonuspro.import_batches'),to_regclass('bonuspro.opening_balances'),to_regclass('bonuspro.activation_requests'),to_regclass('bonuspro.activation_completions'),to_regclass('bonuspro.operator_permissions'),to_regclass('bonuspro.redemption_voids'),to_regclass('bonuspro.order_customer_rebindings'),to_regprocedure('bonuspro.rebind_order_customer(uuid,uuid,text,text,uuid)'),to_regclass('bonuspro.personal_discount_policy_versions'),to_regclass('bonuspro.customer_personal_discount_versions'),to_regclass('bonuspro.personal_discount_applications'),to_regclass('bonuspro.personal_discount_voids')").fetchone()
+                exists = conn.execute("SELECT to_regclass('bonuspro.installations'),to_regclass('bonuspro.ledger_transactions'),to_regclass('bonuspro.return_cases'),to_regclass('bonuspro.jobs'),to_regclass('bonuspro.rule_versions'),to_regclass('bonuspro.order_contexts'),to_regclass('bonuspro.customer_wallets'),to_regclass('bonuspro.redemption_attempts'),to_regclass('bonuspro.widget_bindings'),to_regclass('bonuspro.automation_config'),to_regclass('bonuspro.order_accruals'),to_regclass('bonuspro.order_monitors'),to_regclass('bonuspro.sync_state'),to_regclass('bonuspro.reconciliation_issues'),to_regclass('bonuspro.settlement_cases'),to_regclass('bonuspro.settlement_events'),to_regclass('bonuspro.import_batches'),to_regclass('bonuspro.opening_balances'),to_regclass('bonuspro.activation_requests'),to_regclass('bonuspro.activation_completions'),to_regclass('bonuspro.operator_permissions'),to_regclass('bonuspro.redemption_voids'),to_regclass('bonuspro.order_customer_rebindings'),to_regprocedure('bonuspro.rebind_order_customer(uuid,uuid,text,text,uuid)'),to_regclass('bonuspro.personal_discount_policy_versions'),to_regclass('bonuspro.customer_personal_discount_versions'),to_regclass('bonuspro.personal_discount_applications'),to_regclass('bonuspro.personal_discount_voids'),to_regclass('bonuspro.presale_undo_requests'),to_regclass('bonuspro.presale_undo_completions')").fetchone()
                 revision = conn.execute("SELECT version_num FROM public.alembic_version").fetchall()
-                if not all(exists) or revision != [("0015",)]:
+                if not all(exists) or revision != [("0016",)]:
                     raise RuntimeError("missing schema")
             return {"status":"ready"}
         except (psycopg.Error,RuntimeError):
@@ -660,6 +684,9 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     @app.get("/api/widget/orders/{order_id}")
     def widget_order(order_id: UUID,request: Request):
         identity=operator_identity(request)
+        pending=presale_undo.pending(identity.tenant_id,str(order_id))
+        if pending:
+            return {"undo":pending}
         existing=redemptions.existing(identity.tenant_id,str(order_id))
         if existing:
             return {"redemption":redemptions.public(existing)}
@@ -718,7 +745,48 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         completed=bool(existing and existing["state"]=="committed")
         saved=read_order(document_client(identity),str(order_id),marker_id=marker,allow_fulfilled=completed)
         operator_identity(request)
-        return redemptions.confirm_saved(identity.tenant_id,saved,authorize=lambda conn:operators.check_in(conn,identity))
+        result=redemptions.confirm_saved(identity.tenant_id,saved,authorize=lambda conn:operators.check_in(conn,identity))
+        return presale_undo.hints(identity.tenant_id,saved,result)
+
+
+    def undo_proof(identity,order_id):
+        marker=redemptions.binding(identity.tenant_id)
+        if not marker:
+            raise PresaleUndoConflict("undo_generation_changed")
+        return FulfillmentReader(document_client(identity)).read(str(order_id),marker_id=marker)
+
+    @app.post("/api/widget/orders/{order_id}/undo/prepare")
+    def widget_undo_prepare(order_id: UUID,body: UndoPrepareRequest,request: Request):
+        same_origin(request)
+        identity=operator_identity(request)
+        proof=undo_proof(identity,order_id)
+        operator_identity(request)
+        return presale_undo.prepare(identity.tenant_id,str(order_id),proof,
+            attempt_id=str(body.attempt_id),request_id=str(body.request_id),
+            actor=identity.user_id,expected_source=body.source_hash,
+            restore_original=body.restore_original,
+            authorize=lambda conn:operators.check_in(conn,identity))
+
+    @app.post("/api/widget/orders/{order_id}/undo/verify")
+    def widget_undo_verify(order_id: UUID,body: UndoVerifyRequest,request: Request):
+        same_origin(request)
+        identity=operator_identity(request)
+        proof=undo_proof(identity,order_id)
+        operator_identity(request)
+        return presale_undo.verify(identity.tenant_id,str(order_id),proof,
+            undo_id=str(body.undo_id),actor=identity.user_id,
+            authorize=lambda conn:operators.check_in(conn,identity))
+
+    @app.post("/api/widget/orders/{order_id}/undo/resume")
+    def widget_undo_resume(order_id: UUID,body: UndoResumeRequest,request: Request):
+        same_origin(request)
+        identity=operator_identity(request)
+        proof=undo_proof(identity,order_id)
+        operator_identity(request)
+        return presale_undo.resume(identity.tenant_id,str(order_id),proof,
+            undo_id=str(body.undo_id),expected_source=body.source_hash,
+            restore_original=body.restore_original,
+            authorize=lambda conn:operators.check_in(conn,identity))
 
     @app.get("/api/admin/readiness")
     def operational_readiness(request: Request):
