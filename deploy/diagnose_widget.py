@@ -91,6 +91,119 @@ def diagnose():
 raise SystemExit(diagnose())
 """
 
+HEADERS_CHILD_CODE=r"""
+import json,re,sys,time
+from contextlib import closing
+
+HEADERS=("Accept","Accept-Encoding","Content-Type","X-Lognex-Accept-Region","Authorization")
+class ProbeComplete(Exception):pass
+
+def provider_details(response,deadline):
+    if not response.headers.get("Content-Type","").lower().startswith("application/json"):
+        return [],[]
+    body=bytearray()
+    try:
+        for chunk in response.iter_bytes(chunk_size=4096):
+            if time.monotonic()>=deadline or len(body)+len(chunk)>64*1024:return [],[]
+            body.extend(chunk)
+        def unique(pairs):
+            result={}
+            for key,value in pairs:
+                if key in result:raise ValueError()
+                result[key]=value
+            return result
+        def invalid(value):raise ValueError()
+        payload=json.loads(body,object_pairs_hook=unique,parse_constant=invalid)
+    except (Exception,):
+        return [],[]
+    errors=payload.get("errors") if isinstance(payload,dict) else None
+    if not isinstance(errors,list) or not 1<=len(errors)<=64:return [],[]
+    codes=sorted({item["code"] for item in errors if isinstance(item,dict)
+                  and type(item.get("code")) is int and 0<=item["code"]<=999999})[:8]
+    names=set()
+    for item in errors:
+        text=item.get("error") if isinstance(item,dict) and type(item.get("code")) is int and item["code"]==3030 else None
+        if not isinstance(text,str) or len(text)>4096:continue
+        for name in HEADERS:
+            if re.search(r"(?<![a-z0-9-])"+re.escape(name)+r"(?![a-z0-9-])",text,re.I):
+                names.add(name)
+    return codes,[name for name in HEADERS if name in names]
+
+def diagnose():
+    import httpx,psycopg
+    from bonuspro.settings import Settings
+    from bonuspro.security import AuthenticationFailed
+    from bonuspro.adapters.postgres.installations import Installations
+    from bonuspro.adapters.moysklad.remap import RemapClient,RemapError
+    tenant=sys.argv[1]
+    report={"read_only":True,"result":"diagnostic_unavailable","variants":[]}
+    original_send=httpx.Client.send
+    deadline=time.monotonic()+40
+    variant="baseline"
+    def send(client,request,*args,**kwargs):
+        if (request.method!="GET" or request.url.scheme!="https"
+            or request.url.host!="api.moysklad.ru"
+            or request.url.path!="/api/remap/1.2/entity/customerorder/metadata/attributes"
+            or list(request.url.params.multi_items())!=[("limit","1000")]):
+            raise ValueError("unexpected diagnostic request")
+        if len(report["variants"])>=3 or time.monotonic()>=deadline:
+            raise ValueError("diagnostic limit")
+        if variant=="no_region":
+            request.headers.pop("X-Lognex-Accept-Region",None)
+        elif variant=="ru":
+            request.headers["X-Lognex-Accept-Region"]="ru"
+        item={"variant":variant,"http":None,"codes":[],"headers":[],"content_region":None}
+        report["variants"].append(item)
+        response=original_send(client,request,*args,**kwargs)
+        try:
+            item["http"]=response.status_code
+            region=response.headers.get("X-Lognex-Content-Region")
+            item["content_region"]=region if region in ("ru","uz","kz") else None
+            if response.status_code!=200:
+                item["codes"],item["headers"]=provider_details(response,deadline)
+        finally:
+            response.close()
+        # No adapter parsing or remote writes follow this one completed GET.
+        raise ProbeComplete()
+    try:
+        config=Settings.from_env()
+        repo=Installations(config.database_url,config.lifecycle_database_url,config.credentials)
+        with closing(psycopg.connect(config.database_url,autocommit=True,connect_timeout=5)) as guard:
+            guard.execute("SET statement_timeout='5s'")
+            locked=guard.execute("SELECT pg_try_advisory_lock(hashtextextended(%s,0))",
+                                 ("widget/provision/"+tenant,)).fetchone()[0]
+            if not locked:
+                report["result"]="setup_in_progress"
+            else:
+                provider=RemapClient(repo.remap_token(tenant),tenant,budget_seconds=40)
+                httpx.Client.send=send
+                for variant in ("baseline","no_region","ru"):
+                    if time.monotonic()+11>=deadline:break
+                    try:
+                        provider._get("/entity/customerorder/metadata/attributes",{"limit":1000})
+                    except ProbeComplete:
+                        observed=report["variants"][-1]
+                        # Alternatives are justified only by this specific header rejection.
+                        # Stop on auth, throttling, server errors or unreadable diagnostics.
+                        if observed["http"]!=412 or 3030 not in observed["codes"]:break
+                    except RemapError:
+                        break
+                report["result"]="header_probe_complete" if report["variants"] else "diagnostic_unavailable"
+    except AuthenticationFailed:
+        report["result"]="installation_inactive"
+    except Exception:
+        report["result"]="diagnostic_unavailable"
+    finally:
+        httpx.Client.send=original_send
+    print(json.dumps(report,separators=(",",":")))
+    return 0 if report["result"]=="header_probe_complete" else 1
+
+raise SystemExit(diagnose())
+"""
+
+HEADER_NAMES=("Accept","Accept-Encoding","Content-Type","X-Lognex-Accept-Region","Authorization")
+HEADER_VARIANTS=("baseline","no_region","ru")
+
 RESULTS=frozenset(("marker_valid","access_denied","metadata_error","transient_error",
                    "installation_inactive","setup_in_progress","binding_mismatch","diagnostic_unavailable"))
 PHASES=frozenset(("metadata_read","metadata_create"))
@@ -122,29 +235,61 @@ def safe_report(raw,*,prepare):
         requests.append({"phase":item["phase"],"http":status,"codes":sorted(set(codes))})
     return {"read_only":not prepare,"requests":requests,"result":report["result"]}
 
-def diagnose(tenant=None,*,prepare=False,runner=subprocess.run):
+def safe_header_report(raw):
+    if not isinstance(raw,str) or len(raw)>16384:raise DiagnosticFailed()
+    try:report=json.loads(raw)
+    except (ValueError,TypeError):raise DiagnosticFailed() from None
+    if (not isinstance(report,dict) or report.get("read_only") is not True
+        or report.get("result") not in ("header_probe_complete","setup_in_progress",
+                                       "installation_inactive","diagnostic_unavailable")
+        or not isinstance(report.get("variants"),list) or len(report["variants"])>3):
+        raise DiagnosticFailed()
+    variants=[]
+    for index,item in enumerate(report["variants"]):
+        if not isinstance(item,dict) or item.get("variant")!=HEADER_VARIANTS[index]:raise DiagnosticFailed()
+        status=item.get("http");codes=item.get("codes");names=item.get("headers")
+        if status is not None and (type(status) is not int or not 100<=status<=599):raise DiagnosticFailed()
+        if (not isinstance(codes,list) or len(codes)>8
+            or any(type(code) is not int or not 0<=code<=999999 for code in codes)
+            or not isinstance(names,list) or len(names)>len(HEADER_NAMES)
+            or any(not isinstance(name,str) or name not in HEADER_NAMES for name in names)):
+            raise DiagnosticFailed()
+        region=item.get("content_region")
+        if region is not None and region not in ("ru","uz","kz"):raise DiagnosticFailed()
+        if variants and variants[-1]["http"]==200:raise DiagnosticFailed()
+        variants.append({"variant":item["variant"],"http":status,"codes":sorted(set(codes)),
+                         "headers":[name for name in HEADER_NAMES if name in names],"content_region":region})
+    if report["result"]=="header_probe_complete" and not variants:raise DiagnosticFailed()
+    return {"read_only":True,"result":report["result"],"variants":variants}
+
+def diagnose(tenant=None,*,prepare=False,headers=False,runner=subprocess.run):
+    if prepare and headers:raise DiagnosticFailed()
     selected=select_tenant(installation_rows(),tenant)
     completed=runner(["docker","exec","-i","bonuspro-release-app-1","python","-",selected,
-                      "prepare" if prepare else "read_only"],
-                     input=CHILD_CODE,text=True,capture_output=True,timeout=75,check=False)
-    report=safe_report(completed.stdout,prepare=prepare)
-    if (completed.returncode==0)!=(report["result"]=="marker_valid"):raise DiagnosticFailed()
+                      "headers" if headers else "prepare" if prepare else "read_only"],
+                     input=HEADERS_CHILD_CODE if headers else CHILD_CODE,
+                     text=True,capture_output=True,timeout=75,check=False)
+    report=safe_header_report(completed.stdout) if headers else safe_report(completed.stdout,prepare=prepare)
+    success=report["result"]==("header_probe_complete" if headers else "marker_valid")
+    if (completed.returncode==0)!=success:raise DiagnosticFailed()
     return report
 
 def main():
     parser=argparse.ArgumentParser(description="Диагностика служебного поля: HTTP и числовые коды, без секретов")
     parser.add_argument("--tenant",type=tenant_uuid,help="UUID аккаунта; по умолчанию единственная действующая установка")
-    parser.add_argument("--prepare",action="store_true",help="Разрешить установленному адаптеру создать своё поле; привязка в БонусПро выполняется затем кнопкой в интерфейсе")
+    modes=parser.add_mutually_exclusive_group()
+    modes.add_argument("--prepare",action="store_true",help="Разрешить установленному адаптеру создать своё поле; привязка в БонусПро выполняется затем кнопкой в интерфейсе")
+    modes.add_argument("--headers",action="store_true",help="Только чтение: сравнить заголовки трёх запросов метаданных, без создания поля")
     args=parser.parse_args()
     if os.geteuid()!=0:raise SystemExit("Запустите diagnose_widget.py с sudo")
     try:
-        report=diagnose(args.tenant,prepare=args.prepare)
+        report=diagnose(args.tenant,prepare=args.prepare,headers=args.headers)
     except ProcessingFailed:
-        report={"read_only":not args.prepare,"requests":[],"result":"account_selection_required",
+        report={"read_only":not args.prepare,("variants" if args.headers else "requests"):[],"result":"account_selection_required",
                 "hint":"Укажите --tenant UUID действующей установки; автоматически выбирается только единственная"}
     except Exception:
-        report={"read_only":not args.prepare,"requests":[],"result":"diagnostic_unavailable"}
+        report={"read_only":not args.prepare,("variants" if args.headers else "requests"):[],"result":"diagnostic_unavailable"}
     print(json.dumps(report,ensure_ascii=False,indent=2))
-    raise SystemExit(0 if report["result"]=="marker_valid" else 1)
+    raise SystemExit(0 if report["result"]==("header_probe_complete" if args.headers else "marker_valid") else 1)
 
 if __name__=="__main__":main()
