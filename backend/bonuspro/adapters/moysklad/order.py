@@ -92,11 +92,12 @@ def _recreatable_row(raw,kind):
         value=raw.get(key,0)
         if isinstance(value,bool) or not isinstance(value,(int,Decimal)) or value!=0:
             return False
+    assortment=raw.get("assortment")
+    if not isinstance(assortment,dict) or any(key.startswith("mod__") for key in assortment):
+        return False
     if kind=="service":
         return True
-    assortment=raw.get("assortment")
     return (isinstance(assortment,dict)
-            and not any(key.startswith("mod__") for key in assortment)
             and assortment.get("isSerialTrackable") is False
             and assortment.get("trackingType")=="NOT_TRACKED")
 

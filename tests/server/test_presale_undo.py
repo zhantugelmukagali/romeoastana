@@ -119,6 +119,13 @@ class PresaleUndoProofTests(unittest.TestCase):
                 self.assertNotIn(product["id"],fixture.read().saved.recreatable_ids)
                 product["assortment"].clear();product["assortment"].update(original)
 
+    def test_service_with_unfrozen_module_is_not_marked_recreatable(self):
+        fixture=Fixture();fixture.include_ship=fixture.include_pay=False
+        service=fixture.lines[1]
+        self.assertIn(service["id"],fixture.read().saved.recreatable_ids)
+        service["assortment"]["mod__unknown"]={}
+        self.assertNotIn(service["id"],fixture.read().saved.recreatable_ids)
+
     def test_legacy_plan_missing_manifest_cannot_recreate_deleted_goods(self):
         saved=self.original()
         operation=dict(plan=dict(before=saved.financial(),after=saved.financial()),marker_id=str(uuid4()))
