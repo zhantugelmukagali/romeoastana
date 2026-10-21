@@ -21,6 +21,7 @@ class PortalBrowserTests(unittest.TestCase):
         self.context=self.browser.new_context(viewport={"width":1440,"height":1050})
         self.page=self.context.new_page();self.context.route("**/*",self.route)
         self.personal_assignment={"counterparty_id":CUSTOMER,"version":0,"rate_bps":None};self.personal_saves=[];self.personal_requests={};self.personal_conflict=False;self.personal_drop_first=False;self.personal_archived=False
+        self.recalculations={"items":[],"next_cursor":None};self.recalculation_pages={};self.recalculation_requests=[];self.recalculation_hold=False;self.held_recalculation_routes=[];self.activity_override=None
         self.sessions=0;self.role="admin";self.state="Activated";self.empty=False;self.balance="184500";self.processing=True;self.failed_orders=0;self.enrolled=True;self.calls=[]
     def tearDown(self):
         self.context.close();self.browser.close();self.runtime.stop()
@@ -52,9 +53,14 @@ class PortalBrowserTests(unittest.TestCase):
                     self.personal_requests[body["request_id"]]=self.personal_assignment
                 if self.personal_drop_first and len(self.personal_saves)==1:return route.abort()
                 return route.fulfill(json={"current":self.personal_requests[body["request_id"]]})
+            if path=="/api/admin/customers/"+CUSTOMER+"/recalculations":
+                cursor=query.get("before",[""])[0];self.recalculation_requests.append(cursor)
+                if self.recalculation_hold:self.held_recalculation_routes.append(route);return
+                return route.fulfill(json=self.recalculation_pages[cursor])
             if path=="/api/admin/customers/"+CUSTOMER:return route.fulfill(json={
                 "id":CUSTOMER,"name":NAME,"phone":"+7 700 111 22 33","balance":1500 if self.enrolled else 0,"available":1200 if self.enrolled else 0,"reserved":300 if self.enrolled else 0,"enrolled":self.enrolled,
-                "personal_discount":{**self.personal_assignment,"enabled":True,"effective_rate_bps":self.personal_assignment["rate_bps"] or 0}})
+                "recalculations":self.recalculations,"personal_discount":{**self.personal_assignment,"enabled":True,"effective_rate_bps":self.personal_assignment["rate_bps"] or 0}})
+            if path=="/api/admin/activity" and self.activity_override is not None:return route.fulfill(json=self.activity_override)
             if path=="/api/admin/activity":return route.fulfill(json={"items":[] if self.empty else [
                 {"id":TX,"kind":"credit","points":1500,"created_at":"2026-10-15T04:00:00Z","customer_id":CUSTOMER,"order_id":None}],"next_cursor":None})
             return route.fulfill(status=404,json={"error":"missing fixture"})
@@ -325,5 +331,80 @@ class PortalBrowserTests(unittest.TestCase):
         self.frame.get_by_text("Нет бонусных операций.",exact=True).wait_for()
         self.assertNotIn("появится",self.frame.locator("#profile-status").inner_text())
         self.assertEqual(self.frame.locator("#customer-available").inner_text(),"0")
+
+
+    def open_customer_card(self):
+        self.open();self.frame.get_by_role("link",name="Клиенты",exact=True).click()
+        self.frame.get_by_role("button",name="Открыть",exact=True).click()
+        self.frame.get_by_role("heading",name=NAME,exact=True).wait_for()
+
+    def recalculation(self,identity=TX,earn=-500,refund=500):
+        return {"id":identity,"order_id":"33333333-3333-4333-8333-333333333333",
+                "earn_delta":earn,"refund_delta":refund,"net_delta":earn+refund,"created_at":"2026-10-21T13:00:00Z"}
+
+    def test_zero_net_return_is_visible_as_details_without_a_fake_money_operation(self):
+        self.recalculations={"items":[self.recalculation()],"next_cursor":None}
+        self.page.set_viewport_size({"width":390,"height":844});self.open_customer_card()
+        section=self.frame.locator("#customer-recalculations-section")
+        section.get_by_text("Баланс без изменений",exact=True).wait_for()
+        for label in ("Пересчёт начисления: -500","Пересчёт списанных бонусов: +500","Изменение баланса: 0"):
+            section.get_by_text(label,exact=True).wait_for()
+        section.get_by_text("Итог уже учтён в балансе.",exact=True).wait_for()
+        self.assertTrue(section.get_by_role("link",name="Заказ ↗",exact=True).get_attribute("href").endswith(
+                        "id=33333333-3333-4333-8333-333333333333"))
+        history=self.frame.locator("#customer-history");history.get_by_text("Начисление",exact=True).wait_for()
+        self.assertEqual(history.locator(".activity-row").count(),1)
+        self.assertNotIn("Пересчёт",history.inner_text())
+        self.assertFalse(self.frame.locator("#more-customer-recalculations").is_visible())
+        self.assertEqual(self.personal_saves,[]);self.assertEqual(self.recalculation_requests,[])
+        self.assertTrue(self.frame.locator("#customer-dialog").evaluate("(el)=>el.scrollWidth<=el.clientWidth"))
+        self.assertTrue(self.page.frames[1].evaluate("document.documentElement.scrollWidth<=innerWidth"))
+
+    def test_nonzero_details_do_not_duplicate_the_existing_ledger_adjustment(self):
+        self.recalculations={"items":[self.recalculation(earn=-450,refund=300)],"next_cursor":None}
+        self.activity_override={"items":[{"id":TX,"kind":"settlement","points":-150,
+            "created_at":"2026-10-21T13:00:00Z","customer_id":CUSTOMER,"order_id":self.recalculation()["order_id"]}],"next_cursor":None}
+        self.open_customer_card();details=self.frame.locator("#customer-recalculations")
+        details.get_by_text("Пересчёт заказа",exact=True).wait_for()
+        for label in ("Пересчёт начисления: -450","Пересчёт списанных бонусов: +300","Изменение баланса: -150"):
+            details.get_by_text(label,exact=True).wait_for()
+        history=self.frame.locator("#customer-history");history.get_by_text("Пересчёт",exact=True).wait_for()
+        self.assertEqual(history.locator(".activity-row").count(),1)
+        self.assertEqual(details.locator(".activity-row").count(),1)
+        self.assertEqual(self.personal_saves,[])
+
+    def test_recalculation_pagination_appends_older_details_and_hides_the_completed_cursor(self):
+        self.recalculations={"items":[self.recalculation()],"next_cursor":TX}
+        older="44444444-4444-4444-8444-444444444444"
+        self.recalculation_pages[TX]={"items":[self.recalculation(older,earn=500,refund=-500)],"next_cursor":None}
+        self.open_customer_card();button=self.frame.get_by_role("button",name="Показать ещё пересчёты",exact=True)
+        button.click()
+        self.frame.locator("#customer-recalculations").get_by_text("Пересчёт начисления: +500",exact=True).wait_for()
+        self.assertEqual(self.recalculation_requests,[TX])
+        self.assertEqual(self.frame.locator("#customer-recalculations .activity-row").count(),2)
+        self.assertFalse(button.is_visible());self.assertEqual(self.personal_saves,[])
+        self.assertEqual(self.frame.locator("#customer-history .activity-row").count(),1)
+
+    def test_late_recalculation_page_cannot_overwrite_a_reopened_customer_card(self):
+        self.recalculations={"items":[self.recalculation()],"next_cursor":TX};self.recalculation_hold=True
+        self.open_customer_card();button=self.frame.get_by_role("button",name="Показать ещё пересчёты",exact=True)
+        button.click();self.frame.get_by_text("Загружаем пересчёты…",exact=True).wait_for()
+        self.assertFalse(button.is_enabled());self.assertEqual(len(self.held_recalculation_routes),1)
+        self.frame.get_by_role("button",name="Закрыть карточку клиента",exact=True).click()
+        self.recalculations={"items":[],"next_cursor":None}
+        self.frame.get_by_role("button",name="Открыть",exact=True).click()
+        self.frame.get_by_text("Пересчётов пока нет.",exact=True).wait_for()
+        self.held_recalculation_routes[0].fulfill(json={"items":[self.recalculation(earn=500,refund=-500)],"next_cursor":None})
+        self.page.frames[1].evaluate("()=>new Promise(requestAnimationFrame)")
+        self.assertEqual(self.frame.locator("#customer-recalculations .activity-row").count(),0)
+        self.assertFalse(button.is_visible());self.assertEqual(self.recalculation_requests,[TX])
+        self.assertEqual(self.frame.locator("#customer-recalculations-status").inner_text(),"")
+
+    def test_missing_recalculation_payload_does_not_hide_customer_balance_or_ledger_history(self):
+        self.recalculations=None;self.open_customer_card()
+        self.frame.get_by_text("Не удалось загрузить пересчёты.",exact=True).wait_for()
+        self.assertEqual("".join(self.frame.locator("#customer-available").inner_text().split()),"1200")
+        self.frame.locator("#customer-history").get_by_text("Начисление",exact=True).wait_for()
+        self.assertFalse(self.frame.locator("#more-customer-recalculations").is_visible())
 
 if __name__=="__main__":unittest.main()

@@ -78,3 +78,32 @@ class Portal:
                 customer_id=str(r["counterparty_id"]) if r["counterparty_id"] else None,
                 order_id=str(r["order_id"]) if r["order_id"] else None) for r in rows[:50]]
             return dict(items=items,next_cursor=items[-1]["id"] if len(rows)>50 else None)
+
+
+    def recalculations(self,tenant,customer,*,before=None):
+        """Confirmed settlement details; independent of the monetary activity cursor."""
+        tenant,customer=uuid_value(tenant),uuid_value(customer)
+        before=uuid_value(before) if before else None
+        with self.ledger.transaction(tenant) as conn:
+            link=conn.execute("SELECT wallet_id FROM bonuspro.customer_wallets "
+                "WHERE tenant_id=%s AND counterparty_id=%s",(tenant,customer)).fetchone()
+            if not link:
+                if before:raise NotFound("recalculation cursor not found")
+                return dict(items=[],next_cursor=None)
+            wallet=str(link["wallet_id"]);cursor=None
+            if before:
+                cursor=conn.execute("SELECT created_at,id FROM bonuspro.settlement_events "
+                    "WHERE tenant_id=%s AND wallet_id=%s AND id=%s",(tenant,wallet,before)).fetchone()
+                if not cursor:raise NotFound("recalculation cursor not found")
+            rows=conn.execute("""
+                SELECT id,order_id,earn_delta,refund_delta,created_at
+                FROM bonuspro.settlement_events
+                WHERE tenant_id=%s AND wallet_id=%s
+                  AND (%s::uuid IS NULL OR (created_at,id)<(%s::timestamptz,%s::uuid))
+                ORDER BY created_at DESC,id DESC LIMIT 21
+            """,(tenant,wallet,before,cursor["created_at"] if cursor else None,before)).fetchall()
+            items=[dict(id=str(row["id"]),order_id=str(row["order_id"]),
+                earn_delta=int(row["earn_delta"]),refund_delta=int(row["refund_delta"]),
+                net_delta=int(row["earn_delta"])+int(row["refund_delta"]),
+                created_at=row["created_at"].isoformat()) for row in rows[:20]]
+            return dict(items=items,next_cursor=items[-1]["id"] if len(rows)>20 else None)

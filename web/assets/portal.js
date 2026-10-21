@@ -8,6 +8,7 @@ let session=null,connecting=false,summary=null,screen="overview",connectionEpoch
 let customerOffset=null,activityCursor=null,customerQuery="",customersBusy=false,activityBusy=false;
 let customersLoaded=false,activityLoaded=false,searchEpoch=0,profileEpoch=0,profileId=null,profileCursor=null,profileBusy=false;
 let personalAssignment=null,personalPending=null,personalSaving=false,personalConflict=false,personalArchived=false;
+let recalculationCursor=null,recalculationsBusy=false;
 const node=(tag,text,cls)=>{const n=document.createElement(tag);n.textContent=text;if(cls)n.className=cls;return n;};
 function status(text,error=false){$("status").textContent=text;$("status").classList.toggle("error",error);}
 async function api(path,options={}){
@@ -114,6 +115,40 @@ async function activity(append=false){
   }catch(e){$("activity-status").textContent=e.message;}
   finally{activityBusy=false;$("more-activity").disabled=false;}
 }
+function recalculationRows(data,append=false){
+  if(!data||!Array.isArray(data.items))throw new Error("Не удалось загрузить пересчёты.");
+  const target=$("customer-recalculations");if(!append)target.replaceChildren();
+  const signed=value=>{const amount=BigInt(value);return (amount>0n?"+":"")+fmt.format(amount);};
+  for(const item of data.items){
+    const row=node("article","","activity-row");
+    const icon=node("span","↺","operation-icon"),info=node("div","","operation-info");
+    info.append(node("strong",BigInt(item.net_delta)===0n?"Баланс без изменений":"Пересчёт заказа"),
+      node("span",date(item.created_at),"muted"),
+      node("span","Пересчёт начисления: "+signed(item.earn_delta)),
+      node("span","Пересчёт списанных бонусов: "+signed(item.refund_delta)),
+      node("span","Изменение баланса: "+signed(item.net_delta)));
+    const link=node("a","Заказ ↗","order-link");
+    link.href="https://online.moysklad.ru/app/#customerorder/edit?id="+encodeURIComponent(item.order_id);
+    link.target="_blank";link.rel="noopener noreferrer";row.append(icon,info,link);target.append(row);
+  }
+  recalculationCursor=data.next_cursor;
+  $("more-customer-recalculations").hidden=!recalculationCursor;
+  $("customer-recalculations-note").hidden=!target.childElementCount;
+  if(!target.childElementCount)target.append(node("p","Пересчётов пока нет.","muted"));
+}
+async function moreCustomerRecalculations(){
+  if(recalculationsBusy||!profileId||!recalculationCursor)return;
+  const generation=profileEpoch,id=profileId,cursor=recalculationCursor;
+  recalculationsBusy=true;$("more-customer-recalculations").disabled=true;
+  $("customer-recalculations-status").textContent="Загружаем пересчёты…";
+  try{
+    const data=await api("/api/admin/customers/"+encodeURIComponent(id)+"/recalculations?before="+encodeURIComponent(cursor));
+    if(generation!==profileEpoch)return;
+    recalculationRows(data,true);$("customer-recalculations-status").textContent="";
+  }catch(error){if(generation===profileEpoch)$("customer-recalculations-status").textContent=error.message;}
+  finally{if(generation===profileEpoch){recalculationsBusy=false;$("more-customer-recalculations").disabled=false;}}
+}
+
 async function profileHistory(generation,append=false){
   const data=await api("/api/admin/activity?customer="+encodeURIComponent(profileId)+(append&&profileCursor?"&before="+encodeURIComponent(profileCursor):""));
   if(generation!==profileEpoch)return;
@@ -123,7 +158,9 @@ async function openCustomer(id){
   if(personalSaving)return;
   personalAssignment=null;personalPending=null;personalConflict=false;personalArchived=false;$("customer-personal-form").hidden=true;$("edit-customer-personal").disabled=true;
   $("customer-personal-value").textContent="—";$("customer-personal-policy").textContent="";$("customer-personal-audit").textContent="";personalStatus("");$("reload-customer-personal").hidden=true;
-  const generation=++profileEpoch;profileId=id;profileCursor=null;
+  const generation=++profileEpoch;profileId=id;profileCursor=null;recalculationCursor=null;recalculationsBusy=false;
+  $("customer-recalculations").replaceChildren();$("customer-recalculations-status").textContent="";
+  $("customer-recalculations-note").hidden=true;$("more-customer-recalculations").hidden=true;$("more-customer-recalculations").disabled=false;
   $("customer-name").textContent="Загружаем клиента…";$("customer-phone").textContent="";$("customer-available").textContent="—";
   $("customer-reserved").textContent="";$("customer-history").replaceChildren();$("more-customer-history").hidden=true;
   $("profile-status").textContent="";$("customer-source").hidden=true;
@@ -136,6 +173,7 @@ async function openCustomer(id){
     $("customer-reserved").textContent="Баланс "+number(data.balance)+" · В резерве "+number(data.reserved);
     $("customer-source").href="https://online.moysklad.ru/app/#company/edit?id="+encodeURIComponent(id);$("customer-source").hidden=false;
     if(!data.enrolled)$("profile-status").textContent="Нет бонусных операций.";
+    try{recalculationRows(data.recalculations);}catch(error){$("customer-recalculations-status").textContent=error.message;}
     await profileHistory(generation);
   }catch(e){if(generation===profileEpoch)$("profile-status").textContent=e.message;}
 }
@@ -172,6 +210,7 @@ async function connect(){
 $("search-form").onsubmit=e=>{e.preventDefault();const query=$("customer-search").value.trim();if(query&&query.length<2){$("customer-status").textContent="Введите минимум два символа.";return;}customerQuery=query;searchEpoch++;void customers();};
 $("more-customers").onclick=()=>void customers(true);$("more-activity").onclick=()=>void activity(true);
 $("more-customer-history").onclick=async()=>{if(profileBusy)return;profileBusy=true;const generation=profileEpoch;$("more-customer-history").disabled=true;try{await profileHistory(generation,true);}catch(e){if(generation===profileEpoch)$("profile-status").textContent=e.message;}finally{profileBusy=false;$("more-customer-history").disabled=false;}};
+$("more-customer-recalculations").onclick=()=>void moreCustomerRecalculations();
 $("close-customer").onclick=()=>{if(!personalSaving){$("customer-dialog").close();profileEpoch++;}};
 $("customer-dialog").addEventListener("cancel",event=>{if(personalSaving)event.preventDefault();});
 $("customer-dialog").addEventListener("close",()=>{profileEpoch++;});

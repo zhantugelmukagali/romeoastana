@@ -849,11 +849,19 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
         identity=admin_identity(request)
         row=document_client(identity).entity("counterparty",str(customer_id))
         admin_identity(request)
-        values=Portal(Ledger(config.database_url)).balances(identity.tenant_id,[str(customer_id)])
+        portal=Portal(Ledger(config.database_url))
+        values=portal.balances(identity.tenant_id,[str(customer_id)])
         return dict(id=str(customer_id),name=str(row.get("name",""))[:256],phone=str(row.get("phone",""))[:100],
                     archived=row.get("archived") is True,
                     personal_discount=discounts.assignment(identity.tenant_id,str(customer_id)),
+                    recalculations=portal.recalculations(identity.tenant_id,str(customer_id)),
                     **values.get(str(customer_id),dict(enrolled=False,balance=0,reserved=0,available=0)))
+
+    @app.get("/api/admin/customers/{customer_id}/recalculations")
+    def customer_recalculations(customer_id: UUID,request: Request,before: UUID | None=None):
+        identity=admin_identity(request)
+        return Portal(Ledger(config.database_url)).recalculations(identity.tenant_id,str(customer_id),
+                    before=str(before) if before else None)
 
     @app.get("/returns")
     def previous_returns_page():
