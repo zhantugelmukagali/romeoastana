@@ -47,3 +47,16 @@ class ReadinessTests(unittest.TestCase):
         result=evaluate({**row,"provider_errors":999999999})
         self.assertEqual(result["attention"]["provider_errors"],1001)
         self.assertTrue(result["attention_counts_limited"])
+
+
+    def test_failed_order_checklist_gives_a_specific_next_action_without_guessing_currency(self):
+        for count,shown in ((1,"1"),(1001,"более 1000")):
+            with self.subTest(count=count):
+                report=evaluate({**self.row(),"provider_errors":count})
+                self.assertFalse(report["ready"])
+                check=next(item for item in report["checks"] if item["id"]=="processing")
+                self.assertEqual(check["label"],"Не удалось проверить заказы: "+shown+
+                    ". Откройте заказ и проверьте виджет.")
+                self.assertEqual(check["target"],"processing-settings")
+                self.assertFalse(check["complete"])
+                self.assertNotIn("RUB",check["label"])
