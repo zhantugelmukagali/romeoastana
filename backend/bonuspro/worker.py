@@ -1,5 +1,6 @@
 """Bounded polling worker. One configured tenant; no privileged cross-tenant scan."""
 import argparse
+import json
 from contextlib import closing
 from datetime import datetime, timezone, timedelta
 import os
@@ -46,6 +47,24 @@ class Worker:
         except Conflict:
             pass  # A replacement owner alone can acknowledge an expired lease.
 
+
+    def historical_invalid(self,job,reader):
+        if reader is None:
+            return False
+        candidate=self.automation.historical_candidate(self.tenant,str(job["entity_id"]))
+        if not candidate:
+            return False
+        try:
+            proof=reader.historical(str(job["entity_id"]),
+                before=candidate["starts_at"],generation=str(candidate["generation"]),
+                marker_id=str(candidate["marker_id"]))
+        except (InvalidDocument,EntityMissing):
+            return False
+        if proof is None:
+            return False
+        self.automation.complete_historical(self.tenant,job,proof)
+        return True
+
     def cycle(self,*,now=None,max_jobs=4):
         if type(max_jobs) is not int or not 1<=max_jobs<=4:raise ValueError("bounded job batch required")
         # A separate session lock prevents duplicate coordinators for this tenant.
@@ -85,9 +104,14 @@ class Worker:
                     job=self.automation.jobs.claim(self.tenant,lease_seconds=300)
                     if not job:
                         break
+                    reader=None
+                    phase="fulfillment_read"
                     try:
                         marker=self.redemptions.binding(self.tenant)
-                        proof=FulfillmentReader(self.client()).read(str(job["entity_id"]),marker_id=marker)
+                        client=self.client()
+                        reader=FulfillmentReader(client)
+                        proof=reader.read(str(job["entity_id"]),marker_id=marker)
+                        phase="local_apply"
                         self.automation.complete(self.tenant,job,proof)
                     except RetryLater as error:
                         self.fail_job(job,error.code,delay=error.delay_seconds)
@@ -97,12 +121,29 @@ class Worker:
                         missing_order=(isinstance(error,EntityMissing) and
                             error.requested_kind=="customerorder" and error.requested_id==str(job["entity_id"]))
                         try:
-                            harmless=self.automation.invalid(self.tenant,str(job["entity_id"]),reason,job.get("hint_version"),
-                                                             missing_order=missing_order,job=job)
+                            harmless=isinstance(error,InvalidDocument) and self.historical_invalid(job,reader)
+                            if not harmless:
+                                harmless=self.automation.invalid(self.tenant,str(job["entity_id"]),reason,job.get("hint_version"),
+                                                                 missing_order=missing_order,job=job)
+                        except RetryLater as historical_error:
+                            self.fail_job(job,historical_error.code,delay=historical_error.delay_seconds)
+                            raise
+                        except (AuthenticationFailed,AccessDenied):
+                            self.fail_job(job,"provider_unavailable",delay=300)
+                            raise
                         except Conflict:
                             self.fail_job(job,"conflict",delay=5)
+                        except Exception:
+                            self.fail_job(job,"provider_unavailable",delay=30)
+                            raise
                         else:
-                            if not harmless:self.fail_job(job,"invalid_document",permanent=True)
+                            if not harmless:
+                                # Diagnostics are fixed phases and allowlisted codes only;
+                                # never print provider messages, IDs or document values.
+                                from bonuspro.releasecheck import failure_code
+                                print(json.dumps(dict(event="order_validation_failed",phase=phase,
+                                    code=failure_code(error)),separators=(",",":")),flush=True)
+                                self.fail_job(job,"invalid_document",permanent=True)
                     except (AuthenticationFailed,AccessDenied):
                         self.fail_job(job,"provider_unavailable",delay=300)
                         raise

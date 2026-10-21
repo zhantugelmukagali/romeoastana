@@ -31,6 +31,7 @@ class ReleaseCheckTests(unittest.TestCase):
             (RuntimeError(private),"check_unavailable"),
             (InvalidDocument(private,reason=private),"saved_order_invalid"),
             (InvalidDocument(private,reason="vat_mode_unsupported"),"vat_mode_unsupported"),
+            (InvalidDocument(private,reason="currency_unsupported"),"currency_unsupported"),
             (InvalidDocument("shipment tax mismatch"),"shipment_tax_mismatch"),
             (AccessDenied(private),"provider_access_denied"),
             (RetryLater(30,"provider_unavailable"),"provider_retry_required")):

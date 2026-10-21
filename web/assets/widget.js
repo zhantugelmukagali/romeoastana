@@ -29,7 +29,7 @@ const readOnlyMessages={
   linked_documents_present:documentErrors.linked_documents_present,
   order_has_marker:documentErrors.order_has_marker,
   order_has_redemption:"В заказе уже есть операция списания. Обновите данные для проверки.",
-  return_review:"Списание приостановлено. Нужен администратор."
+  return_review:"По клиенту есть возврат или расхождение. Администратору: «Возвраты и сверка»."
 };
 const undoErrors={
   undo_restore_original:"Заказ изменён. Восстановите сохранённый вариант со скидкой или обратитесь к администратору.",

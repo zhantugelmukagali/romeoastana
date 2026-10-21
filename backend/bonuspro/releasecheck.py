@@ -12,6 +12,7 @@ from bonuspro.adapters.moysklad.remap import (
     RemapClient, InvalidDocument, RetryLater, AccessDenied, EntityMissing, RemapError, reference, uuid,
 )
 from bonuspro.adapters.postgres.ledger import Ledger, uuid_value
+from bonuspro.adapters.postgres.automation import Automation
 from bonuspro.adapters.postgres.readiness import Readiness
 from bonuspro.adapters.postgres.redemptions import Redemptions
 from bonuspro.adapters.postgres.installations import Installations
@@ -75,7 +76,7 @@ def check_account(ledger,installations,tenant,*,sample_limit=3,client_factory=Re
         raise ValueError("sample limit must be 1..5")
     report=dict(read_only=True,business_acceptance_verified=False,
                 operational_ready=False,ready_for_live_acceptance=False,
-                sampled_orders=0,outcomes={},failures=[])
+                sampled_orders=0,historical_orders=0,outcomes={},failures=[])
     def fail(stage,error):report["failures"].append(dict(stage=stage,code=failure_code(error)))
     try:
         readiness=Readiness(ledger).report(tenant)
@@ -105,20 +106,45 @@ def check_account(ledger,installations,tenant,*,sample_limit=3,client_factory=Re
         report["failures"].append(dict(stage="discovery",code="no_orders_to_check"))
         return report
     outcomes=Counter()
+    automation=Automation(ledger)
+    def historical_sample(reader,order):
+        candidate=automation.historical_candidate(tenant,order)
+        if not candidate:
+            return False
+        try:
+            historical=reader.historical(order,before=candidate["starts_at"],
+                generation=str(candidate["generation"]),marker_id=str(candidate["marker_id"]))
+        except (InvalidDocument,EntityMissing):
+            return False
+        return historical is not None and automation.historical_read_only(tenant,historical)
     for order in orders:
         try:
-            proof=FulfillmentReader(client).read(order,marker_id=binding)
+            reader=FulfillmentReader(client)
+            try:
+                proof=reader.read(order,marker_id=binding)
+            except InvalidDocument:
+                if not historical_sample(reader,order):
+                    raise
+                historical=True
+            else:
+                historical=historical_sample(reader,order)
             report["sampled_orders"]+=1
-            outcome=proof.outcome if proof.outcome in OUTCOMES else "document_review"
-            outcomes[outcome]+=1
+            if historical:
+                report["historical_orders"]+=1
+                outcomes["historical"]+=1
+            else:
+                outcome=proof.outcome if proof.outcome in OUTCOMES else "document_review"
+                outcomes[outcome]+=1
         except Exception as error:
             report["sampled_orders"]+=1
             fail("order_graph",error)
             # Stop bounded probing after provider throttling/access loss.
             if isinstance(error,(RetryLater,AccessDenied,AuthenticationFailed)):break
     report["outcomes"]=dict(outcomes)
+    if report["sampled_orders"]==report["historical_orders"] and report["historical_orders"]:
+        report["failures"].append(dict(stage="discovery",code="no_current_orders_to_check"))
     report["ready_for_live_acceptance"]=bool(report["operational_ready"] and
-        report["sampled_orders"] and not report["failures"] and not outcomes["document_review"])
+        report["sampled_orders"]>report["historical_orders"] and not report["failures"] and not outcomes["document_review"])
     return report
 
 def main():

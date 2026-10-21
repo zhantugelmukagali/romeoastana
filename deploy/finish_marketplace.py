@@ -279,6 +279,28 @@ def restore_old_services(states):
     for service in ("app","worker","worker-pool","web"):
         if states.get(service,{}).get("running"):checked(["docker","start",states[service]["name"]])
 
+def wake_historical_candidates():
+    # Deployment-only normal hints for existing active accounts. The application
+    # method checks prerequisites and excludes every contextual/financial order.
+    code=("import json;import psycopg;"
+        "from bonuspro.settings import Settings;"
+        "from bonuspro.adapters.postgres.ledger import Ledger;"
+        "from bonuspro.adapters.postgres.automation import Automation;"
+        "l=Ledger(Settings.from_env().database_url);a=Automation(l);"
+        "c=psycopg.connect(l.dsn,connect_timeout=5);"
+        "rows=c.execute('SELECT tenant_id FROM bonuspro.worker_accounts ORDER BY tenant_id').fetchall();c.close();"
+        "counts=[a.wake_historical_candidates(str(row[0]),limit=20) for row in rows];"
+        "print(json.dumps({'active_accounts':len(rows),'orders_queued':sum(counts)}))")
+    result=json.loads(checked(["docker","exec","bonuspro-release-app-1","python","-c",code],
+                              capture=True,timeout=120))
+    accounts=result.get("active_accounts");queued=result.get("orders_queued")
+    if (type(accounts) is not int or type(queued) is not int
+        or accounts<0 or not 0<=queued<=accounts*20):
+        raise MarketplaceFailed("Historical recheck result was not confirmed")
+    summary={"active_accounts":accounts,"orders_queued":queued}
+    print("MARKETPLACE_HISTORICAL_RECHECK_QUEUED: "+json.dumps(summary),flush=True)
+    return summary
+
 def pool_report():
     code=("import json;from datetime import datetime,timezone;from bonuspro.settings import Settings;"
           "from bonuspro.adapters.postgres.ledger import Ledger;from bonuspro.adapters.postgres.readiness import Readiness;"
@@ -483,6 +505,8 @@ def finish_locked(root,source,*,prepare_only=False):
             stage="public_assets"
             verify_public(source)
             print(json.dumps({**proof,"read_only":False,"business_acceptance_verified":False},ensure_ascii=False))
+            stage="historical_recheck"
+            wake_historical_candidates()
             stage="pool_start"
             if prepare_only:
                 checked(actual+["--profile","marketplace","up","-d","--no-build","--no-deps",

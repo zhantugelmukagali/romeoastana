@@ -1,6 +1,12 @@
 import {requestContext} from "./bridge.js";
 const $=id=>document.getElementById(id),fmt=new Intl.NumberFormat("ru-RU");
 const signed=n=>(n>0?"+":"")+fmt.format(n);
+const issueReasons={
+  changed_credited_order:"Заказ или отгрузка после начисления требуют сверки.",
+  provider_document_missing:"Не найден заказ или связанный документ после начисления.",
+  invalid_credited_document:"Не удалось проверить заказ, оплату или отгрузку после начисления.",
+  unrecognized_bonus_marker:"В заказе есть бонусная отметка без подтверждённой операции."
+};
 let session=null,state="pending",cursor=null,busy=false,selected=null,submitting=false;
 function node(tag,text){const x=document.createElement(tag);x.textContent=text;return x;}
 function status(text,error=false){$("status").textContent=text;$("status").className=error?"error":"";}
@@ -62,7 +68,9 @@ async function load(append=false){
     const diagnostic=await api("/api/admin/automation");$("issues").replaceChildren();
     for(const item of diagnostic.issues){
       const card=node("article","");card.className="case";
-      card.append(link(item.order_id),node("p","Проверьте состав заказа, скидку и связанные документы. Списание по клиенту приостановлено."));
+      const reason=Object.hasOwn(issueReasons,item.reason)?issueReasons[item.reason]:
+        "Заказ требует проверки. Списание по клиенту приостановлено.";
+      card.append(link(item.order_id),node("p",reason));
       const button=actionButton("Проверить исправление",()=>open(item,"issue"));card.append(button);$("issues").append(card);
     }
     $("unverified").replaceChildren();
@@ -76,7 +84,8 @@ async function load(append=false){
     }
     if(!$("unverified").childElementCount)$("unverified").append(node("p","Неподтверждённых списаний нет."));
     if(!diagnostic.issues.length)$("issues").append(node("p","Расхождений нет."));
-    status($("cases").childElementCount?"":"Операций в этом разделе нет.");
+    const needsReview=diagnostic.issues.length||(diagnostic.unverified||[]).length;
+    status($("cases").childElementCount?"":needsReview?"Есть операции на проверке ниже.":"Операций в этом разделе нет.");
   }catch(e){status(e.message,true);}
   finally{controls(false);}
 }

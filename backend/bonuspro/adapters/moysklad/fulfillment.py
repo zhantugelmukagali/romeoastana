@@ -7,9 +7,10 @@ from collections import defaultdict
 from dataclasses import dataclass, asdict, is_dataclass
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
+from urllib.parse import urlsplit
 import json,time
 from hashlib import sha256
-from bonuspro.adapters.moysklad.remap import OrderEvidence, InvalidDocument, RetryLater, reference, exact_minor, uuid
+from bonuspro.adapters.moysklad.remap import OrderEvidence, InvalidDocument, RetryLater, reference, exact_minor, uuid, BASE
 from bonuspro.adapters.moysklad.order import SavedOrder, normalize_order
 
 MSK=timezone(timedelta(hours=3))
@@ -78,9 +79,102 @@ class Fulfillment:
     presale_safe: bool = False
 
 
+def historical_marker_clear(doc,marker_id):
+    attributes=doc.get("attributes",[])
+    if not isinstance(attributes,list):
+        raise InvalidDocument("historical marker metadata is invalid")
+    matches=[]
+    prefix=BASE+"/entity/customerorder/metadata/attributes/"
+    for item in attributes:
+        if not isinstance(item,dict):
+            raise InvalidDocument("historical marker metadata is invalid")
+        identities=set()
+        if "id" in item:
+            identities.add(uuid(item["id"]))
+        if "meta" in item:
+            meta=item["meta"]
+            if not isinstance(meta,dict) or not isinstance(meta.get("href"),str):
+                raise InvalidDocument("historical marker reference is invalid")
+            href=meta["href"]
+            try:
+                parsed=urlsplit(href)
+                identity=uuid(parsed.path.rsplit("/",1)[-1])
+            except ValueError:
+                raise InvalidDocument("historical marker reference is invalid") from None
+            if (parsed.query or parsed.fragment or href!=prefix+identity
+                or meta.get("type","attributemetadata")!="attributemetadata"):
+                raise InvalidDocument("historical marker reference is ambiguous")
+            identities.add(identity)
+        if len(identities)!=1:
+            raise InvalidDocument("historical marker identity is ambiguous")
+        if marker_id in identities:
+            if "value" not in item:
+                raise InvalidDocument("historical marker value is unavailable")
+            matches.append(item["value"])
+    if len(matches)>1:
+        raise InvalidDocument("historical marker is ambiguous")
+    return not matches or matches[0] is None
+
+
+@dataclass(frozen=True)
+class HistoricalOrderEvidence:
+    tenant_id: str
+    order_id: str
+    created_at: datetime
+    revision: str
+    generation: str
+    cutoff: datetime
+    marker_id: str
+    evidence_hash: str
+    deadline: float
+
+
 class FulfillmentReader:
     def __init__(self,client):
         self.client=client
+        self._historical_observation=None
+
+    def historical(self,order_id,*,before,generation,marker_id):
+        """Classify only a previously stable graph; never bypass financial parsing."""
+        observed=self._historical_observation
+        if observed is None:
+            return None
+        evidence,demands,_=observed
+        # Legacy return cases have no order_id. Any return-bearing path remains
+        # under ordinary review rather than being hidden by the cutoff.
+        if evidence.demands or demands:
+            return None
+        observed_order=evidence.order
+        for field in ("demands","returns","salesReturns"):
+            refs=observed_order.get(field,[])
+            if not isinstance(refs,list) or refs:
+                return None
+        start=time.monotonic()
+        order_id=uuid(order_id);generation=uuid(generation);marker_id=uuid(marker_id)
+        def read():
+            doc=self.client.entity("customerorder",order_id)
+            if (not isinstance(doc,dict) or uuid(doc.get("id"))!=order_id
+                or uuid(doc.get("accountId"))!=self.client.tenant
+                or reference(doc.get("meta"),{"customerorder"})!=("customerorder",order_id)):
+                raise InvalidDocument("historical order identity mismatch")
+            created=moment(doc.get("created"));updated=moment(doc.get("updated"))
+            if updated<created:
+                raise InvalidDocument("historical order revision precedes creation")
+            clear=historical_marker_clear(doc,marker_id)
+            return doc,created,clear
+        first=read()
+        if first[1]>=before or not first[2]:
+            return None
+        second=read()
+        if first!=second or second[0]!=observed_order:
+            raise RetryLater(1,"conflict")
+        if time.monotonic()>start+30:
+            raise RetryLater(5,"provider_timeout")
+        doc,created,_=second
+        evidence=digest(dict(tenant=self.client.tenant,order=order_id,created=doc["created"],
+                             revision=doc["updated"],marker_id=marker_id,marker=None))
+        return HistoricalOrderEvidence(self.client.tenant,order_id,created,doc["updated"],
+            generation,before,marker_id,evidence,start+30)
 
     def graph(self,order_id):
         evidence=self.client.order_evidence(order_id)
@@ -110,6 +204,7 @@ class FulfillmentReader:
         return evidence,demands,payments
 
     def read(self,order_id,*,marker_id=None):
+        self._historical_observation=None
         start=time.monotonic()
         first=self.graph(order_id)
         second=self.graph(order_id)
@@ -117,6 +212,7 @@ class FulfillmentReader:
             raise RetryLater(1,"conflict")
         if time.monotonic()-start>90:
             raise RetryLater(5,"provider_timeout")
+        self._historical_observation=second
         evidence,demands,payments=second
         doc=evidence.order
         saved=normalize_order(self.client,evidence,marker_id=marker_id,allow_fulfilled=True)

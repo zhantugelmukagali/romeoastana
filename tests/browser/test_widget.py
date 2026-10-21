@@ -303,9 +303,12 @@ class WidgetBrowserTests(unittest.TestCase):
     def test_admin_review_blocks_even_a_positive_quote_limit(self):
         self.quote_overrides={"quote":{"blocked_reason":"return_review"}}
         self.open()
-        self.frame.get_by_text("Списание приостановлено. Нужен администратор.",exact=True).wait_for()
+        self.frame.get_by_text("По клиенту есть возврат или расхождение. Администратору: «Возвраты и сверка».",exact=True).wait_for()
         self.assertTrue(self.frame.locator("#points").is_disabled())
         self.assertTrue(self.frame.locator("#maximum-button").is_disabled())
+        self.assertFalse(self.frame.locator("#spend-form").is_visible())
+        self.assertFalse(self.frame.locator("#apply").is_visible())
+        self.assertTrue(self.frame.locator("#apply").is_disabled())
         self.assertEqual(self.prepares,[])
 
     def test_unconfigured_program_never_offers_a_spend(self):

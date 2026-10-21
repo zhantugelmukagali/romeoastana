@@ -3,6 +3,7 @@ from contextlib import nullcontext, redirect_stdout
 from datetime import datetime, timezone, timedelta
 import io,json,ssl,sys,tempfile,unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock,patch
 from urllib.error import HTTPError, URLError
 
@@ -82,7 +83,8 @@ class MarketplaceUpgradeTests(unittest.TestCase):
             "backup_config":Mock(return_value=backup),"checked":Mock(side_effect=checked),
             "expected_schemas":Mock(return_value=nullcontext({"0015":"legacy","0017":"main17","0018":"main18"})),
             "verify_restore":Mock(),"stop_services":Mock(),"restore_old_services":Mock(),
-            "advance":Mock(),"verify_local":Mock(),"verify_public":Mock(),"wait_public_ready":Mock(),"start_pool":Mock()
+            "advance":Mock(),"verify_local":Mock(),"verify_public":Mock(),"wait_public_ready":Mock(),
+            "wake_historical_candidates":Mock(),"start_pool":Mock()
         }
         for name,value in patches.items():
             active=patch.object(upgrade,name,value);active.start();self.addCleanup(active.stop)
@@ -234,6 +236,74 @@ class MarketplaceUpgradeTests(unittest.TestCase):
         mocks["wait_public_ready"].assert_called_once_with()
         mocks["verify_public"].assert_called_once_with(source)
         mocks["restore_old_services"].assert_not_called()
+        self.assertIn("a"*12,(root/".env.release").read_text())
+
+
+    def test_historical_wake_runs_after_verified_app_and_assets_before_both_pool_paths(self):
+        for prepare_only in (False,True):
+            with self.subTest(prepare_only=prepare_only):
+                root,source,backup,db,state,mocks=self.fixture()
+                state.update(schema="0018",shape="main18")
+                mocks["advance"].return_value={"schema":"0018"}
+                events=[];previous=mocks["checked"].side_effect
+                def checked(command,**options):
+                    if "--force-recreate" in command and command[-1]=="app":events.append("app")
+                    if command[-1]=="worker-pool":events.append("pool")
+                    return previous(command,**options)
+                mocks["checked"].side_effect=checked
+                mocks["verify_local"].side_effect=lambda _:events.append("local")
+                mocks["verify_public"].side_effect=lambda _:events.append("public")
+                mocks["wake_historical_candidates"].side_effect=lambda:events.append("wake")
+                mocks["start_pool"].side_effect=lambda *args:events.append("pool")
+                with redirect_stdout(io.StringIO()):
+                    upgrade.finish(root,source,prepare_only=prepare_only)
+                self.assertEqual(events,["app","local","public","wake","pool"])
+                mocks["wake_historical_candidates"].assert_called_once_with()
+
+    def test_historical_wake_uses_current_app_account_directory_and_redacts_identifiers(self):
+        settings=SimpleNamespace(from_env=Mock(return_value=SimpleNamespace(database_url="private-credential")))
+        ledger=Mock(return_value=SimpleNamespace(dsn="private-dsn"))
+        automatic=Mock();automatic.wake_historical_candidates.side_effect=[3,4]
+        automation=Mock(return_value=automatic)
+        connection=Mock()
+        connection.execute.return_value.fetchall.return_value=[("private-tenant-a",),("private-tenant-b",)]
+        driver=SimpleNamespace(connect=Mock(return_value=connection))
+        modules={"bonuspro.settings":SimpleNamespace(Settings=settings),
+            "bonuspro.adapters.postgres.ledger":SimpleNamespace(Ledger=ledger),
+            "bonuspro.adapters.postgres.automation":SimpleNamespace(Automation=automation),
+            "psycopg":driver}
+        def checked(command,**options):
+            self.assertEqual(command[:5],["docker","exec","bonuspro-release-app-1","python","-c"])
+            self.assertTrue(options["capture"]);self.assertEqual(options["timeout"],120)
+            output=io.StringIO()
+            with patch.dict(sys.modules,modules),redirect_stdout(output):
+                exec(command[5],{})
+            return output.getvalue().encode()
+        output=io.StringIO()
+        with patch.object(upgrade,"checked",side_effect=checked),redirect_stdout(output):
+            summary=upgrade.wake_historical_candidates()
+        self.assertEqual(summary,{"active_accounts":2,"orders_queued":7})
+        self.assertEqual(automatic.wake_historical_candidates.call_args_list,
+            [unittest.mock.call("private-tenant-a",limit=20),unittest.mock.call("private-tenant-b",limit=20)])
+        self.assertNotIn("private",output.getvalue())
+        connection.close.assert_called_once()
+        for invalid in ({"active_accounts":2,"orders_queued":41},{"active_accounts":True,"orders_queued":1}):
+            with patch.object(upgrade,"checked",return_value=json.dumps(invalid).encode()):
+                with self.assertRaises(upgrade.MarketplaceFailed):
+                    upgrade.wake_historical_candidates()
+
+    def test_failed_historical_wake_keeps_main_configuration_and_does_not_start_any_pool(self):
+        root,source,backup,db,state,mocks=self.fixture()
+        state.update(schema="0018",shape="main18")
+        mocks["advance"].return_value={"schema":"0018"}
+        mocks["wake_historical_candidates"].side_effect=RuntimeError("private provider body")
+        output=io.StringIO()
+        with redirect_stdout(output),self.assertRaisesRegex(upgrade.MarketplaceFailed,"MARKETPLACE_NOT_CONFIRMED"):
+            upgrade.finish(root,source)
+        mocks["verify_public"].assert_called_once_with(source)
+        mocks["start_pool"].assert_not_called();mocks["restore_old_services"].assert_not_called()
+        self.assertIn('"stage": "historical_recheck"',output.getvalue())
+        self.assertNotIn("private provider",output.getvalue())
         self.assertIn("a"*12,(root/".env.release").read_text())
 
 if __name__=="__main__":unittest.main()

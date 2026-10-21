@@ -263,6 +263,102 @@ class Automation:
                          "WHERE tenant_id=%s AND id=%s AND resolved_at IS NULL",(actor,reason,tenant,identity))
         return {"resolved":True}
 
+
+    @staticmethod
+    def _has_any_order_history_in(conn,tenant,order):
+        # This deliberately counts every state, including preview-only contexts,
+        # released/reversed/voided plans and resolved audit history. Rebindings,
+        # presale undo receipts and void receipts have FK chains to these rows.
+        # Legacy return cases instead require their known sales-return relation.
+        return conn.execute("""
+          SELECT EXISTS(SELECT 1 FROM bonuspro.order_contexts WHERE tenant_id=%s AND order_id=%s)
+           OR EXISTS(SELECT 1 FROM bonuspro.reservations WHERE tenant_id=%s AND order_id=%s)
+           OR EXISTS(SELECT 1 FROM bonuspro.redemption_attempts WHERE tenant_id=%s AND order_id=%s)
+           OR EXISTS(SELECT 1 FROM bonuspro.personal_discount_applications WHERE tenant_id=%s AND order_id=%s)
+           OR EXISTS(SELECT 1 FROM bonuspro.order_accruals WHERE tenant_id=%s AND order_id=%s)
+           OR EXISTS(SELECT 1 FROM bonuspro.settlement_events WHERE tenant_id=%s AND order_id=%s)
+           OR EXISTS(SELECT 1 FROM bonuspro.settlement_cases WHERE tenant_id=%s AND order_id=%s)
+           OR EXISTS(SELECT 1 FROM bonuspro.reconciliation_issues WHERE tenant_id=%s AND order_id=%s)
+           OR EXISTS(SELECT 1 FROM bonuspro.return_cases r JOIN bonuspro.related_documents d
+             ON d.tenant_id=r.tenant_id AND d.kind='salesreturn' AND d.document_id=r.return_id
+             WHERE d.tenant_id=%s AND d.order_id=%s)
+           AS present
+        """,(tenant,order)*9).fetchone()["present"]
+
+    def historical_candidate(self,tenant,order):
+        tenant,order=map(uuid_value,(tenant,order))
+        with self.ledger.transaction(tenant) as conn:
+            row=conn.execute("SELECT c.starts_at,i.generation,b.marker_id "
+                "FROM bonuspro.automation_config c JOIN bonuspro.installations i USING(tenant_id) "
+                "JOIN bonuspro.widget_bindings b USING(tenant_id) "
+                "WHERE c.tenant_id=%s AND i.state='Activated'",(tenant,)).fetchone()
+            if not row or self._has_any_order_history_in(conn,tenant,order):
+                return None
+            return row
+
+
+    def wake_historical_candidates(self,tenant,*,limit=20):
+        """Deployment-only normal retry; classification still needs provider proof."""
+        tenant=uuid_value(tenant)
+        if type(limit) is not int or not 1<=limit<=20:
+            raise ValueError("bounded historical retry required")
+        with self.ledger.transaction(tenant) as conn:
+            conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("installation/"+tenant,))
+            self.ledger._key_lock(conn,tenant,"settings")
+            active=conn.execute("SELECT 1 FROM bonuspro.installations i "
+                "JOIN bonuspro.automation_config c USING(tenant_id) JOIN bonuspro.widget_bindings b USING(tenant_id) "
+                "WHERE i.tenant_id=%s AND i.state='Activated'",(tenant,)).fetchone()
+            if not active:
+                return 0
+            rows=conn.execute("SELECT m.order_id FROM bonuspro.order_monitors m "
+                "WHERE m.tenant_id=%s AND m.outcome='provider_error' "
+                "AND EXISTS(SELECT 1 FROM bonuspro.jobs j WHERE j.tenant_id=m.tenant_id "
+                "AND j.entity_id=m.order_id AND j.state='dead' AND j.last_error='invalid_document') "
+                "ORDER BY m.checked_at NULLS FIRST,m.order_id LIMIT %s FOR UPDATE OF m SKIP LOCKED",
+                (tenant,limit)).fetchall()
+            count=0
+            for row in rows:
+                order=str(row["order_id"])
+                self.ledger._key_lock(conn,tenant,"order/"+order)
+                if not self._has_any_order_history_in(conn,tenant,order):
+                    self.hint_in(conn,tenant,order)
+                    count+=1
+            return count
+
+    def _historical_guard_in(self,conn,tenant,proof):
+        from bonuspro.adapters.moysklad.fulfillment import HistoricalOrderEvidence,moment
+        if not isinstance(proof,HistoricalOrderEvidence) or proof.tenant_id!=tenant or time.monotonic()>proof.deadline:
+            return False
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",("installation/"+tenant,))
+        self.ledger._key_lock(conn,tenant,"settings")
+        self.ledger._key_lock(conn,tenant,"order/"+proof.order_id)
+        current=conn.execute("SELECT c.starts_at,i.generation,b.marker_id "
+            "FROM bonuspro.automation_config c JOIN bonuspro.installations i USING(tenant_id) "
+            "JOIN bonuspro.widget_bindings b USING(tenant_id) "
+            "WHERE c.tenant_id=%s AND i.state='Activated'",(tenant,)).fetchone()
+        if (not current or str(current["generation"])!=proof.generation
+            or str(current["marker_id"])!=proof.marker_id or current["starts_at"]!=proof.cutoff
+            or proof.created_at>=current["starts_at"] or moment(proof.revision)<proof.created_at
+            or self._has_any_order_history_in(conn,tenant,proof.order_id)
+            or time.monotonic()>proof.deadline):
+            return False
+        return True
+
+    def historical_read_only(self,tenant,proof):
+        tenant=uuid_value(tenant)
+        with self.ledger.transaction(tenant) as conn:
+            return self._historical_guard_in(conn,tenant,proof)
+
+    def complete_historical(self,tenant,job,proof):
+        tenant=uuid_value(tenant)
+        def apply(conn,row):
+            if str(row["entity_id"])!=proof.order_id or not self._historical_guard_in(conn,tenant,proof):
+                raise Conflict("historical order evidence changed")
+            self.outcome_in(conn,tenant,proof.order_id,"historical",row.get("hint_version"))
+            if time.monotonic()>proof.deadline:
+                raise Conflict("historical order evidence expired")
+        self.jobs.complete(tenant,str(job["id"]),str(job["lease_id"]),apply=apply)
+
     def invalid(self,tenant,order,reason,expected_hint=None,*,missing_order=False,job=None):
         tenant,order=map(uuid_value,(tenant,order))
         if expected_hint is None and job is not None:expected_hint=job.get("hint_version")
