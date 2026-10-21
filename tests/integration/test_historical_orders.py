@@ -29,6 +29,11 @@ class HistoricalWorkerTests(unittest.TestCase):
     def setUp(self):
         self.base=fixtures.AutomationTests();self.base.setUp()
         self.fx=self.base.fx;self.auto=self.base.a;self.tenant=self.fx.tenant
+        # configure() also schedules the fixture's existing preview order.
+        # Check it through the real non-earning path before focusing this worker
+        # on a different historical order; do not fake a monitor outcome.
+        self.base.run_proof(self.base.proof(outcome="waiting_shipment"))
+        self.assertEqual(self.fx.ledger.snapshot(self.tenant,self.fx.wallet)["balance"],5000)
         self.order,self.currency,self.line=(str(uuid4()) for _ in range(3))
         self.cutoff=self.auto.state(self.tenant)["starts_at"]
         self.requests=[];self.entity_reads=0;self.on_entity=None;self.related={};self.invalid_positions=False
