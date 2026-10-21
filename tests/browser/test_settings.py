@@ -2,7 +2,7 @@
 import base64,json,os
 import unittest
 from pathlib import Path
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright,expect
 
 ROOT=Path(__file__).resolve().parents[2]
 HOST="""<!doctype html><style>html,body{margin:0;height:100%;overflow:hidden}iframe{border:0;width:100%;height:100vh}</style><iframe title="БонусПро" src="https://widget.test/settings"></iframe>
@@ -16,7 +16,7 @@ class SettingsBrowserTests(unittest.TestCase):
         self.browser=self.runtime.chromium.launch()
         self.context=self.browser.new_context(viewport={"width":1280,"height":1200})
         self.page=self.context.new_page()
-        self.unverified=[];self.setup_error=None;self.setup_codes=None;self.widget_configured=False;self.automation_config=None;self.activations=[];self.hooks_calls=0;self.hooks_drop=False
+        self.unverified=[];self.setup_error=None;self.setup_codes=None;self.setup_details={};self.setup_calls=0;self.activation_error=None;self.activation_drop_first=False;self.activation_drop_after_commit=False;self.activation_state=False;self.automation_error=False;self.widget_configured=False;self.automation_config=None;self.activations=[];self.hooks_calls=0;self.hooks_drop=False
         self.current=None;self.saved=[];self.drop_first=False;self.conflict=False
         self.policy={"version":0,"enabled":False,"external_policy":"skip","allow_bonus_stack":False}
         self.policy_saved=[];self.policy_requests={};self.policy_conflict=False;self.policy_drop_first=False
@@ -36,21 +36,27 @@ class SettingsBrowserTests(unittest.TestCase):
             if self.hooks_drop and self.hooks_calls==1:return route.abort()
             return route.fulfill(json={"configured":True,"hook_count":21})
         if path=="/api/admin/widget/setup":
+            self.setup_calls+=1
             if self.setup_error:return route.fulfill(status=self.setup_error[0],json={
-                "error":self.setup_error[1],"provider_error_codes":self.setup_codes})
+                "error":self.setup_error[1],"provider_error_codes":self.setup_codes,**self.setup_details})
             self.widget_configured=True
             return route.fulfill(json={"configured":True})
         if path=="/api/admin/automation":
+            if self.automation_error:return route.fulfill(status=503,json={"error":"service temporarily unavailable"})
             if route.request.method=="POST":
                 self.automation_config={"starts_at":"2026-10-14T00:00:00Z","heartbeat_at":None,"last_error":None}
                 return route.fulfill(json={"configured":True,"starts_at":self.automation_config["starts_at"]})
             return route.fulfill(json={"configuration":self.automation_config,"orders":{},"issues":[],"unverified":self.unverified})
         if path=="/api/admin/activate":
             self.activations.append(route.request.post_data_json)
+            if self.activation_error:return route.fulfill(status=409,json={"error":self.activation_error})
+            if self.activation_drop_first and len(self.activations)==1:return route.abort()
+            self.activation_state=True
             self.automation_config={"starts_at":"2026-10-14T00:00:00Z","heartbeat_at":None,"last_error":None}
+            if self.activation_drop_after_commit:return route.abort()
             return route.fulfill(json={"state":"Activated","starts_at":self.automation_config["starts_at"]})
         if path=="/api/admin/readiness":
-            complete=[bool(self.current),self.widget_configured,bool(self.activations),False]
+            complete=[bool(self.current),self.widget_configured,self.activation_state,False]
             ids=["rules","widget","activation","processing"]
             labels=["Правила бонусов сохранены","Настройка виджета сохранена","Программа запущена","Заказы обрабатываются автоматически"]
             targets=["rules-form","widget-settings","launch-settings","processing-settings"]
@@ -100,6 +106,20 @@ class SettingsBrowserTests(unittest.TestCase):
         frame=self.page.frames[1]
         self.assertTrue(frame.evaluate("document.documentElement.scrollWidth<=innerWidth+1"))
 
+    def save_rules_and_prepare_widget(self):
+        self.frame.get_by_role("tab",name="Правила",exact=True).click()
+        self.frame.get_by_role("button",name="Сохранить правила",exact=True).click()
+        self.frame.get_by_text("Правила сохранены. Версия 1.",exact=True).wait_for()
+        self.frame.get_by_role("tab",name="Подключение",exact=True).click()
+        self.frame.get_by_role("button",name="Подготовить виджет",exact=True).click()
+        self.frame.get_by_text("Виджет подготовлен. Это не включает рабочие списания.",exact=True).wait_for()
+        expect(self.frame.locator("#activate-program")).to_be_enabled()
+
+    def acknowledge_activation(self):
+        self.frame.get_by_label("Остатки сверены и перенесены либо начинаем без остатков").check()
+        self.frame.get_by_label("Прежняя программа больше не обрабатывает новые покупки").check()
+        self.frame.get_by_label("Основание запуска").fill("Сверено с магазином")
+
     def test_widget_setup_does_not_claim_sales_are_active(self):
         self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
         self.frame.get_by_role("button",name="Подготовить виджет",exact=True).click()
@@ -117,7 +137,7 @@ class SettingsBrowserTests(unittest.TestCase):
         self.frame.get_by_text("Начало программы ещё не зафиксировано.",exact=True).wait_for()
 
     def test_activation_requires_explicit_cutover_confirmation(self):
-        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click();button=self.frame.get_by_role("button",name="Запустить программу",exact=True)
+        self.open();self.save_rules_and_prepare_widget();button=self.frame.get_by_role("button",name="Запустить программу",exact=True)
         button.click()
         self.frame.get_by_text("Подтвердите сверку остатков, отключение прежней программы и укажите основание.",exact=True).wait_for()
         self.assertEqual(self.activations,[])
@@ -196,8 +216,7 @@ class SettingsBrowserTests(unittest.TestCase):
         cases=[(403,"moysklad_permissions_required","BP-WIDGET-ACCESS"),
                (403,"moysklad_token_rejected","BP-WIDGET-TOKEN"),
                (422,"widget_metadata_invalid","BP-WIDGET-METADATA"),
-               (409,"widget_binding_changed","BP-WIDGET-BINDING"),
-               (503,"widget_metadata_temporarily_unavailable","МойСклад временно не отвечает")]
+               (409,"widget_binding_changed","BP-WIDGET-BINDING")]
         for status,code,text in cases:
             self.setup_error=(status,code);button.click()
             self.frame.locator("#setup-status").get_by_text(text,exact=False).wait_for()
@@ -296,5 +315,94 @@ class SettingsBrowserTests(unittest.TestCase):
         self.frame.locator("#automation-details").get_by_text("Персональная скидка — ожидает подтверждения",exact=False).wait_for()
         self.assertNotIn("0 бонусов",self.frame.locator("#automation-details").inner_text())
         self.assertTrue(self.frame.locator("#automation-details").get_by_role("link",name="Открыть заказ",exact=True).is_visible())
+
+
+    def test_activation_stays_disabled_until_rules_and_widget_are_ready(self):
+        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
+        button=self.frame.locator("#activate-program")
+        expect(button).to_be_disabled()
+        self.frame.get_by_text("Сначала сохраните правила и подготовьте виджет.",exact=True).wait_for()
+        self.frame.get_by_role("tab",name="Правила",exact=True).click()
+        self.frame.get_by_role("button",name="Сохранить правила",exact=True).click()
+        self.frame.get_by_text("Правила сохранены. Версия 1.",exact=True).wait_for()
+        self.frame.get_by_role("tab",name="Подключение",exact=True).click()
+        self.frame.get_by_text("Сначала подготовьте виджет.",exact=True).wait_for()
+        expect(button).to_be_disabled()
+        self.setup_error=(503,"widget_metadata_temporarily_unavailable")
+        self.setup_details={"retry_reason":"timeout","retry_after":1}
+        self.frame.locator("#setup-widget").click()
+        self.frame.locator("#setup-status").get_by_text("BP-WIDGET-TIMEOUT",exact=False).wait_for()
+        expect(button).to_be_disabled()
+        self.assertEqual(self.activations,[])
+        self.setup_error=None
+        expect(self.frame.locator("#setup-widget")).to_be_enabled(timeout=5000)
+        self.frame.locator("#setup-widget").click()
+        expect(button).to_be_enabled()
+
+    def test_widget_rate_limit_waits_before_retry_and_recovers_without_duplicate_clicks(self):
+        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
+        self.setup_error=(503,"widget_metadata_temporarily_unavailable")
+        self.setup_details={"retry_reason":"rate_limited","retry_after":2,"provider_status":429}
+        button=self.frame.locator("#setup-widget")
+        button.click()
+        self.frame.locator("#setup-status").get_by_text("BP-WIDGET-RATE",exact=False).wait_for()
+        expect(button).to_be_disabled()
+        self.assertEqual(self.setup_calls,1)
+        self.assertEqual(self.activations,[])
+        self.setup_error=None
+        expect(button).to_be_enabled(timeout=5000)
+        button.click()
+        self.frame.get_by_text("Виджет подготовлен. Это не включает рабочие списания.",exact=True).wait_for()
+        self.assertEqual(self.setup_calls,2)
+
+    def test_activation_conflict_has_no_false_rules_message_and_preserves_retry_request(self):
+        self.open();self.save_rules_and_prepare_widget();self.acknowledge_activation()
+        self.activation_error="operation conflict"
+        button=self.frame.locator("#activate-program");button.click()
+        self.frame.locator("#activation-status").get_by_text("Не удалось завершить запуск.",exact=False).wait_for()
+        self.assertNotIn("Правила изменились",self.frame.locator("#activation-status").inner_text())
+        self.assertTrue(self.frame.get_by_label("Остатки сверены и перенесены либо начинаем без остатков").is_checked())
+        self.activation_error=None;button.click()
+        self.frame.locator("#activation-status").get_by_text("Программа запущена.",exact=False).wait_for()
+        self.assertEqual(self.activations[0],self.activations[1])
+
+    def test_changed_activation_configuration_requires_new_acknowledgement_and_intent(self):
+        self.open();self.save_rules_and_prepare_widget();self.acknowledge_activation()
+        self.activation_error="activation_configuration_changed"
+        button=self.frame.locator("#activate-program");button.click()
+        self.frame.get_by_text("Настройки изменились во время запуска. Проверьте правила и заново подтвердите условия запуска.",exact=True).wait_for()
+        self.assertFalse(self.frame.get_by_label("Остатки сверены и перенесены либо начинаем без остатков").is_checked())
+        self.assertFalse(self.frame.get_by_label("Прежняя программа больше не обрабатывает новые покупки").is_checked())
+        self.activation_error=None;button.click()
+        self.frame.get_by_text("Подтвердите сверку остатков, отключение прежней программы и укажите основание.",exact=True).wait_for()
+        self.assertEqual(len(self.activations),1)
+        self.acknowledge_activation();button.click()
+        self.frame.locator("#activation-status").get_by_text("Программа запущена.",exact=False).wait_for()
+        self.assertNotEqual(self.activations[0]["request_id"],self.activations[1]["request_id"])
+
+    def test_lost_activation_response_reuses_same_intent_and_success_survives_followup_failure(self):
+        self.open();self.save_rules_and_prepare_widget();self.acknowledge_activation()
+        self.activation_drop_first=True
+        button=self.frame.locator("#activate-program");button.click()
+        self.frame.locator("#activation-status").get_by_text("Запуск не подтверждён.",exact=False).wait_for()
+        self.automation_error=True;button.click()
+        self.frame.locator("#activation-status").get_by_text("Программа запущена.",exact=False).wait_for()
+        self.frame.locator("#activation-status").get_by_text("Статус обработки пока недоступен",exact=False).wait_for()
+        self.assertNotIn("Запуск не подтверждён",self.frame.locator("#activation-status").inner_text())
+        self.assertEqual(self.activations[0],self.activations[1])
+        expect(button).to_be_hidden()
+
+
+    def test_lost_activation_response_after_commit_is_confirmed_by_readiness_without_retry(self):
+        self.open();self.save_rules_and_prepare_widget();self.acknowledge_activation()
+        self.activation_drop_after_commit=True
+        button=self.frame.locator("#activate-program");button.click()
+        self.frame.get_by_text("Программа уже запущена. Повторный запуск не требуется.",exact=True).wait_for()
+        self.assertNotIn("Запуск не подтверждён",self.frame.locator("#activation-status").inner_text())
+        expect(button).to_be_hidden()
+        self.assertEqual(len(self.activations),1)
+        self.frame.get_by_role("button",name="Обновить статус",exact=True).click()
+        self.frame.get_by_text("Программа уже запущена. Повторный запуск не требуется.",exact=True).wait_for()
+        self.assertEqual(len(self.activations),1)
 
 if __name__=="__main__":unittest.main()

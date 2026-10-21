@@ -28,7 +28,7 @@ from bonuspro.adapters.postgres.readiness import Readiness
 from bonuspro.adapters.postgres.redemptions import Redemptions,SetupInProgress,ProgramNotConfigured
 from bonuspro.adapters.postgres.automation import Automation
 from bonuspro.adapters.postgres.imports import Imports
-from bonuspro.adapters.postgres.activation import ActivationService
+from bonuspro.adapters.postgres.activation import ActivationService,ActivationConflict
 from bonuspro.adapters.postgres.operators import Operators,OperatorDenied
 from bonuspro.adapters.postgres.voids import Voids
 from bonuspro.adapters.postgres.signals import Signals
@@ -289,6 +289,10 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
     @app.exception_handler(ProgramNotConfigured)
     async def program_not_configured(request,error):
         return JSONResponse({"error":"program_not_configured"},status_code=409)
+
+    @app.exception_handler(ActivationConflict)
+    async def activation_conflict(request,error):
+        return JSONResponse({"error":error.code},status_code=409)
 
     @app.exception_handler(Conflict)
     async def conflict(request, error):
@@ -630,8 +634,15 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
                 payload["provider_error_codes"]=list(error.provider_error_codes)
             return JSONResponse(payload,status_code=403)
         except RetryLater as error:
-            return JSONResponse({"error":"widget_metadata_temporarily_unavailable"},status_code=503,
-                                headers={"Retry-After":str(error.delay_seconds)})
+            delay=min(86400,max(1,error.delay_seconds)) if type(error.delay_seconds) is int else 30
+            reason=("rate_limited" if error.provider_status==429 else
+                    "timeout" if error.provider_status==408 or error.code=="provider_timeout" else
+                    "conflict" if error.code=="conflict" else "unavailable")
+            payload={"error":"widget_metadata_temporarily_unavailable",
+                     "retry_reason":reason,"retry_after":delay}
+            if error.provider_status is not None:
+                payload["provider_status"]=error.provider_status
+            return JSONResponse(payload,status_code=503,headers={"Retry-After":str(delay)})
         except RemapError:
             return JSONResponse({"error":"widget_metadata_invalid"},status_code=422)
         except Conflict:

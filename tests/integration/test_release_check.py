@@ -68,4 +68,53 @@ class ReleaseProbeTests(unittest.TestCase):
         self.assertFalse(any(r.url.path.endswith("/customerorder/"+self.f.fx.order) for r in self.requests))
         self.assertEqual(report["sampled_orders"],0)
 
+
+class EmptyAccountProbeTests(unittest.TestCase):
+    def test_activated_empty_account_reports_missing_control_order_without_changing_setup_or_money(self):
+        import test_activation as activation_fixture
+        from bonuspro.adapters.postgres.automation import Automation
+        from bonuspro.adapters.postgres.readiness import Readiness
+        f=activation_fixture.ActivationTests();f.setUp();self.addCleanup(f.doCleanups)
+        f.activate();fx=f.fx
+        Automation(fx.ledger).cooldown(fx.tenant,0,None)
+        self.assertTrue(Readiness(fx.ledger).report(fx.tenant)["ready"])
+        with fx.ledger.transaction(fx.tenant) as conn:
+            marker=str(conn.execute("SELECT marker_id FROM bonuspro.widget_bindings").fetchone()["marker_id"])
+        tables=("wallets","order_contexts","reservations","ledger_transactions","ledger_postings",
+                "order_monitors","jobs","personal_discount_policy_versions","customer_personal_discount_versions",
+                "personal_discount_applications","personal_discount_voids","automation_config","sync_state",
+                "activation_requests","activation_completions")
+        def snapshot():
+            with fx.ledger.transaction(fx.tenant) as conn:
+                return {table:conn.execute("SELECT to_jsonb(t) AS row FROM bonuspro."+table+" t").fetchall()
+                        for table in tables}
+        before=snapshot();requests=[]
+        self.assertEqual(before["ledger_transactions"],[])
+        self.assertEqual(before["wallets"],[])
+        def provider(request):
+            requests.append(request)
+            if request.url.path.endswith("/customerorder/metadata/attributes"):
+                return httpx.Response(200,json={"meta":{},"rows":[{
+                    "id":marker,"name":"БонусПро: операция списания","type":"string","required":False,
+                    "accountId":fx.tenant,"meta":{"type":"attributemetadata",
+                        "href":BASE+"/entity/customerorder/metadata/attributes/"+marker}}]})
+            if request.url.path.endswith("/entity/customerorder"):
+                return httpx.Response(200,json={"meta":{"size":0},"rows":[]})
+            raise AssertionError("Empty account must not request any document graph")
+        def factory(token,tenant,**kwargs):
+            return RemapClient(token,tenant,transport=httpx.MockTransport(provider),**kwargs)
+        report=check_account(fx.ledger,fx.install,fx.tenant,client_factory=factory)
+        self.assertTrue(report["read_only"])
+        self.assertTrue(report["operational_ready"])
+        self.assertFalse(report["business_acceptance_verified"])
+        self.assertFalse(report["ready_for_live_acceptance"])
+        self.assertEqual(report["sampled_orders"],0)
+        self.assertEqual(report["outcomes"],{})
+        self.assertEqual(report["failures"],[{"stage":"discovery","code":"no_orders_to_check"}])
+        self.assertEqual(snapshot(),before)
+        self.assertEqual(len(requests),2)
+        self.assertTrue(all(request.method=="GET" for request in requests))
+        for value in (fx.tenant,marker,fx.actor,"synthetic"):
+            self.assertNotIn(value,json.dumps(report))
+
 if __name__=="__main__":unittest.main()

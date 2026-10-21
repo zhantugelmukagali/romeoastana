@@ -1,6 +1,7 @@
 import {requestContext} from "./bridge.js";
 const $=id=>document.getElementById(id);
 let session=null,version=0,working=false,pending=null,cursor=null;
+let activationReady=false,setupRetryUntil=0,setupRetryTimer=null;
 const status=(value,error=false)=>{$("status").textContent=value;$("status").className=error?"error":"";};
 function bps(id) {
   const value=$(id).value.trim();
@@ -26,7 +27,8 @@ function busy(value) {
   working=value;
   $("rules-form").querySelectorAll("input,textarea,button").forEach(x=>x.disabled=value);
   $("more").disabled=value;
-  $("setup-widget").disabled=value;
+  $("setup-widget").disabled=value||Date.now()<setupRetryUntil;
+  $("activate-program").disabled=value||!activationReady;
   $("setup-webhooks").disabled=value;
   $("refresh-automation").disabled=value;
   $("personal-policy-form").querySelectorAll("input,select,textarea,button").forEach(x=>x.disabled=value||(!policyLoaded&&x.id!=="reload-personal-policy"));
@@ -36,11 +38,34 @@ async function api(path,options={}) {
   let response;
   try {response=await fetch(path,{...options,credentials:"omit",cache:"no-store",signal:AbortSignal.timeout(15000),
     headers:{"Content-Type":"application/json",Authorization:"Bearer "+session}});}
-  catch {throw new Error("Нет ответа сервера. Повторите сохранение: повтор не создаст второе изменение.");}
+  catch {throw new Error(path==="/api/admin/rules"?"Нет ответа сервера. Повторите сохранение: повтор не создаст второе изменение.":"Нет ответа сервера. Повторите действие с прежними данными.");}
   if(response.status===401){session=null;$("workspace").hidden=true;$("retry").hidden=false;throw new Error("Сеанс завершён. Подключитесь снова.");}
-  if(response.status===403)throw new Error("Нужны права администратора МойСклад.");
-  if(response.status===409){const e=new Error("Правила изменились. Загрузите актуальные правила и проверьте значения перед сохранением.");e.conflict=true;throw e;}
-  if(!response.ok)throw new Error("Не удалось выполнить действие. Проверьте значения и повторите.");
+  if(!response.ok){
+    let data={};try{const body=await response.json();if(body&&typeof body==="object"&&!Array.isArray(body))data=body;}catch{}
+    const activationMessages={
+      activation_rules_required:"Сначала сохраните правила программы.",
+      activation_widget_required:"Сначала подготовьте виджет в разделе «Виджет в заказе».",
+      activation_configuration_changed:"Настройки изменились во время запуска. Проверьте правила и заново подтвердите условия запуска.",
+      activation_request_changed:"Запрос запуска больше не соответствует установке. Обновите статус подключения.",
+      activation_installation_changed:"Установка решения изменилась. Откройте БонусПро заново из МойСклад.",
+      activation_already_active:"Программа уже запущена. Обновите статус подключения."
+    };
+    if(path==="/api/admin/activate"&&response.status===409){
+      const e=new Error(activationMessages[data.error]||"Не удалось завершить запуск. Обновите статус подключения.");
+      e.activationCode=Object.hasOwn(activationMessages,data.error)?data.error:null;
+      throw e;
+    }
+    if(response.status===403)throw new Error("Нет доступа к действию. Проверьте права администратора и подключение решения.");
+    if(response.status===409){
+      const e=new Error(path==="/api/admin/rules"?
+        "Правила изменились. Загрузите актуальные правила и проверьте значения перед сохранением.":
+        "Настройки изменились. Загрузите актуальные значения.");
+      e.conflict=true;throw e;
+    }
+    if(path==="/api/admin/activate"&&response.status===503)
+      throw new Error("МойСклад временно не подтверждает запуск. Обновите статус и повторите с тем же основанием.");
+    throw new Error("Не удалось выполнить действие. Проверьте значения и повторите.");
+  }
   return response.json();
 }
 function node(tag,value){const n=document.createElement(tag);n.textContent=value;return n;}
@@ -65,7 +90,7 @@ async function load() {
   await history();
 }
 async function connect(){
-  $("retry").hidden=true;$("workspace").hidden=true;session=null;pending=null;policyPending=null;policyLoaded=false;policyConflict=false;$("activation-status").textContent="";busy(true);
+  $("retry").hidden=true;$("workspace").hidden=true;session=null;pending=null;activationReady=false;policyPending=null;policyLoaded=false;policyConflict=false;$("activation-status").textContent="";busy(true);
   status("Подключаемся к МойСклад…");
   try {
     const token=await requestContext();
@@ -101,17 +126,41 @@ $("rules-form").addEventListener("submit",async event=>{
 $("reload").onclick=async()=>{if(working)return;busy(true);try{await load();}catch(e){status(e.message,true);}finally{busy(false);}};
 $("more").onclick=async()=>{if(working)return;busy(true);try{await history(true);}catch(e){status(e.message,true);}finally{busy(false);}};
 $("earn").oninput=preview;$("spend").oninput=preview;$("retry").onclick=connect;
+function setupCooldown(seconds) {
+  if(setupRetryTimer!==null)clearTimeout(setupRetryTimer);
+  setupRetryUntil=Date.now()+seconds*1000;
+  const update=()=>{
+    const remaining=Math.max(0,Math.ceil((setupRetryUntil-Date.now())/1000));
+    $("setup-widget").textContent=remaining?"Повторить через "+remaining+" с":"Подготовить виджет";
+    $("setup-widget").disabled=working||remaining>0;
+    setupRetryTimer=remaining?setTimeout(update,Math.min(1000,Math.max(1,setupRetryUntil-Date.now()))):null;
+  };
+  update();
+}
 $("setup-widget").onclick=async()=>{
-  if(working)return;busy(true);$("setup-status").textContent="Проверяем подключение…";
+  if(working||Date.now()<setupRetryUntil)return;busy(true);$("setup-status").textContent="Проверяем подключение…";
   try{
     const response=await fetch("/api/admin/widget/setup",{method:"POST",credentials:"omit",cache:"no-store",
       headers:{"Content-Type":"application/json",Authorization:"Bearer "+session},signal:AbortSignal.timeout(35000)});
     if(!response.ok){
-      let data={};try{data=await response.json();}catch{}
+      let data={};try{const body=await response.json();if(body&&typeof body==="object"&&!Array.isArray(body))data=body;}catch{}
       if(response.status===401){
         session=null;$("workspace").hidden=true;$("retry").hidden=false;
         status("Сеанс завершён. Подключитесь снова и повторите настройку виджета.",true);
         throw new Error("Сеанс завершён. Подключитесь снова и повторите настройку виджета.");
+      }
+      if(response.status===503&&data.error==="widget_metadata_temporarily_unavailable"){
+        const header=response.headers.get("Retry-After")||"";
+        const retry=Number.isSafeInteger(data.retry_after)&&data.retry_after>=1&&data.retry_after<=86400?data.retry_after:
+          (/^[0-9]{1,5}$/.test(header)&&Number(header)>=1&&Number(header)<=86400?Number(header):5);
+        setupCooldown(retry);
+        const messages={
+          rate_limited:"МойСклад ограничил запросы. Повторите через "+retry+" с. Код BP-WIDGET-RATE.",
+          timeout:"МойСклад не ответил вовремя. Повторите через "+retry+" с. Код BP-WIDGET-TIMEOUT.",
+          conflict:"МойСклад ещё обрабатывает настройку поля. Повторите через "+retry+" с. Код BP-WIDGET-RETRY.",
+          unavailable:"МойСклад временно недоступен. Повторите через "+retry+" с. Код BP-WIDGET-PROVIDER."
+        };
+        throw new Error(messages[data.retry_reason]||messages.unavailable);
       }
       const messages={
         moysklad_token_rejected:"МойСклад отклонил доступ решения. Обновите установленное решение и подключитесь снова. Код BP-WIDGET-TOKEN.",
@@ -175,7 +224,7 @@ $("refresh-automation").onclick=async()=>{
 
 let activationRequest=null;
 $("activate-program").onclick=async()=>{
-  if(working)return;
+  if(working||!activationReady)return;
   const reason=$("activation-reason").value.trim();
   if(!$("balances-reviewed").checked||!$("previous-disabled").checked||!reason){
     $("activation-status").textContent="Подтвердите сверку остатков, отключение прежней программы и укажите основание.";return;
@@ -187,10 +236,20 @@ $("activate-program").onclick=async()=>{
   busy(true);$("activate-program").disabled=true;
   try{
     const result=await api("/api/admin/activate",{method:"POST",body:JSON.stringify(activationRequest)});
+    activationReady=false;$("activate-program").hidden=true;
     $("activation-status").textContent="Программа запущена. Начало начислений: "+new Date(result.starts_at).toLocaleString("ru-RU")+". Проверьте работу обработчика ниже.";
-    await automationStatus();await updateReadiness();
-  }catch(e){$("activation-status").textContent="Запуск не подтверждён. Проверьте статус подключения и повторите с тем же основанием. "+e.message;}
-  finally{busy(false);$("activate-program").disabled=false;}
+    try{await automationStatus();await updateReadiness();}
+    catch{$("activation-status").textContent+=" Статус обработки пока недоступен; обновите его отдельно.";}
+  }catch(e){
+    if(e.activationCode){
+      $("activation-status").textContent=e.message;
+      if(["activation_configuration_changed","activation_request_changed"].includes(e.activationCode)){
+        activationRequest=null;$("balances-reviewed").checked=false;$("previous-disabled").checked=false;
+      }
+    }else $("activation-status").textContent="Запуск не подтверждён. Проверьте статус подключения и повторите с тем же основанием. "+e.message;
+    try{await updateReadiness();}catch{}
+  }
+  finally{busy(false);}
 };
 
 $("setup-webhooks").onclick=async()=>{
@@ -223,9 +282,18 @@ async function updateReadiness(){
     message.textContent=data.ready?"Все подключения выполнены. Автоматическая обработка отвечает.":
       "Завершите отмеченные шаги. Статус отражает фактическое подключение.";
     const active=data.checks.find(item=>item.id==="activation")?.complete;
+    const rulesReady=data.checks.some(item=>item.id==="rules"&&item.complete===true);
+    const widgetReady=data.checks.some(item=>item.id==="widget"&&item.complete===true);
+    activationReady=rulesReady&&widgetReady&&!active;
+    $("activation-prerequisites").hidden=Boolean(active)||activationReady;
+    $("activation-prerequisites").textContent=!rulesReady&&!widgetReady?"Сначала сохраните правила и подготовьте виджет.":
+      !rulesReady?"Сначала сохраните правила программы.":"Сначала подготовьте виджет.";
+    $("activate-program").disabled=working||!activationReady;
     $("activate-program").hidden=Boolean(active);
-    if(active&&!$("activation-status").textContent)$("activation-status").textContent="Программа уже запущена. Повторный запуск не требуется.";
+    if(active&&!$("activation-status").textContent.startsWith("Программа запущена."))$("activation-status").textContent="Программа уже запущена. Повторный запуск не требуется.";
   }catch(error){
+    activationReady=false;$("activate-program").disabled=true;
+    $("activation-prerequisites").hidden=false;$("activation-prerequisites").textContent="Обновите статус подключения перед запуском.";
     list.replaceChildren();message.textContent="Не удалось проверить подключение. Обновите статус.";
     if(!session)throw error;
   }

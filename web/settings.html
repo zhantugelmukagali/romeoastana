@@ -55,7 +55,8 @@
 <label><input id="balances-reviewed" type="checkbox"> Остатки сверены и перенесены либо начинаем без остатков</label>
 <label><input id="previous-disabled" type="checkbox"> Прежняя программа больше не обрабатывает новые покупки</label>
 <label for="activation-reason">Основание запуска</label><textarea id="activation-reason" maxlength="500" rows="2"></textarea>
-<button id="activate-program" type="button">Запустить программу</button><p id="activation-status" role="status"></p></section>
+<p id="activation-prerequisites" class="hint" role="status" hidden></p>
+<button id="activate-program" type="button" disabled>Запустить программу</button><p id="activation-status" role="status"></p></section>
 <section id="processing-settings" aria-label="Автоматическое начисление"><h2>Обработка заказов</h2>
 <p>Покупки до даты запуска не получают новые начисления.</p>
 <button id="refresh-automation" type="button">Проверить обработку</button>

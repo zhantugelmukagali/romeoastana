@@ -60,7 +60,20 @@ class RemapTests(unittest.TestCase):
         with self.assertRaises(RetryLater) as error:
             self.client(lambda req:httpx.Response(429,headers={"X-Lognex-Retry-After":"2501","Retry-After":"2"})).entity("customerorder",self.order)
         self.assertEqual(error.exception.delay_seconds,3)
+        self.assertEqual(error.exception.provider_status,429)
+        self.assertEqual(error.exception.code,"provider_unavailable")
         self.assertEqual(len(self.calls),1)
+
+    def test_retryable_http_status_is_finite_diagnostic_without_changing_worker_codes(self):
+        for status in (408,409,412,500,503,599):
+            with self.subTest(status=status),self.assertRaises(RetryLater) as caught:
+                self.client(lambda req:httpx.Response(status,text="private-provider-token")).entity("customerorder",self.order)
+            self.assertEqual(caught.exception.provider_status,status)
+            self.assertEqual(caught.exception.code,"conflict" if status in (409,412) else "provider_unavailable")
+            self.assertEqual(caught.exception.delay_seconds,30)
+            self.assertNotIn("private-provider-token",str(caught.exception.__dict__))
+        for status in (True,"429",200,600,-1):
+            self.assertIsNone(RetryLater(provider_status=status).provider_status)
 
     def test_auth_missing_and_provider_errors_are_distinct_and_redacted(self):
         for status,expected in ((401,AccessDenied),(403,AccessDenied),(404,EntityMissing),(503,RetryLater)):
@@ -123,6 +136,7 @@ class RemapTests(unittest.TestCase):
         with self.assertRaises(RetryLater) as error:
             self.client(timeout).entity("customerorder",self.order)
         self.assertEqual(error.exception.code,"provider_timeout")
+        self.assertIsNone(error.exception.provider_status)
         self.assertNotIn("synthetic-token",str(error.exception))
 
     def test_invalid_json_duplicate_keys_nan_and_html_are_rejected(self):
