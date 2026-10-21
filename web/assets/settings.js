@@ -148,6 +148,13 @@ $("setup-widget").onclick=async()=>{
         status("Сеанс завершён. Подключитесь снова и повторите настройку виджета.",true);
         throw new Error("Сеанс завершён. Подключитесь снова и повторите настройку виджета.");
       }
+      const codes=Array.isArray(data.provider_error_codes)?[...new Set(data.provider_error_codes.slice(0,64)
+        .filter(code=>Number.isSafeInteger(code)&&code>=0&&code<=999999))].sort((a,b)=>a-b).slice(0,8):[];
+      const phases={metadata_read:"чтение поля",metadata_create:"создание поля"};
+      const phase=Object.hasOwn(phases,data.provider_operation)?phases[data.provider_operation]:null;
+      const providerStatus=Number.isSafeInteger(data.provider_status)&&data.provider_status>=400&&data.provider_status<=599?data.provider_status:null;
+      const diagnostic=(phase?" Этап: "+phase+".":"")+(providerStatus?" HTTP "+providerStatus+".":"")+
+        (codes.length?" Коды API МойСклад: "+codes.join(", ")+".":"");
       if(response.status===503&&data.error==="widget_metadata_temporarily_unavailable"){
         const header=response.headers.get("Retry-After")||"";
         const retry=Number.isSafeInteger(data.retry_after)&&data.retry_after>=1&&data.retry_after<=86400?data.retry_after:
@@ -156,22 +163,20 @@ $("setup-widget").onclick=async()=>{
         const messages={
           rate_limited:"МойСклад ограничил запросы. Повторите через "+retry+" с. Код BP-WIDGET-RATE.",
           timeout:"МойСклад не ответил вовремя. Повторите через "+retry+" с. Код BP-WIDGET-TIMEOUT.",
-          conflict:"МойСклад ещё обрабатывает настройку поля. Повторите через "+retry+" с. Код BP-WIDGET-RETRY.",
+          conflict:"Настройка поля изменилась параллельно. Повторите через "+retry+" с. Код BP-WIDGET-RETRY.",
           unavailable:"МойСклад временно недоступен. Повторите через "+retry+" с. Код BP-WIDGET-PROVIDER."
         };
-        throw new Error(messages[data.retry_reason]||messages.unavailable);
+        throw new Error((messages[data.retry_reason]||messages.unavailable)+diagnostic);
       }
       const messages={
         moysklad_token_rejected:"МойСклад отклонил доступ решения. Обновите установленное решение и подключитесь снова. Код BP-WIDGET-TOKEN.",
         moysklad_permissions_required:"МойСклад запретил доступ к служебному полю. Проверьте права установленного решения и ограничения аккаунта. Код BP-WIDGET-ACCESS.",
         widget_setup_in_progress:"Подключение уже выполняется в другом окне. Подождите и повторите проверку.",
         widget_metadata_temporarily_unavailable:"МойСклад временно не отвечает или ограничил запросы. Подождите и повторите; уже созданное поле будет найдено.",
+        widget_metadata_rejected:"МойСклад отклонил настройку служебного поля. Код BP-WIDGET-REQUEST.",
         widget_metadata_invalid:"МойСклад вернул неподходящее или неоднозначное служебное поле. Требуется проверка настройки. Код BP-WIDGET-METADATA.",
         widget_binding_changed:"Служебное поле отличается от ранее подключённого. Не удаляйте поля и не повторяйте списания; нужна проверка администратора. Код BP-WIDGET-BINDING."
       };
-      const codes=Array.isArray(data.provider_error_codes)?[...new Set(data.provider_error_codes.slice(0,64)
-        .filter(code=>Number.isSafeInteger(code)&&code>=0&&code<=999999))].sort((a,b)=>a-b).slice(0,8):[];
-      const diagnostic=codes.length?" Коды API МойСклад: "+codes.join(", ")+".":"";
       throw new Error((messages[data.error]||(response.status===403?
         "Доступ к настройке отклонён. Проверьте права администратора и установленного решения. Код BP-WIDGET-ACCESS.":
         "Не удалось подключить виджет. Код BP-WIDGET-HTTP-"+response.status+". Повторите проверку."))+diagnostic);

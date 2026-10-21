@@ -32,7 +32,7 @@ from bonuspro.adapters.postgres.activation import ActivationService,ActivationCo
 from bonuspro.adapters.postgres.operators import Operators,OperatorDenied
 from bonuspro.adapters.postgres.voids import Voids
 from bonuspro.importing import ImportInvalid
-from bonuspro.adapters.moysklad.remap import RemapClient, RemapError, RetryLater, AccessDenied, EntityMissing
+from bonuspro.adapters.moysklad.remap import RemapClient, RemapError, RetryLater, AccessDenied, EntityMissing, MetadataRejected
 from bonuspro.adapters.moysklad.order import read_order
 from bonuspro.adapters.moysklad.fulfillment import FulfillmentReader
 
@@ -629,7 +629,14 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
             payload={"error":code}
             if error.provider_error_codes:
                 payload["provider_error_codes"]=list(error.provider_error_codes)
+            if error.provider_operation is not None:
+                payload["provider_operation"]=error.provider_operation
             return JSONResponse(payload,status_code=403)
+        except MetadataRejected as error:
+            return JSONResponse({"error":"widget_metadata_rejected",
+                "provider_status":error.provider_status,
+                "provider_error_codes":list(error.provider_error_codes),
+                "provider_operation":error.provider_operation},status_code=422)
         except RetryLater as error:
             delay=min(86400,max(1,error.delay_seconds)) if type(error.delay_seconds) is int else 30
             reason=("rate_limited" if error.provider_status==429 else
@@ -639,6 +646,10 @@ def create_app(settings: Settings | None = None, *, store=None, vendor=None, rem
                      "retry_reason":reason,"retry_after":delay}
             if error.provider_status is not None:
                 payload["provider_status"]=error.provider_status
+            if error.provider_error_codes:
+                payload["provider_error_codes"]=list(error.provider_error_codes)
+            if error.provider_operation is not None:
+                payload["provider_operation"]=error.provider_operation
             return JSONResponse(payload,status_code=503,headers={"Retry-After":str(delay)})
         except RemapError:
             return JSONResponse({"error":"widget_metadata_invalid"},status_code=422)

@@ -5,7 +5,7 @@ from uuid import uuid4
 import httpx
 
 from bonuspro.adapters.moysklad.remap import (
-    BASE,RemapClient,RetryLater,AccessDenied,EntityMissing,InvalidDocument,exact_minor,reference,
+    BASE,RemapClient,RetryLater,AccessDenied,EntityMissing,InvalidDocument,MetadataRejected,exact_minor,reference,
 )
 
 
@@ -74,6 +74,75 @@ class RemapTests(unittest.TestCase):
             self.assertNotIn("private-provider-token",str(caught.exception.__dict__))
         for status in (True,"429",200,600,-1):
             self.assertIsNone(RetryLater(provider_status=status).provider_status)
+
+    def test_metadata_validation_status_is_permanent_and_keeps_fixed_read_or_create_phase(self):
+        path="/entity/customerorder/metadata/attributes"
+        for method in ("GET","POST"):
+            for status in (400,409,412):
+                with self.subTest(method=method,status=status):
+                    before=len(self.calls)
+                    def response(request):
+                        if method=="POST" and request.method=="GET":
+                            return httpx.Response(200,json={"meta":{"href":BASE+path},"rows":[]})
+                        return httpx.Response(status,json={"errors":[
+                            {"code":2000,"error":"private-token","moreInfo":"https://private.test/secret"}]})
+                    with self.assertRaises(MetadataRejected) as caught:
+                        self.client(response).marker_attribute(create=method=="POST")
+                    self.assertEqual(caught.exception.provider_status,status)
+                    self.assertEqual(caught.exception.provider_error_codes,(2000,))
+                    self.assertEqual(caught.exception.provider_operation,
+                        "metadata_read" if method=="GET" else "metadata_create")
+                    self.assertEqual(len(self.calls)-before,1 if method=="GET" else 2)
+                    self.assertNotIn("private",str(caught.exception.__dict__))
+                    self.assertNotIn("token",str(caught.exception))
+
+    def test_metadata_only_explicit_single_concurrent_change_code_remains_retryable(self):
+        for codes in ([1065],[1065,2000],[],["1065"]):
+            expected=RetryLater if codes==[1065] else MetadataRejected
+            with self.subTest(codes=codes),self.assertRaises(expected) as caught:
+                self.client(lambda req:httpx.Response(412,json={
+                    "errors":[{"code":code,"error":"private-token"} for code in codes]
+                })).marker_attribute()
+            self.assertEqual(caught.exception.provider_status,412)
+            self.assertEqual(caught.exception.provider_operation,"metadata_read")
+            if expected is RetryLater:
+                self.assertEqual(caught.exception.code,"conflict")
+                self.assertEqual(caught.exception.provider_error_codes,(1065,))
+            self.assertNotIn("private-token",str(caught.exception.__dict__))
+
+    def test_filtered_concurrency_diagnostic_does_not_hide_unknown_metadata_errors(self):
+        path="/entity/customerorder/metadata/attributes"
+        unknown=({},{"code":"2000"},{"code":True},{"code":1000000},{"code":-1},
+                 {"code":1065.0},"private-token",None)
+        for method in ("GET","POST"):
+            for item in unknown:
+                with self.subTest(method=method,item=item):
+                    def response(request):
+                        if method=="POST" and request.method=="GET":
+                            return httpx.Response(200,json={"meta":{"href":BASE+path},"rows":[]})
+                        return httpx.Response(412,json={"errors":[{"code":1065},item]})
+                    with self.assertRaises(MetadataRejected) as caught:
+                        self.client(response).marker_attribute(create=method=="POST")
+                    self.assertEqual(caught.exception.provider_status,412)
+                    self.assertEqual(caught.exception.provider_error_codes,(1065,))
+                    self.assertEqual(caught.exception.provider_operation,
+                        "metadata_read" if method=="GET" else "metadata_create")
+                    self.assertNotIn("private-token",str(caught.exception.__dict__))
+
+    def test_unreadable_metadata_rejection_stays_permanent_with_empty_bounded_diagnostics(self):
+        bodies=[("application/json",'{"errors":[{"code":2000}],"padding":"'+("x"*65536)+'"}'),
+                ("application/json",'{"errors":[{"code":1065,"code":2000}]}'),
+                ("application/json",'{"errors":[{"code":1065}],"detail":1e9999999999999999999}'),
+                ("application/json",'{"errors":'),
+                ("text/html",'<script>private-token</script>')]
+        for content_type,body in bodies:
+            with self.subTest(content_type=content_type,length=len(body)),self.assertRaises(MetadataRejected) as caught:
+                self.client(lambda req:httpx.Response(412,text=body,headers={
+                    "Content-Type":content_type})).marker_attribute()
+            self.assertEqual(caught.exception.provider_status,412)
+            self.assertEqual(caught.exception.provider_operation,"metadata_read")
+            self.assertEqual(caught.exception.provider_error_codes,())
+            self.assertEqual(str(caught.exception),"MoySklad rejected metadata request")
 
     def test_auth_missing_and_provider_errors_are_distinct_and_redacted(self):
         for status,expected in ((401,AccessDenied),(403,AccessDenied),(404,EntityMissing),(503,RetryLater)):

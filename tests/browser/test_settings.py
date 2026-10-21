@@ -200,6 +200,7 @@ class SettingsBrowserTests(unittest.TestCase):
         cases=[(403,"moysklad_permissions_required","BP-WIDGET-ACCESS"),
                (403,"moysklad_token_rejected","BP-WIDGET-TOKEN"),
                (422,"widget_metadata_invalid","BP-WIDGET-METADATA"),
+               (422,"widget_metadata_rejected","BP-WIDGET-REQUEST"),
                (409,"widget_binding_changed","BP-WIDGET-BINDING")]
         for status,code,text in cases:
             self.setup_error=(status,code);button.click()
@@ -388,5 +389,47 @@ class SettingsBrowserTests(unittest.TestCase):
         self.frame.get_by_role("button",name="Обновить статус",exact=True).click()
         self.frame.get_by_text("Программа уже запущена. Повторный запуск не требуется.",exact=True).wait_for()
         self.assertEqual(len(self.activations),1)
+
+
+    def test_metadata_request_rejection_is_permanent_and_shows_only_safe_provider_diagnostics(self):
+        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
+        button=self.frame.locator("#setup-widget")
+        self.setup_error=(422,"widget_metadata_rejected")
+        for operation,label,status,code in (("metadata_read","чтение поля",412,1040),
+                                            ("metadata_create","создание поля",412,3000)):
+            self.setup_details={"provider_operation":operation,"provider_status":status,
+                                "message":"synthetic-token https://private.test"}
+            self.setup_codes=[code,True,"synthetic-token",-1,1000000]
+            button.click()
+            message=self.frame.locator("#setup-status")
+            message.get_by_text("BP-WIDGET-REQUEST",exact=False).wait_for()
+            expect(button).to_be_enabled()
+            text=message.inner_text()
+            self.assertIn("Этап: "+label+".",text)
+            self.assertIn("HTTP "+str(status)+".",text)
+            self.assertIn("Коды API МойСклад: "+str(code)+".",text)
+            self.assertNotIn("Повторите через",text)
+            self.assertNotIn("ещё обрабатывает",text)
+            self.assertNotIn("synthetic-token",text)
+            self.assertNotIn("private.test",text)
+            expect(self.frame.locator("#activate-program")).to_be_disabled()
+        self.assertEqual(self.setup_calls,2)
+        self.assertEqual(self.activations,[])
+
+    def test_documented_metadata_concurrent_change_keeps_retry_and_finite_diagnostics(self):
+        self.open();self.frame.get_by_role("tab",name="Подключение",exact=True).click()
+        self.setup_error=(503,"widget_metadata_temporarily_unavailable")
+        self.setup_details={"retry_reason":"conflict","retry_after":1,
+                            "provider_status":412,"provider_operation":"metadata_create"}
+        self.setup_codes=[1065]
+        button=self.frame.locator("#setup-widget");button.click()
+        self.frame.locator("#setup-status").get_by_text("Коды API МойСклад: 1065.",exact=False).wait_for()
+        self.assertIn("Настройка поля изменилась параллельно.",self.frame.locator("#setup-status").inner_text())
+        expect(button).to_be_disabled()
+        self.setup_error=None
+        expect(button).to_be_enabled(timeout=5000)
+        button.click()
+        self.frame.get_by_text("Виджет подготовлен. Это не включает рабочие списания.",exact=True).wait_for()
+        self.assertEqual(self.setup_calls,2)
 
 if __name__=="__main__":unittest.main()
