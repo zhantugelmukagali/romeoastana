@@ -202,4 +202,152 @@ class WidgetDiagnosticTests(unittest.TestCase):
         with self.assertRaises(diagnostic.DiagnosticFailed):
             diagnostic.safe_report(json.dumps(report),prepare=False)
 
+
+
+class WidgetHeaderDiagnosticTests(unittest.TestCase):
+    def child(self,*,statuses=(412,200),body=None,locked=True,regions=None):
+        tenant=str(uuid4());requests=[];responses=[];sql=[];closed=[]
+        def respond(request):
+            requests.append(request)
+            self.assertEqual(request.method,"GET")
+            self.assertEqual(str(request.url),remap.BASE+"/entity/customerorder/metadata/attributes?limit=1000")
+            self.assertEqual(request.headers["Authorization"],"Bearer synthetic-private-token")
+            self.assertEqual(request.headers["Accept"],"application/json;charset=utf-8")
+            self.assertEqual(request.headers["Accept-Encoding"],"gzip")
+            index=len(requests)-1
+            status=statuses[min(index,len(statuses)-1)]
+            payload=body if body is not None else json.dumps({"errors":[
+                {"code":3030,"error":"Invalid header X-Lognex-Accept-Region: synthetic-private-token https://private.test/"},
+                {"code":True,"error":"Authorization"},{"code":"3030","error":"Content-Type"}]})
+            headers={"Content-Type":"application/json",
+                     "X-Lognex-Content-Region":(regions[index] if regions else "ru")}
+            response=httpx.Response(status,content=payload.encode(),headers=headers)
+            responses.append(response)
+            return response
+        real_client=remap.RemapClient
+        def factory(token,account,**kwargs):
+            self.assertEqual((token,account),("synthetic-private-token",tenant))
+            return real_client(token,account,transport=httpx.MockTransport(respond),**kwargs)
+        def execute(statement,params=None):
+            sql.append((statement,params));return SimpleNamespace(fetchone=lambda:(locked,))
+        guard=SimpleNamespace(execute=execute,close=lambda:closed.append(True))
+        config=SimpleNamespace(database_url="synthetic-private-dsn",
+            lifecycle_database_url="synthetic-private-lifecycle",credentials=object())
+        repo=SimpleNamespace(remap_token=lambda account:"synthetic-private-token")
+        output=io.StringIO();original_send=httpx.Client.send
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(sys,"argv",["-",tenant,"headers"]))
+            stack.enter_context(patch.object(Settings,"from_env",return_value=config))
+            stack.enter_context(patch.object(sys.modules[Installations.__module__],"Installations",return_value=repo))
+            stack.enter_context(patch.object(remap,"RemapClient",side_effect=factory))
+            stack.enter_context(patch.object(psycopg,"connect",return_value=guard))
+            stack.enter_context(redirect_stdout(output))
+            with self.assertRaises(SystemExit) as completed:
+                exec(compile(diagnostic.HEADERS_CHILD_CODE,"<widget-header-diagnostic>","exec"),
+                     {"__name__":"__main__"})
+        self.assertIs(httpx.Client.send,original_send)
+        self.assertTrue(all(response.is_closed for response in responses))
+        self.assertEqual(closed,[True])
+        self.assertEqual(sql,[("SET statement_timeout='5s'",None),
+            ("SELECT pg_try_advisory_lock(hashtextextended(%s,0))",("widget/provision/"+tenant,))])
+        text=output.getvalue()
+        for private in (tenant,"synthetic-private-token","synthetic-private-dsn",
+                        "synthetic-private-lifecycle","private.test"):
+            self.assertNotIn(private,text)
+        return json.loads(text),requests,completed.exception.code
+
+    def test_installed_headers_are_baseline_then_only_region_is_removed_and_probe_stops_at_200(self):
+        report,requests,code=self.child()
+        self.assertEqual(code,0)
+        self.assertEqual(report,{"read_only":True,"result":"header_probe_complete","variants":[
+            {"variant":"baseline","http":412,"codes":[3030],
+             "headers":["X-Lognex-Accept-Region"],"content_region":"ru"},
+            {"variant":"no_region","http":200,"codes":[],"headers":[],"content_region":"ru"}]})
+        self.assertEqual(requests[0].headers["X-Lognex-Accept-Region"],"kz")
+        baseline=dict(requests[0].headers);baseline.pop("x-lognex-accept-region")
+        self.assertEqual(dict(requests[1].headers),baseline)
+
+    def test_three_fixed_gets_change_only_region_to_ru_and_do_not_follow_other_region_values(self):
+        report,requests,code=self.child(statuses=(412,412,200),regions=("kz","uz","synthetic-private-token"))
+        self.assertEqual((code,len(requests)),(0,3))
+        self.assertEqual([item["variant"] for item in report["variants"]],["baseline","no_region","ru"])
+        self.assertEqual(requests[2].headers["X-Lognex-Accept-Region"],"ru")
+        baseline=dict(requests[0].headers);baseline["x-lognex-accept-region"]="ru"
+        self.assertEqual(dict(requests[2].headers),baseline)
+        self.assertEqual([item["content_region"] for item in report["variants"]],["kz","uz",None])
+
+    def test_baseline_200_requires_no_alternative_request_and_makes_no_marker_ready_claim(self):
+        report,requests,code=self.child(statuses=(200,))
+        self.assertEqual((code,len(requests),report["result"]),(0,1,"header_probe_complete"))
+        self.assertNotIn("marker_valid",json.dumps(report))
+        self.assertNotIn("binding",json.dumps(report))
+
+    def test_oversized_error_body_retains_http_but_neither_codes_nor_header_names(self):
+        body='{"errors":[{"code":3030,"error":"Authorization"}],"padding":"'+("x"*65536)+'"}'
+        report,requests,code=self.child(statuses=(412,),body=body)
+        self.assertEqual((code,len(requests)),(0,1))
+        for item in report["variants"]:
+            self.assertEqual((item["http"],item["codes"],item["headers"]),(412,[],[]))
+
+    def test_only_3030_error_text_can_supply_whole_allowlisted_header_names(self):
+        body=json.dumps({"errors":[
+            {"code":3030,"error":"accept-encoding; Accept-Encoding-X; X-Authorization-X; accept"},
+            {"code":1065,"error":"Authorization Content-Type X-Lognex-Accept-Region"},
+            {"code":3030,"error":"synthetic-private-token <script> https://private.test/"}]})
+        report,_,_=self.child(body=body)
+        first=report["variants"][0]
+        self.assertEqual(first["codes"],[1065,3030])
+        self.assertEqual(first["headers"],["Accept","Accept-Encoding"])
+
+    def test_malformed_error_json_never_leaks_text_or_changes_get_only_probe(self):
+        report,requests,code=self.child(body='{"error":"synthetic-private-token Authorization"')
+        self.assertEqual((code,len(requests)),(0,1))
+        self.assertEqual(report["variants"][0]["codes"],[])
+        self.assertEqual(report["variants"][0]["headers"],[])
+
+
+    def test_baseline_throttling_stops_without_alternative_region_requests(self):
+        report,requests,code=self.child(statuses=(429,200))
+        self.assertEqual((code,len(requests),report["result"]),(0,1,"header_probe_complete"))
+        self.assertEqual(report["variants"][0]["http"],429)
+
+    def test_alternative_throttling_stops_before_third_region_request(self):
+        report,requests,code=self.child(statuses=(412,429,200))
+        self.assertEqual((code,len(requests),report["result"]),(0,2,"header_probe_complete"))
+        self.assertEqual([item["http"] for item in report["variants"]],[412,429])
+
+    def test_busy_lock_stops_header_probe_before_any_provider_request(self):
+        report,requests,code=self.child(locked=False)
+        self.assertEqual((report,requests,code),
+            ({"read_only":True,"result":"setup_in_progress","variants":[]},[],1))
+
+    def test_host_headers_mode_sends_separate_read_only_code_and_disallows_prepare(self):
+        tenant=str(uuid4())
+        report={"read_only":True,"result":"header_probe_complete","variants":[
+            {"variant":"baseline","http":200,"codes":[],"headers":[],"content_region":"ru"}]}
+        runner=Mock(return_value=SimpleNamespace(returncode=0,stdout=json.dumps(report),stderr="synthetic-private-token"))
+        with patch.object(diagnostic,"installation_rows",return_value=[
+                {"tenant_id":tenant,"state":"SettingsRequired"}]):
+            self.assertEqual(diagnostic.diagnose(headers=True,runner=runner),report)
+        args,options=runner.call_args
+        self.assertEqual(args[0][-1],"headers")
+        self.assertEqual(options["input"],diagnostic.HEADERS_CHILD_CODE)
+        self.assertNotIn("shell",options)
+        runner.reset_mock()
+        with self.assertRaises(diagnostic.DiagnosticFailed):
+            diagnostic.diagnose(prepare=True,headers=True,runner=runner)
+        runner.assert_not_called()
+
+    def test_host_header_report_only_preserves_finite_fields_and_refuses_unknown_header_names(self):
+        report={"read_only":True,"result":"header_probe_complete","variants":[
+            {"variant":"baseline","http":412,"codes":[3030,3030],
+             "headers":["X-Lognex-Accept-Region"],"content_region":"ru",
+             "private":"synthetic-private-token"}],"token":"synthetic-private-token"}
+        safe=diagnostic.safe_header_report(json.dumps(report))
+        self.assertNotIn("synthetic-private-token",json.dumps(safe))
+        self.assertEqual(safe["variants"][0]["codes"],[3030])
+        report["variants"][0]["headers"].append("synthetic-private-token")
+        with self.assertRaises(diagnostic.DiagnosticFailed):
+            diagnostic.safe_header_report(json.dumps(report))
+
 if __name__=="__main__":unittest.main()
