@@ -102,7 +102,7 @@ class Automation:
         Signals.index_in(conn,tenant,s.order_id,proof.related)
         from bonuspro.adapters.postgres.presale_undo import PresaleUndo
         if PresaleUndo.stale_worker_proof_in(conn,tenant,saved):
-            self.outcome_in(conn,tenant,s.order_id,"waiting_refresh")
+            self.hint_in(conn,tenant,s.order_id)
             return
         if PresaleUndo.older_than_completed_undo_in(conn,tenant,saved):
             raise Conflict("evidence predates completed presale undo")

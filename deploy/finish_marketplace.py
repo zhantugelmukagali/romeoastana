@@ -140,6 +140,7 @@ class Database:
                     raise MarketplaceFailed("Protected history fingerprint could not be verified")
             finally:
                 if process.poll() is None:process.kill();process.wait(timeout=10)
+                for stream in (process.stdin,process.stdout,process.stderr):stream.close()
             result[table]={"rows":count,"sha256":digest.hexdigest()}
         return result
     def balanced(self,database):

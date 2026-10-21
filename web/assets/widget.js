@@ -37,7 +37,7 @@ const undoErrors={
   undo_operation_changed:"Операция изменилась. Обновите виджет.",
   undo_not_confirmed:"Сохраните заказ и дождитесь подтверждения применения.",
   undo_generation_changed:"Операция уже отменена или заменена. Обновите виджет.",
-  undo_not_representable:"Не удалось точно восстановить цены. Нужен администратор.",
+  undo_not_representable:"Верните удалённые строки и исходные цены в заказе, сохраните и повторите отмену.",
   undo_balance_limit:"Возврат бонусов превысит допустимый баланс. Нужен администратор."
 };
 const digest=value=>typeof value==="string"&&/^[a-f0-9]{64}$/.test(value);

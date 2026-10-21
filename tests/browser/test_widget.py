@@ -974,6 +974,9 @@ class WidgetBrowserTests(unittest.TestCase):
             self.undo_verifies.append(body)
             if self.undo_change_verify:
                 self.page.evaluate("send({name:'Change',messageId:971,objectState:{}})")
+            if self.undo_buyer_changed:
+                return route.fulfill(json={"undo":self.undo_public(recoverable=False,
+                    reason="undo_restore_original",original_buyer_id=NEXT)})
             if self.undo_restored:
                 self.undo_pending=False;self.undo_completed=True;self.prepared=False;self.saved=False
                 if self.undo_lose_verify:return route.abort()
@@ -1132,7 +1135,8 @@ class WidgetBrowserTests(unittest.TestCase):
         messages={
           "undo_restore_original":"Заказ изменён. Восстановите сохранённый вариант со скидкой или обратитесь к администратору.",
           "undo_sale_locked":"У заказа есть оплата, отгрузка или возврат. Отмена через виджет недоступна.",
-          "undo_generation_changed":"Операция уже отменена или заменена. Обновите виджет."}
+          "undo_generation_changed":"Операция уже отменена или заменена. Обновите виджет.",
+          "undo_not_representable":"Верните удалённые строки и исходные цены в заказе, сохраните и повторите отмену."}
         for reason,message in messages.items():
             with self.subTest(reason=reason):
                 self.undo_reject=reason;self.frame.locator("#undo-start").click()
@@ -1179,9 +1183,11 @@ class WidgetBrowserTests(unittest.TestCase):
 
     def test_lost_inverse_ack_requires_save_and_authoritative_verification(self):
         self.confirmed_for_undo()
-        self.page.evaluate("""const original=window.send;window.send=m=>{
-            if(m.name!=='UpdateResponse')original(m);
-        };""")
+        self.page.evaluate("""()=>{
+            const original=window.send;window.send=m=>{
+                if(m.name!=='UpdateResponse')original(m);
+            };
+        }""")
         self.frame.locator("#undo-start").click()
         self.frame.locator("#status[data-error=true]").wait_for(timeout=15000)
         self.assertEqual(self.page.evaluate("updates.length"),1)
@@ -1200,11 +1206,13 @@ class WidgetBrowserTests(unittest.TestCase):
     def test_save_before_inverse_ack_is_verified_without_overwriting_the_save_event(self):
         self.confirmed_for_undo()
         self.undo_restored=True
-        self.page.evaluate("""const original=window.send;window.send=m=>{
-            if(m.name==='UpdateResponse')original({name:'Save',messageId:975,
-                extensionPoint:'document.customerorder.edit',objectId:'11111111-1111-4111-8111-111111111111'});
-            original(m);
-        };""")
+        self.page.evaluate("""()=>{
+            const original=window.send;window.send=m=>{
+                if(m.name==='UpdateResponse')original({name:'Save',messageId:975,
+                    extensionPoint:'document.customerorder.edit',objectId:'11111111-1111-4111-8111-111111111111'});
+                original(m);
+            };
+        }""")
         self.frame.locator("#undo-start").click()
         self.frame.get_by_text("Применение отменено. Можно изменить заказ.",exact=True).wait_for()
         self.assertEqual(len(self.undo_verifies),1)
@@ -1274,6 +1282,27 @@ class WidgetBrowserTests(unittest.TestCase):
         self.frame.get_by_role("button",name="Восстановить исходные строки и отменить",exact=True).wait_for()
         self.assertEqual(self.undo_prepares,[])
 
+    def test_pending_undo_requires_original_buyer_before_authorizing_resume(self):
+        self.confirmed_for_undo();self.undo_lose_prepare=True
+        self.frame.locator("#undo-start").click()
+        self.frame.locator("#status[data-error=true]").wait_for()
+        self.undo_buyer_changed=True
+        self.frame.locator("#refresh").click()
+        self.frame.get_by_text("Верните первоначального покупателя в заказ и сохраните. Затем повторите отмену.",exact=True).wait_for()
+        self.assertFalse(self.frame.locator("#undo-resume").is_visible())
+        self.assertNotIn(NEXT,self.frame.locator("#undo-panel").inner_text())
+        self.assertFalse(self.undo_completed)
+        self.assertEqual(self.undo_resumes,[])
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+        self.undo_buyer_changed=False;self.undo_save()
+        self.frame.locator("#undo-resume:not([disabled])").wait_for()
+        self.assertEqual(self.undo_resumes,[])
+        self.assertEqual(self.page.evaluate("updates.length"),0)
+        self.frame.locator("#undo-resume").click()
+        self.page.wait_for_function("updates.length === 1")
+        self.assertEqual(self.undo_resumes,[{"undo_id":self.undo_id,"source_hash":self.undo_resume_source}])
+        self.assertFalse(self.undo_completed)
+
     def test_change_cancels_restoration_consent_without_replacing_positions(self):
         self.confirmed_for_undo();self.edited_order_for_undo()
         self.frame.locator("#undo-start").click()
@@ -1298,6 +1327,7 @@ class WidgetBrowserTests(unittest.TestCase):
         self.frame.locator("#undo-confirm").wait_for()
         self.assertEqual(self.undo_resumes,[])
         self.frame.locator("#undo-confirm-apply").click()
+        self.page.wait_for_function("updates.length === 1")
         self.frame.locator("#undo-panel").wait_for()
         self.assertEqual(self.undo_resumes,[{"undo_id":self.undo_id,"source_hash":self.undo_resume_source,"restore_original":True}])
         self.assertEqual(self.page.evaluate("updates[0].updateState"),self.undo_inverse)
