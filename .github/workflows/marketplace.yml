@@ -2,9 +2,9 @@ name: Marketplace package
 on:
   push:
     branches: [bonuspro/rebuild, bonuspro/vendor-auth-fix]
-    paths: ['marketplace/**', 'scripts/check_marketplace.py', '.github/workflows/marketplace.yml']
+    paths: ['marketplace/**', 'docs/**', 'scripts/check_marketplace.py', 'scripts/package_delivery.py', '.github/workflows/marketplace.yml']
   pull_request:
-    paths: ['marketplace/**', 'scripts/check_marketplace.py', '.github/workflows/marketplace.yml']
+    paths: ['marketplace/**', 'docs/**', 'scripts/check_marketplace.py', 'scripts/package_delivery.py', '.github/workflows/marketplace.yml']
 permissions:
   contents: read
 jobs:
@@ -22,16 +22,27 @@ jobs:
       - name: Build current manual archive
         run: python3 marketplace/build_manual.py
       - name: Validate descriptor and upload files
-        run: .marketplace-check/bin/python scripts/check_marketplace.py
+        shell: bash
+        run: .marketplace-check/bin/python scripts/check_marketplace.py | tee .marketplace-validation.json
+      - name: Assemble delivery packages and provenance
+        run: python3 scripts/package_delivery.py
+      - name: Verify both package checksums
+        run: |
+          cd .delivery-package/marketplace
+          sha256sum --check SHA256SUMS
+          cd ../handover
+          sha256sum --check SHA256SUMS
       - name: Bundle marketplace materials
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: bonuspro-marketplace-package
-          path: |
-            marketplace/README.md
-            marketplace/GUIDE.md
-            marketplace/descriptor-widget.xml
-            marketplace/description.txt
-            marketplace/bonuspro-icon.svg
-            marketplace/bonuspro-manual.zip
+          path: .delivery-package/marketplace
+          if-no-files-found: error
+          retention-days: 90
+      - name: Bundle customer handover
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bonuspro-customer-handover
+          path: .delivery-package/handover
+          if-no-files-found: error
           retention-days: 90

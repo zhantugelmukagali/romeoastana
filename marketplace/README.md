@@ -4,7 +4,9 @@
 
 ## Пакет для загрузки
 
-Откройте успешный запуск **Marketplace package** в [GitHub Actions](https://github.com/zhantugelmukagali/romeoastana/actions/workflows/marketplace.yml), соответствующий выбранному коммиту, и скачайте артефакт **bonuspro-marketplace-package**. В нём находятся актуальный XML, описание, иконка и заново собранная инструкция.
+[Пошаговая отправка, поля владельца и сценарий модератора](SUBMISSION.md). [Передача заказчику и результаты проверки](../docs/DELIVERY.md).
+
+Откройте успешный запуск **Marketplace package** в [GitHub Actions](https://github.com/zhantugelmukagali/romeoastana/actions/workflows/marketplace.yml), соответствующий выбранному коммиту, и скачайте артефакт **bonuspro-marketplace-package**. В нём находятся актуальный XML, описание, иконка и заново собранная инструкция, а также отчёт XSD, release-manifest.json и SHA256SUMS. Отдельный артефакт **bonuspro-customer-handover** содержит комплект передачи. Манифест различает исходники сборки и последний подтверждённый образ VPS.
 
 | Поле в кабинете | Что использовать |
 |---|---|

@@ -10,6 +10,8 @@ bonuspro-release и отдельный PostgreSQL volume. Старую базу 
 
 ## Подготовка
 
+Этот раздел предназначен для первой установки в новый изолированный каталог. Для уже работающего VPS используйте раздел обновления и не создавайте секреты повторно.
+
 1. Проверить commit и зелёный CI, собрать неизменяемый тег:
    docker build --pull -t bonuspro:COMMIT_SHA .
 2. Указать BONUSPRO_IMAGE, PUBLIC_ORIGIN, MOYSKLAD_APP_ID, MOYSKLAD_APP_UID
@@ -97,21 +99,15 @@ CI проверяет pg_dump/pg_restore непустого журнала в о
 
 ## Безопасная проверка текущего VPS
 
-В SSH-сеансе:
-```sh
-cd ~/bonuspro-release &&
-git pull --ff-only &&
-sudo python3 scripts/vps_preflight.py
+В Ubuntu (`ubuntu@47107`) выполните одну строку:
+
+```bash
+sudo docker inspect bonuspro-release-app-1 bonuspro-release-worker-pool-1 bonuspro-release-web-1 bonuspro-release-db-1 --format '{{.Name}} | {{.Config.Image}} | restart={{.HostConfig.RestartPolicy.Name}} | {{.State.Status}}{{if .State.Health}} | {{.State.Health.Status}}{{end}}' && curl --http1.1 --max-time 15 --fail -sS -H 'Host: loyalty.addwise.kz' http://127.0.0.1:18080/health/ready && curl --http1.1 --max-time 15 --fail -sS https://loyalty.addwise.kz/health/ready
 ```
 
-Это обновляет файлы checkout и выполняет диагностику. Образ приложения и база не меняются.
-Не запускать migrate на работающем старом образе без согласованного обновления.
-Основная ветка ожидает 0018. Исторические 0013/0014→0015 относятся к совместимому
-выпуску; переход с установленной 0015 и обновление основных 0017/0018 выполняет
-finish_marketplace.py по HANDOVER.md. Совпадение номера схемы не доказывает
-совместимость SQL разных веток. Показание 0005 означает прежнюю серверную основу.
-Поле worker в vps_preflight.py относится к старому обработчику одного аккаунта;
-отсутствие этого контейнера само по себе не доказывает сбой worker-pool.
+Проверка читает состояния и readiness; не обновляет Git, образ или базу. У приложения и worker-pool должны совпадать образы, оба контейнера должны быть healthy; web — running, db — healthy. Оба HTTP-запроса должны вернуть ready. Свежесть обработки дополнительно смотрят в «БонусПро → Настройки → Подключение». Эти результаты не заменяют проверку реального заказа.
+
+Основная ветка ожидает 0018. Совпадение номера схемы само по себе не доказывает совместимость SQL разных веток. Исторический vps_preflight.py проверяет старый worker одного аккаунта и не является критерием готовности worker-pool. В установленном проекте используется detached checkout; git pull для проверки сервера не требуется.
 
 Перед согласованным обновлением: остановить новые финансовые команды,
 сделать и проверить независимую копию БД/ключей, собрать конкретный прошедший CI commit,
