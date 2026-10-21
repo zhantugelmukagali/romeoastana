@@ -163,6 +163,102 @@ class AutomationTests(unittest.TestCase):
         self.assertEqual(self.a.state(self.tenant)["scan_until"],before)
         self.assertEqual(self.balance()["balance"],5000)
 
+    def test_kzt_non_unit_rates_redeem_earn_and_partial_return_without_base_conversion(self):
+        from decimal import Decimal
+        import copy
+        from bonuspro.adapters.moysklad.remap import BASE,OrderEvidence
+        from bonuspro.adapters.moysklad.order import read_order
+        from bonuspro.adapters.moysklad.fulfillment import FulfillmentReader,MSK
+        fx=self.fx
+        def ref(kind,identity):return {"meta":{"type":kind,"href":BASE+"/entity/"+kind+"/"+identity}}
+        currency,demand,payment,returned=(str(uuid4()) for _ in range(4))
+        goods=replace(fx.saved.lines[0],quantity=Decimal(2),price=Decimal(10000))
+        delivery=replace(fx.saved.lines[1],price=Decimal(1000))
+        original=replace(fx.saved,lines=(goods,delivery),
+            snapshot=replace(fx.saved.snapshot,total_minor=21000,eligible_minor=20000))
+        fx.saved=original
+        doc=dict(id=fx.order,accountId=fx.tenant,applicable=True,
+            created=(datetime.now(timezone.utc)+timedelta(seconds=1)).astimezone(MSK).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+            updated="2026-10-14 10:00:00.000",sum=21000,payedSum=0,shippedSum=0,
+            agent=ref("counterparty",fx.customer),organization=ref("organization",original.organization_id),
+            rate={"currency":ref("currency",currency),"value":Decimal("0.2")},
+            vatIncluded=True,vatEnabled=False,name="KZT non-unit rate",attributes=[])
+        rows=[dict(id=line.id,assortment=ref(line.kind,line.assortment),quantity=line.quantity,
+                   price=line.price,discount=Decimal(line.discount_bps)/100,vat=line.vat,
+                   vatEnabled=line.vat_enabled) for line in original.lines]
+        ship_ids={line["id"]:str(uuid4()) for line in rows}
+        ship=None;pay=None;return_doc=None;return_rows=()
+        class Client:
+            tenant=fx.tenant
+            def entity(inner,kind,identity):return {"isoCode":"KZT"}
+            def order_evidence(inner,identity):
+                return OrderEvidence(copy.deepcopy(doc),tuple(copy.deepcopy(rows)),
+                    (copy.deepcopy(pay),) if pay else (),(copy.deepcopy(ship),) if ship else ())
+            def positions(inner,kind,identity):
+                if kind=="salesreturn":return copy.deepcopy(return_rows)
+                result=copy.deepcopy(rows)
+                for line in result:line["id"]=ship_ids[line["id"]]
+                return tuple(result)
+            def linked(inner,document,field,kinds):
+                return [copy.deepcopy(return_doc)] if field=="returns" and return_doc else []
+        client=Client()
+        normalized=read_order(client,fx.order,marker_id=fx.marker)
+        fx.checkout.preview(fx.tenant,normalized.snapshot,requested_points=0,
+                            actor_id=fx.actor,eligibility_version=1)
+        applied=fx.redemptions.prepare(fx.tenant,normalized,points=20,request_id=str(uuid4()),
+                                      actor_id=fx.actor,expected_source=normalized.source_hash)
+        self.assertNotIn("rate",applied["update_state"])
+        updates={line["id"]:line for line in applied["update_state"]["positions"]}
+        for line in rows:
+            update=updates[line["id"]]
+            line["discount"]=Decimal(str(update.get("discount",line["discount"])))
+            line["price"]=Decimal(str(update.get("price",line["price"])))
+        doc.update(sum=19000,updated="2026-10-14 10:01:00.000",
+                   attributes=applied["update_state"]["attributes"])
+        saved=read_order(client,fx.order,marker_id=fx.marker)
+        self.assertTrue(fx.redemptions.confirm_saved(fx.tenant,saved)["verified"])
+        self.assertEqual(self.balance()["balance"],4980)
+        doc.update(payedSum=19000,shippedSum=19000,updated="2026-10-14 10:02:00.000")
+        ship={**copy.deepcopy(doc),"id":demand,"customerOrder":ref("customerorder",fx.order),
+              "rate":{"currency":ref("currency",currency),"value":Decimal("0.25")}}
+        pay={**copy.deepcopy(doc),"id":payment,"meta":{"type":"paymentin"},
+             "rate":{"currency":ref("currency",currency),"value":Decimal("0.3")},
+             "operations":[{**ref("customerorder",fx.order),"linkedSum":18999}]}
+        # One unpaid KZT minor unit still waits, regardless of base conversions.
+        partial=FulfillmentReader(client).read(fx.order,marker_id=fx.marker)
+        self.assertEqual((partial.paid_minor,partial.shipped_minor),(18999,19000))
+        self.assertEqual(partial.outcome,"waiting_payment")
+        self.run_proof(partial)
+        self.assertEqual(self.balance()["balance"],4980)
+        pay["operations"][0]["linkedSum"]=19000
+        complete=FulfillmentReader(client).read(fx.order,marker_id=fx.marker)
+        self.assertEqual(complete.outcome,"eligible")
+        self.assertTrue(complete.full_payment and complete.full_shipment)
+        self.run_proof(complete);self.run_proof(complete)
+        self.assertEqual(self.balance()["balance"],4990)  # 5000 - 20 + 10
+        with fx.ledger.transaction(fx.tenant) as conn:
+            earning=conn.execute("SELECT points,eligible_minor FROM bonuspro.order_accruals").fetchone()
+            self.assertEqual(earning,dict(points=10,eligible_minor=20000))
+        returned_row={**copy.deepcopy(rows[0]),"id":str(uuid4()),"quantity":Decimal(1)}
+        return_rows=(returned_row,)
+        return_doc={**copy.deepcopy(ship),"id":returned,"demand":ref("demand",demand),"sum":9000,
+            "rate":{"currency":ref("currency",currency),"value":Decimal("0.4")}}
+        proof=FulfillmentReader(client).read(fx.order,marker_id=fx.marker)
+        self.assertEqual(proof.outcome,"return_review")
+        self.assertEqual(sum(line.amount for line in proof.returned),9000)
+        self.run_proof(proof)
+        self.assertEqual(self.balance()["balance"],4995)  # refund 10 spent, reverse 5 earned
+        with fx.ledger.transaction(fx.tenant) as conn:
+            count=conn.execute("SELECT count(*) n FROM bonuspro.ledger_transactions").fetchone()["n"]
+        self.run_proof(proof)
+        self.assertEqual(self.balance()["balance"],4995)
+        with fx.ledger.transaction(fx.tenant) as conn:
+            self.assertEqual(conn.execute("SELECT count(*) n FROM bonuspro.ledger_transactions").fetchone()["n"],count)
+        # Same ISO code is insufficient if a related document names another currency ID.
+        pay["rate"]["currency"]=ref("currency",str(uuid4()))
+        with self.assertRaises(InvalidDocument):
+            FulfillmentReader(client).read(fx.order,marker_id=fx.marker)
+
     def test_worker_document_graph_to_real_ledger_without_reader_stub(self):
         from decimal import Decimal
         from bonuspro.adapters.moysklad.remap import OrderEvidence,BASE

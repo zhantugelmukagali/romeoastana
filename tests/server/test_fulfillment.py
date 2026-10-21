@@ -1,5 +1,6 @@
 import copy
 from datetime import datetime,timezone,timedelta
+from decimal import Decimal
 from uuid import uuid4
 import unittest
 import httpx
@@ -48,6 +49,24 @@ class Fixture:
 
 class FulfillmentTests(unittest.TestCase):
     def setUp(self):self.fx=Fixture()
+    def test_same_kzt_documents_keep_minor_units_with_different_base_conversion_rates(self):
+        self.fx.doc["rate"]["value"]=Decimal("0.2")
+        self.fx.ship["rate"]["value"]=Decimal("0.25")
+        self.fx.pay["rate"]["value"]=Decimal("0.3")
+        proof=self.fx.read()
+        self.assertEqual((proof.saved.snapshot.total_minor,proof.paid_minor,proof.shipped_minor),
+                         (1200000,1200000,1200000))
+        self.assertEqual(proof.outcome,"eligible")
+        self.fx.pay["operations"][0]["linkedSum"]=1199999
+        self.assertEqual(self.fx.read().outcome,"waiting_payment")
+        self.fx.pay["operations"][0]["linkedSum"]=1200000
+        returned=self.fx.return_goods()
+        returned["rate"]["value"]=Decimal("0.4")
+        proof=self.fx.read()
+        self.assertEqual(proof.outcome,"return_review")
+        self.assertEqual((proof.paid_minor,proof.shipped_minor),(1200000,1200000))
+        self.assertEqual(sum(line.amount for line in proof.returned),1000000)
+
     def test_complete_sale_uses_allocations_and_goods_only(self):
         p=self.fx.read()
         self.assertEqual(p.outcome,"eligible")

@@ -233,9 +233,17 @@ def normalize_order(client,evidence,*,marker_id=None,allow_fulfilled=False):
     currency=client.entity("currency",currency_id)
     if currency.get("isoCode")!="KZT":
         raise InvalidDocument("only KZT is supported",reason="currency_unsupported")
-    rate=doc.get("rate",{}).get("value")
-    if rate is not None and number(rate)!=1:
-        raise InvalidDocument("unexpected KZT exchange rate",reason="exchange_rate_unsupported")
+    # Loyalty is denominated in the document's KZT minor units. rate.value
+    # converts this currency to the account's base currency; it must not
+    # multiply positions, totals, points or the host-side discount plan.
+    rate=doc.get("rate",{})
+    if "value" in rate:
+        try:
+            valid_rate=number(rate["value"])>0
+        except InvalidDocument:
+            valid_rate=False
+        if not valid_rate:
+            raise InvalidDocument("invalid KZT exchange rate",reason="exchange_rate_unsupported")
     if type(doc.get("applicable")) is not bool:
         raise InvalidDocument("posting status missing")
     lines=[]

@@ -68,11 +68,35 @@ class OrderTests(unittest.TestCase):
         self.assertEqual(self.read().snapshot.eligible_minor,0)
         with self.assertRaises(InvalidDocument):self.read().plan(1)
 
-    def test_wrong_currency_and_currency_rate(self):
+    def test_wrong_document_currency_is_rejected(self):
         client=self.client();client.entity=lambda *args:{"isoCode":"RUB"}
         with self.assertRaises(InvalidDocument):read_order(client,self.order)
-        self.doc["rate"]["value"]=Decimal("1.1")
-        with self.assertRaises(InvalidDocument):self.read()
+
+    def test_kzt_base_conversion_rate_does_not_convert_loyalty_amounts_or_host_plan(self):
+        original=self.read();plan=original.plan(1000)
+        for rate in (Decimal("0.2"),Decimal("1.1"),Decimal("1000")):
+            with self.subTest(rate=rate):
+                self.doc["rate"]["value"]=rate
+                saved=self.read();current=saved.plan(1000)
+                self.assertEqual(saved.financial(),original.financial())
+                self.assertEqual(saved.source_hash,original.source_hash)
+                self.assertEqual(current["before"],plan["before"])
+                self.assertEqual(current["after"],plan["after"])
+                self.assertEqual(current["update_state"],plan["update_state"])
+                self.assertNotIn("rate",current["update_state"])
+        self.doc["rate"].pop("value")
+        self.assertEqual(self.read().financial(),original.financial())
+        self.assertEqual(self.read().source_hash,original.source_hash)
+        self.doc["updated"]="2026-10-14 10:00:01.000"
+        self.assertNotEqual(self.read().source_hash,original.source_hash)
+
+    def test_present_kzt_conversion_rate_must_be_exact_finite_and_positive(self):
+        for value in (True,False,1.1,None,"1.1",0,-1,Decimal("NaN"),Decimal("Infinity"),Decimal("-Infinity")):
+            with self.subTest(value=value):
+                self.doc["rate"]["value"]=value
+                with self.assertRaises(InvalidDocument) as rejected:
+                    self.read()
+                self.assertEqual(rejected.exception.reason,"exchange_rate_unsupported")
 
     def test_payment_shipment_cancellation_and_marker_block_plan(self):
         for field,value in (("payedSum",1),("shippedSum",1),("applicable",False)):
